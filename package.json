@@ -1,0 +1,48 @@
+{
+  "name": "app",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "biome check",
+    "format": "biome format --write",
+    "pretest": "npm run build:planner",
+    "test": "vitest run",
+    "test:debug": "FLUIDHTN_DEBUG=1 npm run test",
+    "build:planner": "bash ./scripts/build_fluidhtn_docker.sh",
+    "build:planner:watch": "npm --prefix ../.. run fluidhtn:watch",
+    "build:planner:watch:down": "npm --prefix ../.. run fluidhtn:watch:down"
+  },
+  "dependencies": {
+    "@react-three/csg": "^4.0.0",
+    "@react-three/drei": "^10.7.5",
+    "@react-three/fiber": "^9.3.0",
+    "@rjsf/core": "^5.24.13",
+    "@rjsf/utils": "^5.24.13",
+    "@rjsf/validator-ajv8": "^5.24.13",
+    "@types/three": "^0.180.0",
+    "assert": "^2.1.0",
+    "buffer": "^6.0.3",
+    "crypto-browserify": "^3.12.0",
+    "mahler": "^4.1.5",
+    "next": "15.5.2",
+    "process": "^0.11.10",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "stream-browserify": "^3.0.0",
+    "three": "^0.180.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.2.0",
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "tailwindcss": "^4",
+    "typescript": "^5",
+    "vite": "^6.3.6",
+    "vitest": "^3.2.4"
+  }
+}

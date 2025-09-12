@@ -1,0 +1,7 @@
+{
+  "outputPath": "../gen/types/fluidhtn",
+  "generationSpecs": ["FluidHtnWasm.MyGenerationSpec"],
+  "propertyNameConverters": ["PascalCaseToCamelCase"]
+}
+
+
