@@ -11,7 +11,7 @@ export const N = Object.freeze({
   BUNKER_DOOR: 'bunker_door',
   BUNKER_INT: 'bunker_interior',
   STAR: 'star_pos',
-  SAFE: 'safe_spot',
+  SAFE: 'blast_safe_zone',
 } as const)
 
 export type NodeId = (typeof N)[keyof typeof N]

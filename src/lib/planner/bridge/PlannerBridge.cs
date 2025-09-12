@@ -118,7 +118,7 @@ public static partial class PlannerBridge
     //   PICKUP_C4
     //   MOVE bunker_door
     //   PLACE_C4
-    //   MOVE safe_spot
+    //   MOVE blast_safe_zone
     //   DETONATE
     //   MOVE star_pos
     //   PICKUP_STAR
@@ -391,7 +391,10 @@ public static partial class PlannerBridge
         void EnsureHasC4()
         {
             if (ctx.HasC4) return;
-            EnsureKey();
+            if (!ctx.StorageUnlocked)
+            {
+                EnsureKey();
+            }
             if (MoveTo(BunkerWorld.Nodes.StorageDoor))
             {
                 if (!ctx.StorageUnlocked && ctx.HasKey && ctx.AgentAt == BunkerWorld.Nodes.StorageDoor)
@@ -414,14 +417,18 @@ public static partial class PlannerBridge
         void EnsureBreach()
         {
             if (ctx.BunkerBreached) return;
-            EnsureHasC4();
-            if (MoveTo(BunkerWorld.Nodes.BunkerDoor))
+            // If C4 is not already placed, ensure we have it and place it
+            if (!ctx.C4Placed)
             {
-                if (ctx.HasC4 && ctx.AgentAt == BunkerWorld.Nodes.BunkerDoor && !ctx.C4Placed)
+                EnsureHasC4();
+                if (MoveTo(BunkerWorld.Nodes.BunkerDoor))
                 {
-                    ctx.Steps.Add("PLACE_C4");
-                    ctx.HasC4 = false;
-                    ctx.C4Placed = true;
+                    if (ctx.HasC4 && ctx.AgentAt == BunkerWorld.Nodes.BunkerDoor && !ctx.C4Placed)
+                    {
+                        ctx.Steps.Add("PLACE_C4");
+                        ctx.HasC4 = false;
+                        ctx.C4Placed = true;
+                    }
                 }
             }
             if (MoveTo(BunkerWorld.Nodes.SafeSpot))
@@ -503,6 +510,7 @@ public static partial class PlannerBridge
             return Encoding.UTF8.GetString(stream.ToArray());
         }
 
+        // FIXME: Want to remove this. The Planner should be able to handle all goals.
         // Execute procedural path when possible
         if (ctx.GoalAgentAt != null && ctx.GoalHasKey != true && ctx.GoalHasC4 != true && ctx.GoalBunkerBreached != true && ctx.GoalHasStar != true)
         {
@@ -818,7 +826,7 @@ public static partial class PlannerBridge
             public const string BunkerDoor = "bunker_door";
             public const string BunkerInterior = "bunker_interior";
             public const string StarPos = "star_pos";
-            public const string SafeSpot = "safe_spot";
+            public const string SafeSpot = "blast_safe_zone";
         }
 
         // World facts / inventory
