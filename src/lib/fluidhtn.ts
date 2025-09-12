@@ -100,7 +100,7 @@ export async function runDemoOnWorker(dotnetUrl: string) {
 
 export async function planGoalOnWorker(dotnetUrl: string, request: BunkerPlanRequest) {
   const res = await planRequestOnWorker(dotnetUrl, request);
-  console.log('planGoalOnWorker', request, res);
+  // console.log('planGoalOnWorker', request, res);
   return res;
 }
 
@@ -129,14 +129,33 @@ export type BunkerPlanRequest = {
   goal?: BunkerPlanGoal;
 };
 
+// Matches C# PlanResultJson
+export type PlanResultJson = {
+  error?: string;
+  done: boolean;
+  plan?: string[];
+  logs: string[];
+  finalState: Record<string, unknown>;
+};
+
+export function parsePlanResult(json: string): PlanResultJson {
+  try {
+    const obj = JSON.parse(json);
+    return obj as PlanResultJson;
+  } catch (err) {
+    throw new Error(`Invalid PlanResultJson: ${(err as Error)?.message || String(err)}`);
+  }
+}
+
 export async function planRequest(exports: DotnetExports, request: BunkerPlanRequest) {
   const json = JSON.stringify(request);
-  return exports.FluidHtnWasm.PlannerBridge.PlanBunkerRequest(json);
+  const res = exports.FluidHtnWasm.PlannerBridge.PlanBunkerRequest(json);
+  return parsePlanResult(res);
 }
 
 export async function planRequestOnWorker(dotnetUrl: string, request: BunkerPlanRequest) {
   const json = JSON.stringify(request);
-  return withFluidWorker<string>(dotnetUrl, { cmd: 'planRequest', dotnetUrl, json } as WorkerPlanCmd);
+  return withFluidWorker<PlanResultJson>(dotnetUrl, { cmd: 'planRequest', dotnetUrl, json } as WorkerPlanCmd);
 }
 
 // Removed key-based mapping in favor of flexible goal object API

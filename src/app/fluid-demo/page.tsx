@@ -31,7 +31,7 @@ export default function FluidDemoPage() {
       workerRef.current = null
     }
 
-    const worker = new Worker('/workers/fluid-htn.worker.js', { type: 'module' })
+    const worker = new Worker('/workers/planner.worker.js', { type: 'module' })
     workerRef.current = worker
 
     await new Promise<void>((resolve, reject) => {

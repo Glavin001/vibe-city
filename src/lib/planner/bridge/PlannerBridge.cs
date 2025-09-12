@@ -8,6 +8,8 @@ using FluidHTN.Factory;
 using FluidHTN.Debug;
 using TaskStatus = FluidHTN.TaskStatus;
 using System.Text.Json;
+using System.IO;
+using System.Text;
 
 namespace FluidHtnWasm;
 
@@ -285,6 +287,31 @@ public static partial class PlannerBridge
         public bool? hasStar { get; set; }
     }
 
+    // Final state of the world returned by the planner
+    public sealed class BunkerState
+    {
+        public string agentAt { get; set; } = BunkerWorld.Nodes.Courtyard;
+        public bool keyOnTable { get; set; }
+        public bool c4Available { get; set; }
+        public bool starPresent { get; set; }
+        public bool hasKey { get; set; }
+        public bool hasC4 { get; set; }
+        public bool hasStar { get; set; }
+        public bool storageUnlocked { get; set; }
+        public bool c4Placed { get; set; }
+        public bool bunkerBreached { get; set; }
+    }
+
+    // JSON result envelope for planning responses
+    public sealed class PlanResultJson
+    {
+        public string? error { get; set; }
+        public bool done { get; set; }
+        public List<string>? plan { get; set; }
+        public List<string> logs { get; set; } = new List<string>();
+        public BunkerState finalState { get; set; } = new BunkerState();
+    }
+
     [JSExport]
     public static string PlanBunkerRequest(string requestJson)
     {
@@ -408,26 +435,94 @@ public static partial class PlannerBridge
             }
         }
 
+        // Helper to serialize the result to JSON
+        string BuildResult(string? error = null, bool timedOut = false)
+        {
+            var planLines = new List<string>();
+            var logLines = new List<string>();
+            foreach (var s in ctx.Steps)
+            {
+                if (string.IsNullOrWhiteSpace(s)) continue;
+                if (s.StartsWith("# "))
+                {
+                    logLines.Add(s.Substring(2));
+                }
+                else
+                {
+                    planLines.Add(s);
+                }
+            }
+            var done = timedOut ? false : (ctx.Done || IsGoalMet(ctx));
+            var state = new BunkerState
+            {
+                agentAt = ctx.AgentAt,
+                keyOnTable = ctx.KeyOnTable,
+                c4Available = ctx.C4Available,
+                starPresent = ctx.StarPresent,
+                hasKey = ctx.HasKey,
+                hasC4 = ctx.HasC4,
+                hasStar = ctx.HasStar,
+                storageUnlocked = ctx.StorageUnlocked,
+                c4Placed = ctx.C4Placed,
+                bunkerBreached = ctx.BunkerBreached,
+            };
+
+            using var stream = new MemoryStream();
+            using (var writer = new Utf8JsonWriter(stream))
+            {
+                writer.WriteStartObject();
+                if (error != null) writer.WriteString("error", error);
+                writer.WriteBoolean("done", done);
+                if (planLines.Count > 0)
+                {
+                    writer.WritePropertyName("plan");
+                    writer.WriteStartArray();
+                    foreach (var p in planLines) writer.WriteStringValue(p);
+                    writer.WriteEndArray();
+                }
+                writer.WritePropertyName("logs");
+                writer.WriteStartArray();
+                foreach (var l in logLines) writer.WriteStringValue(l);
+                writer.WriteEndArray();
+                writer.WritePropertyName("finalState");
+                writer.WriteStartObject();
+                writer.WriteString("agentAt", state.agentAt);
+                writer.WriteBoolean("keyOnTable", state.keyOnTable);
+                writer.WriteBoolean("c4Available", state.c4Available);
+                writer.WriteBoolean("starPresent", state.starPresent);
+                writer.WriteBoolean("hasKey", state.hasKey);
+                writer.WriteBoolean("hasC4", state.hasC4);
+                writer.WriteBoolean("hasStar", state.hasStar);
+                writer.WriteBoolean("storageUnlocked", state.storageUnlocked);
+                writer.WriteBoolean("c4Placed", state.c4Placed);
+                writer.WriteBoolean("bunkerBreached", state.bunkerBreached);
+                writer.WriteEndObject();
+                writer.WriteEndObject();
+                writer.Flush();
+            }
+            return Encoding.UTF8.GetString(stream.ToArray());
+        }
+
         // Execute procedural path when possible
         if (ctx.GoalAgentAt != null && ctx.GoalHasKey != true && ctx.GoalHasC4 != true && ctx.GoalBunkerBreached != true && ctx.GoalHasStar != true)
         {
-            MoveTo(ctx.GoalAgentAt);
-            return string.Join("\n", ctx.Steps);
+            var ok = MoveTo(ctx.GoalAgentAt);
+            return BuildResult(ok ? null : "PATH_NOT_FOUND");
         }
         if (ctx.GoalHasKey == true)
         {
             EnsureKey();
-            return string.Join("\n", ctx.Steps);
+            return BuildResult();
         }
         if (ctx.GoalHasC4 == true)
         {
             EnsureHasC4();
-            return string.Join("\n", ctx.Steps);
+            return BuildResult();
         }
         if (ctx.GoalBunkerBreached == true)
         {
             EnsureBreach();
-            return string.Join("\n", ctx.Steps);
+            return BuildResult();
         }
         if (ctx.GoalHasStar == true)
         {
@@ -440,7 +535,11 @@ public static partial class PlannerBridge
                 ctx.HasStar = true;
                 ctx.StarPresent = false;
             }
-            return string.Join("\n", ctx.Steps);
+            if (ctx.GoalAgentAt != null)
+            {
+                MoveTo(ctx.GoalAgentAt);
+            }
+            return BuildResult();
         }
 
         var domain = new DomainBuilder<BunkerContext>("BunkerDomainDynamic")
@@ -639,6 +738,7 @@ public static partial class PlannerBridge
             .End()
             .Build();
 
+        bool timedOut = false;
         {
             var guard = 0;
             const int MAX_TICKS = 100000;
@@ -648,31 +748,13 @@ public static partial class PlannerBridge
             }
             if (!ctx.Done)
             {
-                ctx.Steps.Add("TIMEOUT");
-                ctx.Done = true;
+                timedOut = true;
             }
         }
 
-        return string.Join("\n", ctx.Steps);
+        // Return structured JSON result
+        return BuildResult(timedOut ? "Timeout" : null, timedOut);
     }
-
-        {
-            var guard = 0;
-            const int MAX_TICKS = 10000;
-            while (!ctx.Done && guard++ < MAX_TICKS)
-            {
-                planner.Tick(domain, ctx);
-            }
-            if (!ctx.Done)
-            {
-                ctx.Steps.Add("TIMEOUT");
-                ctx.Done = true;
-            }
-        }
-
-        return string.Join("\n", ctx.Steps);
-    }
-*/
 
 
     public sealed class BunkerContext : BaseContext

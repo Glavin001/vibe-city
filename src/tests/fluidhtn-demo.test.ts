@@ -3,7 +3,7 @@ import { runDemoOnWorker } from '../lib/fluidhtn';
 
 let dotnetUrl: string;
 beforeAll(async () => {
-  dotnetUrl = new URL('../../public/fluidhtn/_framework/dotnet.js', import.meta.url).href;
+  dotnetUrl = new URL('../../public/planner/_framework/dotnet.js', import.meta.url).href;
 });
 
 describe('FluidHTN WASM demo', () => {

@@ -165,7 +165,7 @@ export default function BunkerFluidPage() {
   async function runFluidPlan() {
     setStatus('Planning...')
     const t0 = performance.now()
-    const worker = new Worker('/workers/fluid-htn.worker.js', { type: 'module' })
+    const worker = new Worker('/workers/planner.worker.js', { type: 'module' })
 
     // Reset world to initial from form
     const nextInitial = formData?.initial || {}
@@ -193,10 +193,15 @@ export default function BunkerFluidPage() {
 
     const steps: string[] = await new Promise((resolve, reject) => {
       worker.onmessage = (ev) => {
-        const { type, steps, elapsedMs, message } = ev.data || {}
+        const { type, steps, result, elapsedMs, message } = ev.data || {}
         if (type === 'result') {
           setLastMs(elapsedMs)
-          resolve(steps)
+          // Prefer JSON shape if provided
+          if (result && Array.isArray(result.plan)) {
+            resolve(result.plan)
+          } else {
+            resolve(steps || [])
+          }
         } else if (type === 'error') {
           reject(new Error(message))
         }

@@ -1,20 +1,18 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-import { planJsonOnWorker, planGoalOnWorker } from '../lib/fluidhtn';
+import { planJsonOnWorker, planGoalOnWorker, PlanResultJson } from '../lib/fluidhtn';
 
 let dotnetUrl: string;
 
 beforeAll(async () => {
-  dotnetUrl = new URL('../../public/fluidhtn/_framework/dotnet.js', import.meta.url).href;
+  // Use freshly built AppBundle location
+  dotnetUrl = new URL('../../public/planner/_framework/dotnet.js', import.meta.url).href;
 });
 
-function parseLines(planText: string) {
-  if (planText && planText.toLowerCase().includes('timeout')) {
-    throw new Error(`Plan contains TIMEOUT:\n${planText}`);
+function getPlan(result: PlanResultJson) {
+  if (result.error && result.error.toLowerCase().includes('timeout')) {
+    throw new Error(`Planner timeout: ${result.error}`);
   }
-  return (planText || '')
-    .split('\n')
-    .map((s) => s.trim())
-    .filter((s) => s && !s.startsWith('#'));
+  return result.plan || [];
 }
 
 function expectInOrder(lines: string[], tokens: string[]) {
@@ -30,14 +28,14 @@ function expectInOrder(lines: string[], tokens: string[]) {
 describe('Bunker Planner', () => {
   it('adjacent move via goal (courtyard -> bunker_door)', async () => {
     const res = await planGoalOnWorker(dotnetUrl, { goal: { agentAt: 'bunker_door' } });
-    const lines = (res || '').split('\n').filter(Boolean);
+    const lines = getPlan(res);
     expect(lines.length).toBeGreaterThanOrEqual(1);
     expect(lines[0]).toBe('MOVE bunker_door');
   });
 
   it('goal key hasKey should generate pickup sequence', async () => {
     const res = await planGoalOnWorker(dotnetUrl, { goal: { hasKey: true } });
-    const lines = (res || '').split('\n').filter(Boolean);
+    const lines = getPlan(res);
     // Should include moving to table then pickup
     expect(lines[0]).toBe('MOVE table_area');
     expect(lines).toContain('PICKUP_KEY');
@@ -46,22 +44,22 @@ describe('Bunker Planner', () => {
 
 describe('FluidHTN WASM goals (ported)', () => {
   it('adjacent move via goal (courtyard -> bunker_door)', async () => {
-    const planText = await planGoalOnWorker(dotnetUrl, { goal: { agentAt: 'bunker_door' } });
-    const lines = parseLines(planText);
+    const result = await planGoalOnWorker(dotnetUrl, { goal: { agentAt: 'bunker_door' } });
+    const lines = getPlan(result);
     expect(lines.length).toBeGreaterThanOrEqual(1);
     expect(lines[0]).toBe('MOVE bunker_door');
   });
 
   it('hasKey plan includes moving to table and pickup', async () => {
-    const planText = await planGoalOnWorker(dotnetUrl, { goal: { hasKey: true } });
-    const lines = parseLines(planText);
+    const result = await planGoalOnWorker(dotnetUrl, { goal: { hasKey: true } });
+    const lines = getPlan(result);
     expect(lines).toContain('PICKUP_KEY');
     expectInOrder(lines, ['MOVE table_area', 'PICKUP_KEY']);
   });
 
   it('hasC4 plan unlocks storage and picks up C4', async () => {
-    const planText = await planGoalOnWorker(dotnetUrl, { goal: { hasC4: true } });
-    const lines = parseLines(planText);
+    const result = await planGoalOnWorker(dotnetUrl, { goal: { hasC4: true } });
+    const lines = getPlan(result);
     expectInOrder(lines, ['MOVE table_area', 'PICKUP_KEY']);
     expect(lines).toContain('UNLOCK_STORAGE');
     expect(lines).toContain('PICKUP_C4');
@@ -69,16 +67,16 @@ describe('FluidHTN WASM goals (ported)', () => {
   });
 
   it('bunkerBreached plan places C4 and detonates', async () => {
-    const planText = await planGoalOnWorker(dotnetUrl, { goal: { bunkerBreached: true } });
-    const lines = parseLines(planText);
+    const result = await planGoalOnWorker(dotnetUrl, { goal: { bunkerBreached: true } });
+    const lines = getPlan(result);
     expect(lines).toContain('PLACE_C4');
     expect(lines).toContain('DETONATE');
     expectInOrder(lines, ['PLACE_C4', 'DETONATE']);
   });
 
   it('hasStar plan completes full mission and picks up star', async () => {
-    const planText = await planGoalOnWorker(dotnetUrl, { goal: { hasStar: true } });
-    const lines = parseLines(planText);
+    const result = await planGoalOnWorker(dotnetUrl, { goal: { hasStar: true } });
+    const lines = getPlan(result);
     expectInOrder(lines, [
       'MOVE table_area',
       'PICKUP_KEY',
@@ -94,8 +92,8 @@ describe('FluidHTN WASM goals (ported)', () => {
   });
 
   it('hasStar + agentAt=table_area returns with star to table in one plan', async () => {
-    const planText = await planGoalOnWorker(dotnetUrl, { goal: { hasStar: true, agentAt: 'table_area' } });
-    const lines = parseLines(planText);
+    const result = await planGoalOnWorker(dotnetUrl, { goal: { hasStar: true, agentAt: 'table_area' } });
+    const lines = getPlan(result);
     // Ensure we pick up the star and then end with an explicit MOVE table_area
     const idxStar = lines.indexOf('PICKUP_STAR');
     const idxReturn = lines.lastIndexOf('MOVE table_area');

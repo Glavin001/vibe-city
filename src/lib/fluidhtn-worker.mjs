@@ -45,7 +45,13 @@ parentPort.on('message', async (msg) => {
     if (cmd === 'planRequest') {
       const E = await ensureExports(msg.dotnetUrl);
       const json = typeof msg.json === 'string' ? msg.json : JSON.stringify(msg.json ?? msg.request ?? {});
-      const result = E.FluidHtnWasm.PlannerBridge.PlanBunkerRequest(json);
+      const resultJson = E.FluidHtnWasm.PlannerBridge.PlanBunkerRequest(json);
+      let result;
+      try {
+        result = JSON.parse(resultJson);
+      } catch (err) {
+        result = { error: 'InvalidJSON', done: false, logs: [], finalState: {}, raw: String(resultJson || '') };
+      }
       parentPort.postMessage({ type: 'result', result });
       return;
     }

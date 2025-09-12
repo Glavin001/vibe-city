@@ -9,6 +9,8 @@ namespace FluidHtnWasm
             AddClass<PlannerBridge.BunkerPlanRequest>();
             AddClass<PlannerBridge.BunkerInitial>();
             AddClass<PlannerBridge.BunkerGoal>();
+            AddClass<PlannerBridge.BunkerState>();
+            AddClass<PlannerBridge.PlanResultJson>();
             AddEnum<PlannerBridge.MyWorldState>();
         }
     }

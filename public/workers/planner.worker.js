@@ -2,6 +2,9 @@
 // Requires the AppBundle to be served at /fluidhtn/_framework/
 
 self.onmessage = async (e) => {
+  // const MODULE_PATH = '/fluidhtn/_framework/dotnet.js';
+  const MODULE_PATH = '/planner/_framework/dotnet.js';
+
   const { type, goalKey, request, json, enableDebug } = e.data || {};
   if (type !== 'plan' && type !== 'planRequest' && type !== 'planJson' && type !== 'runDemo') return;
   const t0 = performance.now();
@@ -9,11 +12,11 @@ self.onmessage = async (e) => {
     console.log('[fluid-htn.worker] plan: start', { type, goalKey, enableDebug });
     let dotnetModule;
     try {
-      dotnetModule = await import('/fluidhtn/_framework/dotnet.js');
+      dotnetModule = await import(MODULE_PATH);
     } catch (err) {
       // Fallback to relative path if hosted differently
       console.warn('[fluid-htn.worker] primary import failed; trying relative', err);
-      dotnetModule = await import('../fluidhtn/_framework/dotnet.js');
+      dotnetModule = await import(`../${MODULE_PATH}`);
     }
     const { dotnet } = dotnetModule;
     const { getAssemblyExports, getConfig } = await dotnet.create();
@@ -45,6 +48,20 @@ self.onmessage = async (e) => {
       const payload = typeof request === 'string' ? request : JSON.stringify(request || {});
       console.log('[fluid-htn.worker] calling PlanBunkerRequest');
       planText = exports.FluidHtnWasm.PlannerBridge.PlanBunkerRequest(payload);
+      // New JSON result shape from C#
+      try {
+        const result = JSON.parse(String(planText || '{}'));
+        const t1 = performance.now();
+        if (result && result.error) {
+          self.postMessage({ type: 'error', message: String(result.error), elapsedMs: Math.round(t1 - t0), result });
+          return;
+        }
+        self.postMessage({ type: 'result', result, steps: Array.isArray(result?.plan) ? result.plan : [], elapsedMs: Math.round(t1 - t0) });
+        return;
+      } catch (err) {
+        // Fallthrough to legacy parsing
+        console.error(err)
+      }
     } else if (type === 'planJson') {
       const payload = typeof json === 'string' ? json : JSON.stringify(json || {});
       console.log('[fluid-htn.worker] calling PlanBunkerJson');
@@ -57,7 +74,7 @@ self.onmessage = async (e) => {
       planText = exports.FluidHtnWasm.PlannerBridge.PlanBunker();
     }
 
-    // Filter lines; drop empty and debug lines beginning with '#'
+    // Legacy text result fallback: Filter lines; drop empty and debug lines beginning with '#'
     const allLines = (planText || '').split('\n');
     const steps = allLines.map((s) => s.trim()).filter((s) => s && !s.startsWith('#'));
     const t1 = performance.now();
