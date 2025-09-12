@@ -39,7 +39,7 @@ COPY --link ./ /work/app/
 ARG AOT=false
 RUN --mount=type=cache,target=/root/.nuget/packages \
     --mount=type=cache,target=/work/app/obj \
-    dotnet publish -c Release -o /out /work/app/FluidHtnWasm.csproj -p:RunAOTCompilation=${AOT} --no-restore
+    dotnet publish -c Release -o /out /work/app/FluidHtnWasm.csproj -p:RunAOTCompilation=${AOT}
 
 # Generate TypeScript types from C# using TypeGen after publish (source exists in /work/app)
 WORKDIR /work/app
