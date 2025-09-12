@@ -510,46 +510,6 @@ public static partial class PlannerBridge
             return Encoding.UTF8.GetString(stream.ToArray());
         }
 
-        // FIXME: Want to remove this. The Planner should be able to handle all goals.
-        // Execute procedural path when possible
-        if (ctx.GoalAgentAt != null && ctx.GoalHasKey != true && ctx.GoalHasC4 != true && ctx.GoalBunkerBreached != true && ctx.GoalHasStar != true)
-        {
-            var ok = MoveTo(ctx.GoalAgentAt);
-            return BuildResult(ok ? null : "PATH_NOT_FOUND");
-        }
-        if (ctx.GoalHasKey == true)
-        {
-            EnsureKey();
-            return BuildResult();
-        }
-        if (ctx.GoalHasC4 == true)
-        {
-            EnsureHasC4();
-            return BuildResult();
-        }
-        if (ctx.GoalBunkerBreached == true)
-        {
-            EnsureBreach();
-            return BuildResult();
-        }
-        if (ctx.GoalHasStar == true)
-        {
-            EnsureBreach();
-            MoveTo(BunkerWorld.Nodes.BunkerInterior);
-            MoveTo(BunkerWorld.Nodes.StarPos);
-            if (ctx.AgentAt == BunkerWorld.Nodes.StarPos && !ctx.HasStar && ctx.StarPresent)
-            {
-                ctx.Steps.Add("PICKUP_STAR");
-                ctx.HasStar = true;
-                ctx.StarPresent = false;
-            }
-            if (ctx.GoalAgentAt != null)
-            {
-                MoveTo(ctx.GoalAgentAt);
-            }
-            return BuildResult();
-        }
-
         var domain = new DomainBuilder<BunkerContext>("BunkerDomainDynamic")
             .Sequence("MissionGoal")
             .Select("GoalSwitch")

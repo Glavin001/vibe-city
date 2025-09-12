@@ -97,8 +97,8 @@ describe('FluidHTN WASM goals (ported)', () => {
     // Ensure we pick up the star and then end with an explicit MOVE table_area
     const idxStar = lines.indexOf('PICKUP_STAR');
     const idxReturn = lines.lastIndexOf('MOVE table_area');
-    expect(idxStar).toBeGreaterThan(-1);
-    expect(idxReturn).toBeGreaterThan(idxStar);
+    expect(idxStar, `PICKUP_STAR not found in plan lines: ${JSON.stringify(lines)}`).toBeGreaterThan(-1);
+    expect(idxReturn, `MOVE table_area does not appear after PICKUP_STAR in plan lines: ${JSON.stringify(lines)}`).toBeGreaterThan(idxStar);
     expect(lines[lines.length - 1]).toBe('MOVE table_area');
   });
 
@@ -174,7 +174,7 @@ describe('FluidHTN WASM goals (ported)', () => {
     expect(lines[lines.length - 1]).toBe('PICKUP_STAR');
   });
 
-  it.skip('target is storage interior: picks up key, unlocks storage, moves to storage interior', async () => {
+  it('target is storage interior: picks up key, unlocks storage, moves to storage interior', async () => {
     const result = await planGoalOnWorker(dotnetUrl, {
       goal: { agentAt: 'storage_interior' }
     });
@@ -193,11 +193,11 @@ describe('FluidHTN WASM goals (ported)', () => {
     expect(lines).not.toContain('MOVE bunker_interior');
     // Should end at storage interior
     const lastMoveIdx = lines.lastIndexOf('MOVE storage_interior');
-    expect(lastMoveIdx).toBeGreaterThan(-1);
+    expect(lastMoveIdx, `MOVE storage_interior not found in plan lines: ${JSON.stringify(lines)}`).toBeGreaterThan(-1);
     expect(lines[lastMoveIdx]).toBe('MOVE storage_interior');
   });
 
-  it.skip('goal hasKey and hasC4 (but not hasStar): picks up key and C4, does not pick up star', async () => {
+  it('goal hasKey and hasC4 (but not hasStar): picks up key and C4, does not pick up star', async () => {
     const result = await planGoalOnWorker(dotnetUrl, {
       goal: { hasKey: true, hasC4: true }
     });
