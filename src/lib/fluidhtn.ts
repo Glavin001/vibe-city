@@ -1,8 +1,31 @@
 
 // Goal is expressed directly as a flexible object, not as a key
 
-import { BunkerGoal } from '@/generated/fluidhtn/bunker-goal';
-import { BunkerInitial } from '@/generated/fluidhtn/bunker-initial';
+// FIXME: Generated types are invalid, property has no initializer.
+// import { BunkerGoal } from '@/generated/fluidhtn/bunker-goal';
+// import { BunkerInitial } from '@/generated/fluidhtn/bunker-initial';
+
+// Inline types (avoid importing generated TS from build/public)
+export interface BunkerGoal {
+  agentAt: string;
+  hasKey: boolean;
+  hasC4: boolean;
+  bunkerBreached: boolean;
+  hasStar: boolean;
+}
+
+export interface BunkerInitial {
+  agentAt?: string;
+  keyOnTable?: boolean;
+  c4Available?: boolean;
+  starPresent?: boolean;
+  hasKey?: boolean;
+  hasC4?: boolean;
+  hasStar?: boolean;
+  storageUnlocked?: boolean;
+  c4Placed?: boolean;
+  bunkerBreached?: boolean;
+}
 
 // Minimal interface of the C# exports we invoke; avoids depending on generated types
 export type DotnetExports = {

@@ -103,32 +103,40 @@ export const RAW_EDGES: Edge<GateState>[] = [
 ]
 
 export function makeAdjacency<S>(raw: Edge<S>[]) {
-  const map: Record<string, Array<{ to: NodeId; when: (s: S) => boolean }>> = {}
+  const map: Record<string, Array<{ to: NodeId; when: (s: S) => boolean }>> = {};
   for (const [a, b, when] of raw) {
-    ;(map[a] ||= []).push({ to: b, when })
-    ;(map[b] ||= []).push({ to: a, when })
+    if (!map[a]) {
+      map[a] = [];
+    }
+    map[a].push({ to: b, when });
+
+    if (!map[b]) {
+      map[b] = [];
+    }
+    map[b].push({ to: a, when });
   }
-  return map
+  return map;
 }
 
 const ADJ = makeAdjacency(RAW_EDGES)
 
-export function neighbors<S>(state: S, from: NodeId) {
+export function neighbors<S extends GateState>(state: S, from: NodeId): NodeId[] {
   return (ADJ[from] || [])
     .filter((e) => e.when(state))
     .map((e) => e.to)
 }
 
-export function isImmediatellyReachable<S>(state: S, from: NodeId, to: NodeId) {
+export function isImmediatellyReachable<S extends GateState>(state: S, from: NodeId, to: NodeId): boolean {
   return neighbors(state, from).includes(to)
 }
 
-export function findPath<S>(state: S, from: NodeId, to: NodeId): NodeId[] | null {
+export function findPath<S extends GateState>(state: S, from: NodeId, to: NodeId): NodeId[] | null {
   if (from === to) return [from]
   const seen = new Set<NodeId>([from])
   const q: NodeId[] = [from]
   const prev = new Map<NodeId, NodeId>()
   while (q.length) {
+    // biome-ignore lint/style/noNonNullAssertion: <explanation>
     const cur = q.shift()!
     for (const n of neighbors(state, cur)) {
       if (seen.has(n)) continue
