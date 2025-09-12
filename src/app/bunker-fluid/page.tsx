@@ -1,13 +1,52 @@
 'use client'
 
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import type { FC } from 'react'
 import * as THREE from 'three'
-import { Canvas, useFrame } from '@react-three/fiber'
+import { Canvas } from '@react-three/fiber'
 import { CameraControls, Line } from '@react-three/drei'
-import { N, NodeId, NODE_POS, BUILDINGS, Vec3 } from '../../lib/bunker-world'
+import { N, NODE_POS, BUILDINGS } from '../../lib/bunker-world'
+import type { NodeId, Vec3 } from '../../lib/bunker-world'
+
+// Shared node display utilities
+const nodeOptions = [
+  { id: N.COURTYARD, label: 'Courtyard', category: 'outdoor' },
+  { id: N.TABLE, label: 'Table', category: 'outdoor' },
+  { id: N.STORAGE_DOOR, label: 'Storage Door', category: 'storage' },
+  { id: N.STORAGE_INT, label: 'Storage Interior', category: 'storage' },
+  { id: N.C4_TABLE, label: 'C4 Table', category: 'storage' },
+  { id: N.BUNKER_DOOR, label: 'Bunker Door', category: 'bunker' },
+  { id: N.BUNKER_INT, label: 'Bunker Interior', category: 'bunker' },
+  { id: N.STAR, label: 'Star Location', category: 'bunker' },
+  { id: N.SAFE, label: 'Safe Zone', category: 'outdoor' },
+]
+
+const categoryColors = {
+  outdoor: 'bg-emerald-100 text-emerald-800',
+  storage: 'bg-amber-100 text-amber-800',
+  bunker: 'bg-purple-100 text-purple-800',
+}
+
+const categoryIcons = {
+  outdoor: '🌿',
+  storage: '📦',
+  bunker: '🏰',
+}
+
+const NodeDisplay: FC<{ nodeId: NodeId }> = ({ nodeId }) => {
+  const nodeOption = nodeOptions.find(opt => opt.id === nodeId)
+  
+  if (!nodeOption) return <span className="text-white">Unknown</span>
+  
+  return (
+    <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-xs font-medium ${categoryColors[nodeOption.category as keyof typeof categoryColors]}`}>
+      <span>{categoryIcons[nodeOption.category as keyof typeof categoryIcons]}</span>
+      {nodeOption.label}
+    </span>
+  )
+}
 import { Ground, BoxMarker, AgentMesh, Building, LabelSprite, EnhancedObject, SmallSphere, InventoryItem, PickupAnimation } from '../../lib/bunker-scene'
-import Form from '@rjsf/core'
-import validator from '@rjsf/validator-ajv8'
+import PlannerControls from '../../components/PlannerControls'
 
 export default function BunkerFluidPage() {
   const [agentPos, setAgentPos] = useState<Vec3>(NODE_POS[N.COURTYARD])
@@ -48,58 +87,29 @@ export default function BunkerFluidPage() {
     [N.SAFE]: 'Blast Safe Zone',
   }
 
-  const nodeIds = Object.values(N) as NodeId[]
-
-  const schema = useMemo(() => ({
-    type: 'object',
-    properties: {
-      initial: {
-        type: 'object',
-        title: 'Initial State',
-        properties: {
-          agentAt: { type: 'string', oneOf: nodeIds.map((id) => ({ const: id, title: nodeTitle[id] })) },
-          keyOnTable: { type: 'boolean', title: 'Key On Table' },
-          c4Available: { type: 'boolean', title: 'C4 Available' },
-          starPresent: { type: 'boolean', title: 'Star Present' },
-          hasKey: { type: 'boolean', title: 'Has Key' },
-          hasC4: { type: 'boolean', title: 'Has C4' },
-          hasStar: { type: 'boolean', title: 'Has Star' },
-          storageUnlocked: { type: 'boolean', title: 'Storage Unlocked' },
-          c4Placed: { type: 'boolean', title: 'C4 Placed' },
-          bunkerBreached: { type: 'boolean', title: 'Bunker Breached' },
-        },
-      },
-      goal: {
-        type: 'object',
-        title: 'Goal State',
-        properties: {
-          agentAt: { type: 'string', oneOf: [{ const: '', title: '(none)' }, ...nodeIds.map((id) => ({ const: id, title: nodeTitle[id] }))] },
-          hasKey: { type: 'boolean', title: 'Has Key' },
-          hasC4: { type: 'boolean', title: 'Has C4' },
-          bunkerBreached: { type: 'boolean', title: 'Bunker Breached' },
-          hasStar: { type: 'boolean', title: 'Has Star' },
-        },
-      },
-    },
-  }), [])
-
-  const uiSchema = useMemo(() => ({
-    'ui:submitButtonOptions': { norender: true },
-    initial: {
-      agentAt: { 'ui:widget': 'select' },
-    },
-    goal: {
-      agentAt: { 'ui:widget': 'select' },
-    },
-  }), [])
 
   const [autoRun, setAutoRun] = useState(false)
-  const [formData, setFormData] = useState<any>({
-    initial: { ...world },
-    goal: { hasStar: true },
+  const [initialState, setInitialState] = useState({
+    agentAt: N.COURTYARD as NodeId,
+    keyOnTable: true,
+    c4Available: true,
+    starPresent: true,
+    hasKey: false,
+    hasC4: false,
+    hasStar: false,
+    storageUnlocked: false,
+    c4Placed: false,
+    bunkerBreached: false,
   })
-
-  const getAgentPos = () => agentPos
+  const [goalState, setGoalState] = useState<{
+    agentAt?: NodeId
+    hasKey?: boolean
+    hasC4?: boolean
+    bunkerBreached?: boolean
+    hasStar?: boolean
+  }>({
+    hasStar: true,
+  })
 
   useEffect(() => {
     agentPosRef.current = agentPos
@@ -167,20 +177,8 @@ export default function BunkerFluidPage() {
     const t0 = performance.now()
     const worker = new Worker('/workers/planner.worker.js', { type: 'module' })
 
-    // Reset world to initial from form
-    const nextInitial = formData?.initial || {}
-    const nextWorld = {
-      agentAt: (nextInitial.agentAt as NodeId) ?? N.COURTYARD,
-      keyOnTable: nextInitial.keyOnTable ?? true,
-      c4Available: nextInitial.c4Available ?? true,
-      starPresent: nextInitial.starPresent ?? true,
-      hasKey: nextInitial.hasKey ?? false,
-      hasC4: nextInitial.hasC4 ?? false,
-      hasStar: nextInitial.hasStar ?? false,
-      storageUnlocked: nextInitial.storageUnlocked ?? false,
-      c4Placed: nextInitial.c4Placed ?? false,
-      bunkerBreached: nextInitial.bunkerBreached ?? false,
-    }
+    // Reset world to initial state
+    const nextWorld = { ...initialState }
     setWorld(nextWorld)
     const startPos = NODE_POS[nextWorld.agentAt]
     agentPosRef.current = startPos
@@ -188,7 +186,7 @@ export default function BunkerFluidPage() {
 
     const requestPayload = {
       initial: { ...nextWorld },
-      goal: { ...(formData?.goal || {}) },
+      goal: { ...goalState },
     }
 
     const steps: string[] = await new Promise((resolve, reject) => {
@@ -255,7 +253,8 @@ export default function BunkerFluidPage() {
             linePts.push(raise(NODE_POS[n]))
           }
           const key = n
-          ;(nodeSteps[key] ||= []).push({ step: stepIndex, text: pretty(op, arg) })
+          if (!nodeSteps[key]) nodeSteps[key] = []
+          nodeSteps[key].push({ step: stepIndex, text: pretty(op, arg) })
         }
       }
       const markers = Object.keys(nodeSteps).map((k) => {
@@ -339,71 +338,112 @@ export default function BunkerFluidPage() {
       <div className="p-6">
         <h1 className="text-3xl font-bold text-white mb-2">Bunker (Fluid HTN + WASM)</h1>
         <p className="text-gray-300 mb-4">Status: {status} {lastMs != null ? `(planner ${lastMs} ms)` : ''}</p>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-4">
-          <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="text-white font-semibold">Planner Controls</h2>
-              <label className="text-gray-300 text-sm flex items-center gap-2">
-                <input type="checkbox" checked={autoRun} onChange={(e) => setAutoRun(e.target.checked)} /> Auto-run
-              </label>
-            </div>
-            <div className="flex items-center gap-4 mb-3 text-gray-300 text-sm">
-              <label className="flex items-center gap-2">
-                <input type="checkbox" checked={showPlanVis} onChange={(e) => setShowPlanVis(e.target.checked)} /> Show plan visualization
-              </label>
-            </div>
-            <Form
-              schema={schema as any}
-              uiSchema={uiSchema as any}
-              formData={formData}
-              onChange={(e) => {
-                setFormData(e.formData)
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-4">
+          <div className="lg:col-span-2">
+            <PlannerControls
+              initialState={initialState}
+              goalState={goalState}
+              autoRun={autoRun}
+              showPlanVis={showPlanVis}
+              isPlanning={status === 'Planning...'}
+              onInitialStateChange={(state) => {
+                setInitialState(state)
                 if (autoRun) {
-                  // debounce minimal
                   setTimeout(() => runFluidPlan(), 0)
                 }
               }}
-              onSubmit={(e) => runFluidPlan()}
-              validator={validator as any}
-            >
-              <></>
-            </Form>
-            <button onClick={runFluidPlan} className="mt-3 bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg">Run Plan</button>
+              onGoalStateChange={(goal) => {
+                setGoalState(goal)
+                if (autoRun) {
+                  setTimeout(() => runFluidPlan(), 0)
+                }
+              }}
+              onAutoRunChange={setAutoRun}
+              onShowPlanVisChange={setShowPlanVis}
+              onRunPlan={runFluidPlan}
+            />
           </div>
-          <div className="bg-gray-800 rounded-lg p-4 border border-gray-700">
-            <h2 className="text-white font-semibold mb-3">Current State</h2>
-            <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-gray-300 text-sm">
-              <div className="opacity-80">Agent At</div>
-              <div className="font-medium">{nodeTitle[world.agentAt]}</div>
-
-              <div className="opacity-80">Key On Table</div>
-              <div className="font-mono">{String(world.keyOnTable)}</div>
-
-              <div className="opacity-80">C4 Available</div>
-              <div className="font-mono">{String(world.c4Available)}</div>
-
-              <div className="opacity-80">Star Present</div>
-              <div className="font-mono">{String(world.starPresent)}</div>
-
-              <div className="opacity-80">Has Key</div>
-              <div className="font-mono">{String(world.hasKey)}</div>
-
-              <div className="opacity-80">Has C4</div>
-              <div className="font-mono">{String(world.hasC4)}</div>
-
-              <div className="opacity-80">Has Star</div>
-              <div className="font-mono">{String(world.hasStar)}</div>
-
-              <div className="opacity-80">Storage Unlocked</div>
-              <div className="font-mono">{String(world.storageUnlocked)}</div>
-
-              <div className="opacity-80">C4 Placed</div>
-              <div className="font-mono">{String(world.c4Placed)}</div>
-
-              <div className="opacity-80">Bunker Breached</div>
-              <div className="font-mono">{String(world.bunkerBreached)}</div>
+          <div className="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden">
+            <div className="bg-gray-750 px-3 py-2 border-b border-gray-700">
+              <h2 className="text-sm font-semibold text-white flex items-center gap-1.5">
+                <span className="text-green-400 text-sm">📊</span>
+                Current State
+              </h2>
             </div>
-            <a href="/" className="inline-block mt-4 bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg transition-colors">← Back to Home</a>
+            <div className="p-3">
+              <div className="space-y-1">
+                <div className="flex justify-between items-center py-0.5">
+                  <span className="text-xs text-gray-400">Agent At</span>
+                  <NodeDisplay nodeId={world.agentAt} />
+                </div>
+
+                <div className="flex justify-between items-center py-0.5">
+                  <span className="text-xs text-gray-400">Key On Table</span>
+                  <span className={`text-xs font-mono ${world.keyOnTable ? 'text-green-400' : 'text-red-400'}`}>
+                    {String(world.keyOnTable)}
+                  </span>
+                </div>
+
+                <div className="flex justify-between items-center py-0.5">
+                  <span className="text-xs text-gray-400">C4 Available</span>
+                  <span className={`text-xs font-mono ${world.c4Available ? 'text-green-400' : 'text-red-400'}`}>
+                    {String(world.c4Available)}
+                  </span>
+                </div>
+
+                <div className="flex justify-between items-center py-0.5">
+                  <span className="text-xs text-gray-400">Star Present</span>
+                  <span className={`text-xs font-mono ${world.starPresent ? 'text-green-400' : 'text-red-400'}`}>
+                    {String(world.starPresent)}
+                  </span>
+                </div>
+
+                <div className="flex justify-between items-center py-0.5">
+                  <span className="text-xs text-gray-400">Has Key</span>
+                  <span className={`text-xs font-mono ${world.hasKey ? 'text-green-400' : 'text-red-400'}`}>
+                    {String(world.hasKey)}
+                  </span>
+                </div>
+
+                <div className="flex justify-between items-center py-0.5">
+                  <span className="text-xs text-gray-400">Has C4</span>
+                  <span className={`text-xs font-mono ${world.hasC4 ? 'text-green-400' : 'text-red-400'}`}>
+                    {String(world.hasC4)}
+                  </span>
+                </div>
+
+                <div className="flex justify-between items-center py-0.5">
+                  <span className="text-xs text-gray-400">Has Star</span>
+                  <span className={`text-xs font-mono ${world.hasStar ? 'text-green-400' : 'text-red-400'}`}>
+                    {String(world.hasStar)}
+                  </span>
+                </div>
+
+                <div className="flex justify-between items-center py-0.5">
+                  <span className="text-xs text-gray-400">Storage Unlocked</span>
+                  <span className={`text-xs font-mono ${world.storageUnlocked ? 'text-green-400' : 'text-red-400'}`}>
+                    {String(world.storageUnlocked)}
+                  </span>
+                </div>
+
+                <div className="flex justify-between items-center py-0.5">
+                  <span className="text-xs text-gray-400">C4 Placed</span>
+                  <span className={`text-xs font-mono ${world.c4Placed ? 'text-green-400' : 'text-red-400'}`}>
+                    {String(world.c4Placed)}
+                  </span>
+                </div>
+
+                <div className="flex justify-between items-center py-0.5">
+                  <span className="text-xs text-gray-400">Bunker Breached</span>
+                  <span className={`text-xs font-mono ${world.bunkerBreached ? 'text-green-400' : 'text-red-400'}`}>
+                    {String(world.bunkerBreached)}
+                  </span>
+                </div>
+              </div>
+            </div>
+            <div className="bg-gray-750 px-3 py-2 border-t border-gray-700">
+              <a href="/" className="inline-block w-full text-center bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-3 rounded-lg transition-colors text-sm">← Back to Home</a>
+            </div>
           </div>
         </div>
 
