@@ -23,6 +23,7 @@
 /public/planner/
 /src/generated/
 /src/lib/planner/types/
+/public/vad/
 
 # misc
 .DS_Store
