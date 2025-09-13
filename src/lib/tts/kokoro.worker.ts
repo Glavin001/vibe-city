@@ -18,16 +18,18 @@ type Device = "webgpu" | "wasm";
     self.postMessage({ status: "ready", voices: tts.voices, device });
 
     self.addEventListener("message", async (e: MessageEvent) => {
-      const { type, text, voice, requestId } = (e.data ?? {}) as {
+      const { type, text, voice, speed, requestId } = (e.data ?? {}) as {
         type?: string;
         text?: string;
         voice?: string;
+        speed?: number;
         requestId?: number;
       };
       if (type !== "generate") return;
 
       try {
-        const audio = await tts.generate(String(text ?? ""), { voice: voice as unknown as never });
+        const s = typeof speed === "number" && Number.isFinite(speed) ? speed : undefined;
+        const audio = await tts.generate(String(text ?? ""), { voice: voice as unknown as never, speed: s as unknown as never });
         const blob = audio.toBlob();
         const url = URL.createObjectURL(blob);
         self.postMessage({ status: "complete", audio: url, text, requestId });

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { KokoroWorkerClient } from "../../lib/tts/kokoro-worker-client";
 
 type VoiceInfo = {
   name: string;
@@ -8,14 +9,10 @@ type VoiceInfo = {
   gender: string;
 };
 
-type WorkerMessage =
-  | { status: "device"; device: string }
-  | { status: "ready"; voices: Record<string, VoiceInfo>; device: string }
-  | { status: "error"; error: string; requestId?: number }
-  | { status: "complete"; audio: string; text: string; requestId?: number };
+// Worker message types provided via KokoroWorkerClient
 
 export default function Page() {
-  const workerRef = useRef<Worker | null>(null);
+  const clientRef = useRef<KokoroWorkerClient | null>(null);
 
   const [inputText, setInputText] = useState(
     "Life is like a box of chocolates. You never know what you're gonna get.",
@@ -35,76 +32,47 @@ export default function Page() {
   const nextId = useRef<number>(1);
 
   useEffect(() => {
-    if (workerRef.current) return;
-    // Create worker module (bundled by Next/Webpack)
-    workerRef.current = new Worker(
-      new URL("./kokoro.worker.ts", import.meta.url),
-      { type: "module" },
-    );
-
-    const onMessage = (e: MessageEvent<WorkerMessage>) => {
-      const data = e.data;
-      switch (data.status) {
-        case "device":
-          setDevice(data.device);
-          setLoadingMessage(`Loading model (device="${data.device}")`);
-          break;
-        case "ready":
-          setDevice(data.device);
-          setVoices(data.voices);
-          setStatus("ready");
-          // default to first voice if available
-          if (data.voices && Object.keys(data.voices).length > 0) {
-            const first = Object.keys(data.voices)[0];
-            setSelectedSpeaker(first);
-          }
-          break;
-        case "error":
-          setError(data.error);
-          setStatus("ready");
-          break;
-        case "complete": {
-          const now = performance.now();
-          const id = data.requestId ?? 0;
-          const start = pendingStarts.current.get(id) ?? now;
-          const ms = Math.max(0, Math.round(now - start));
-          pendingStarts.current.delete(id);
-          setResults((prev) => [{ text: data.text, src: data.audio, ms }, ...prev]);
-          setStatus("ready");
-          break; }
+    if (clientRef.current) return;
+    const client = new KokoroWorkerClient();
+    clientRef.current = client;
+    client.init((voices, device) => {
+      setDevice(device);
+      setLoadingMessage(`Loading model (device="${device}")`);
+      setVoices(voices);
+      setStatus("ready");
+      if (voices && Object.keys(voices).length > 0) {
+        setSelectedSpeaker(Object.keys(voices)[0]);
       }
-    };
-
-    const onError = (e: ErrorEvent) => {
-      // eslint-disable-next-line no-console
-      console.error("Worker error:", e);
-      setError(e.message);
-    };
-
-    workerRef.current.addEventListener("message", onMessage as EventListener);
-    workerRef.current.addEventListener("error", onError as EventListener);
-
+    }, (err) => {
+      setError(err.message);
+      setStatus("ready");
+    });
     return () => {
-      if (!workerRef.current) return;
-      workerRef.current.removeEventListener(
-        "message",
-        onMessage as EventListener,
-      );
-      workerRef.current.removeEventListener("error", onError as EventListener);
-      workerRef.current.terminate();
-      workerRef.current = null;
+      client.dispose();
+      clientRef.current = null;
     };
   }, []);
 
   const onGenerate = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!workerRef.current) return;
+    const client = clientRef.current;
+    if (!client || !client.isReady) return;
     const text = inputText.trim();
     if (text === "") return;
     setStatus("running");
     const id = nextId.current++;
     pendingStarts.current.set(id, performance.now());
-    workerRef.current.postMessage({ type: "generate", text, voice: selectedSpeaker, requestId: id });
+    client.generate({ text, voice: selectedSpeaker }).then(({ url }) => {
+      const now = performance.now();
+      const start = pendingStarts.current.get(id) ?? now;
+      const ms = Math.max(0, Math.round(now - start));
+      pendingStarts.current.delete(id);
+      setResults((prev) => [{ text, src: url, ms }, ...prev]);
+      setStatus("ready");
+    }).catch((e) => {
+      setError(e.message);
+      setStatus("ready");
+    });
   };
 
   return (
@@ -118,6 +86,11 @@ export default function Page() {
             <a className="underline" href="https://huggingface.co/docs/transformers.js" target="_blank" rel="noreferrer">Transformers.js</a>
             {device ? ` — device: ${device}` : ""}
           </p>
+          {status === "boot" && (
+            <div className="inline-block mt-2 text-sm text-gray-600 bg-gray-100 border rounded px-3 py-1">
+              Loading TTS model and voices… Controls are disabled until ready.
+            </div>
+          )}
         </div>
 
         <div className="border rounded-xl p-4 space-y-4">
@@ -134,7 +107,8 @@ export default function Page() {
               <select
                 value={selectedSpeaker}
                 onChange={(e) => setSelectedSpeaker(e.target.value)}
-                className="flex-1 rounded-lg border px-3 py-2"
+                className="flex-1 rounded-lg border px-3 py-2 disabled:opacity-50"
+                disabled={status !== "ready" || Object.keys(voices).length === 0}
               >
                 {Object.entries(voices).map(([id, v]) => (
                   <option key={id} value={id}>
@@ -146,7 +120,7 @@ export default function Page() {
               <button
                 type="submit"
                 className="rounded-lg px-4 py-2 text-white bg-blue-600 disabled:opacity-50"
-                disabled={status === "running" || inputText.trim() === ""}
+                disabled={status !== "ready" || inputText.trim() === ""}
               >
                 {status === "running" ? "Generating..." : "Generate"}
               </button>
