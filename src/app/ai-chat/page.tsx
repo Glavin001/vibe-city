@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useChat } from "@/ai/hooks/use-chat";
+import { useClientSideChat } from "@/ai/hooks/use-chat";
 import { google } from "@/ai/providers/google";
 
 const LOCAL_STORAGE_KEY = "GOOGLE_API_KEY";
@@ -70,7 +70,7 @@ export default function AIChatPage() {
 
 function ChatUI({ apiKey }: { apiKey: string }) {
   const model = useMemo(() => google("gemini-2.5-flash-lite", { apiKey }), [apiKey]);
-  const { messages, sendMessage, status, error } = useChat(model, {});
+  const { messages, sendMessage, status, error } = useClientSideChat(model, {});
 
   return (
     <>
@@ -79,6 +79,9 @@ function ChatUI({ apiKey }: { apiKey: string }) {
           <div key={m.id} style={{ marginBottom: 12 }}>
             <div style={{ fontSize: 12, color: "#666" }}>{m.role === "user" ? "You" : "AI"}</div>
             {m.parts.map((part, i) => {
+              if (part.type === "step-start") {
+                  return null;
+              }
               if (part.type === "text") {
                 return (
                   <div key={`${m.id}-${i}`} style={{ whiteSpace: "pre-wrap" }}>
@@ -86,8 +89,28 @@ function ChatUI({ apiKey }: { apiKey: string }) {
                   </div>
                 );
               }
+              if (part.type === "reasoning") {
+                return (
+                  <div
+                    key={`${m.id}-${i}`}
+                    style={{
+                      whiteSpace: "pre-wrap",
+                      color: "#888",
+                      fontStyle: "italic",
+                      marginLeft: 24,
+                      fontSize: 14,
+                    }}
+                  >
+                    {part.text}
+                  </div>
+                );
+              }
               return (
-                <pre key={`${m.id}-${i}`} style={{ overflowX: "auto", background: "#f7f7f7", padding: 8 }}>
+                <pre key={`${m.id}-${i}`} style={{
+                  overflowX: "auto",
+                  // background: "#f7f7f7",
+                  padding: 8,
+                }}>
                   {JSON.stringify(part, null, 2)}
                 </pre>
               );

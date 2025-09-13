@@ -1,16 +1,15 @@
-import {
-  type UIMessage,
-  type UseChatOptions,
-  useChat as useChatSDK,
-} from "@ai-sdk/react";
+import { type UIMessage, type UseChatOptions, useChat as useChatSDK } from "@ai-sdk/react";
 import { type ChatInit, type LanguageModel } from "ai";
 import { useEffect, useRef } from "react";
 import { CustomChatTransport } from "../custom-chat-transport";
 
-type CustomChatOptions = Omit<ChatInit<UIMessage>, "transport"> &
+type ClientChatOptions = Omit<ChatInit<UIMessage>, "transport"> &
   Pick<UseChatOptions<UIMessage>, "experimental_throttle" | "resume">;
 
-export function useChat(model: LanguageModel, options?: CustomChatOptions) {
+export function useClientSideChat(
+  model: LanguageModel,
+  options?: ClientChatOptions,
+) {
   const transportRef = useRef<CustomChatTransport | null>(null);
 
   if (!transportRef.current) {
@@ -21,10 +20,12 @@ export function useChat(model: LanguageModel, options?: CustomChatOptions) {
     transportRef.current?.updateModel(model);
   }, [model]);
 
-  return useChatSDK({
-    transport: transportRef.current,
-    ...options,
-  });
+  const setSystemPrompt = (prompt: string) => {
+    transportRef.current?.updateSystemPrompt(prompt ?? "");
+  };
+
+  const result = useChatSDK({ transport: transportRef.current, ...(options ?? {}) });
+  return { ...result, setSystemPrompt } as typeof result & { setSystemPrompt: (prompt: string) => void };
 }
 
 

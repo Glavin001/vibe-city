@@ -7,9 +7,11 @@ import {
   type LanguageModel,
   type UIMessageChunk,
 } from "ai";
+import type { GoogleGenerativeAIProviderOptions } from "@ai-sdk/google";
 
 export class CustomChatTransport implements ChatTransport<UIMessage> {
   private model: LanguageModel;
+  private systemPrompt: string = "";
 
   constructor(model: LanguageModel) {
     this.model = model;
@@ -17,6 +19,10 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
 
   updateModel(model: LanguageModel) {
     this.model = model;
+  }
+
+  updateSystemPrompt(prompt: string) {
+    this.systemPrompt = prompt ?? "";
   }
 
   async sendMessages(
@@ -34,7 +40,27 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
       messages: convertToModelMessages(options.messages),
       abortSignal: options.abortSignal,
       toolChoice: "auto",
+      system: this.systemPrompt || undefined,
+      providerOptions: {
+        google: {
+          thinkingConfig: {
+            // thinkingBudget: 8192,
+            thinkingBudget: 512,
+            includeThoughts: true,
+          },
+        } satisfies GoogleGenerativeAIProviderOptions,
+      },
     });
+
+    console.log('Result', result);
+
+    /*
+    result.consumeStream();
+
+    for await (const chunk of result.fullStream) {
+      console.log('Chunk', chunk);
+    }
+      */
 
     return result.toUIMessageStream({
       onError: (error) => {

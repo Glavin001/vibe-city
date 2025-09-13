@@ -27,6 +27,42 @@ export default function Home() {
         >
           ⚡ Fluid HTN Demo
         </a>
+        <a
+          href="/ai-chat"
+          className="rounded-lg bg-gray-800 hover:bg-gray-700 text-white font-medium text-center py-3 px-4 transition-colors"
+        >
+          🤖 AI Chat
+        </a>
+        <a
+          href="/ai-chat-advanced"
+          className="rounded-lg bg-gray-800 hover:bg-gray-700 text-white font-medium text-center py-3 px-4 transition-colors"
+        >
+          🧠 AI Chat (Advanced)
+        </a>
+        <a
+          href="/npc-chat"
+          className="rounded-lg bg-gray-800 hover:bg-gray-700 text-white font-medium text-center py-3 px-4 transition-colors"
+        >
+          🧑‍🚀 NPC Chat
+        </a>
+        <a
+          href="/face-api"
+          className="rounded-lg bg-gray-800 hover:bg-gray-700 text-white font-medium text-center py-3 px-4 transition-colors"
+        >
+          🙂 Face API
+        </a>
+        <a
+          href="/kokoro-tts"
+          className="rounded-lg bg-gray-800 hover:bg-gray-700 text-white font-medium text-center py-3 px-4 transition-colors"
+        >
+          🗣️ Kokoro TTS
+        </a>
+        <a
+          href="/vad"
+          className="rounded-lg bg-gray-800 hover:bg-gray-700 text-white font-medium text-center py-3 px-4 transition-colors"
+        >
+          🎙️ VAD Demo
+        </a>
       </div>
     </div>
   );
