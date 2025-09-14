@@ -21,8 +21,9 @@ export interface WhisperOptions {
   /**
    * Callback for incremental text updates during recognition
    * This is called multiple times during recognition as tokens are generated
+   * @deprecated Doesn't work
    */
-  onTextUpdate?: (text: string) => void;
+  // onTextUpdate?: (text: string) => void;
   /**
    * Callback for when the status changes
    */
@@ -116,7 +117,7 @@ export function useWhisper({
   language = 'en',
   autoStart = false,
   onTextChange,
-  onTextUpdate,
+  // onTextUpdate,
   onStatusChange,
   onError,
   dataRequestInterval = 250,
@@ -134,7 +135,6 @@ export function useWhisper({
     isRecording,
     stream,
     chunks,
-    requestData,
   } = useAudioRecorder({
     mimeType: 'audio/webm',
     dataRequestInterval,
@@ -174,7 +174,7 @@ export function useWhisper({
       }
     },
     onTextChange,
-    onTextUpdate,
+    // onTextUpdate,
     onError: (err) => {
       setError(err);
       onError?.(err);
@@ -184,7 +184,16 @@ export function useWhisper({
   // Process audio chunks when they are available
   useEffect(() => {
     // Only process if we have chunks, are recording, not already processing, and the model is ready
-    if (!chunks.length || !isRecording || isProcessing || !isReady) return;
+    // Additionally, avoid calling generate while recognition is mid-flight (status 'start'/'update')
+    if (
+      !chunks.length ||
+      !isRecording ||
+      isProcessing ||
+      !isReady ||
+      (status !== 'ready' && status !== 'complete')
+    ) {
+      return;
+    }
 
     const processAudio = async () => {
       try {
@@ -219,7 +228,7 @@ export function useWhisper({
           audio = audio.slice(-MAX_SAMPLES);
         }
 
-        // Generate text from the audio
+        // Generate text from the audio (only when recognition is idle/ready)
         console.log('Sending audio to speech recognition...');
         generateText(audio);
       } catch (err) {
@@ -233,7 +242,7 @@ export function useWhisper({
     };
 
     processAudio();
-  }, [chunks, isRecording, isProcessing, isReady, generateText, onError]);
+  }, [chunks, isRecording, isProcessing, isReady, status, generateText, onError]);
 
   // Safe reset function that handles the autoStart flag
   const safeResetRecording = useCallback(() => {

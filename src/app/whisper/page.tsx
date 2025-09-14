@@ -64,6 +64,7 @@ export default function WhisperDemoPage() {
 
       <Whisper
         onTextChange={setFinalText}
+        // onTextUpdate={(t) => console.log("onTextUpdate", t)}
         onStatusChange={setStatus}
         onError={(e) => setError(e || null)}
         autoStart={false}

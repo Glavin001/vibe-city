@@ -13,8 +13,9 @@ export interface WhisperProps {
   /**
    * Callback for incremental text updates during recognition
    * This is called multiple times during recognition as tokens are generated
+   * @deprecated Doesn't work
    */
-  onTextUpdate?: (text: string) => void;
+  // onTextUpdate?: (text: string) => void;
   /**
    * The initial language to use for speech recognition
    * @default 'en'
@@ -84,7 +85,7 @@ export interface WhisperProps {
  */
 export function Whisper({
   onTextChange,
-  onTextUpdate,
+  // onTextUpdate,
   initialLanguage = 'en',
   autoStart = false,
   onStatusChange,
@@ -127,7 +128,7 @@ export function Whisper({
     language,
     autoStart,
     onTextChange,
-    onTextUpdate,
+    // onTextUpdate,
     onStatusChange,
     onError,
   });
@@ -253,7 +254,13 @@ export function Whisper({
       {showTranscription && (
         <div className="w-full max-w-md mb-4 relative">
           <div className="w-full min-h-[80px] max-h-[200px] overflow-y-auto border rounded p-2">
-            {isReady ? (text || (!isRecording && !isProcessing ? 'Speak to see transcription...' : '')) : ''}
+            {isReady
+              ? text
+                ? text
+                : isRecording || isProcessing
+                ? 'Listening...'
+                : 'Speak to see transcription...'
+              : ''}
           </div>
           {showTps && tps !== null && (
             <div className="absolute bottom-2 right-2 text-xs text-gray-500">{tps.toFixed(2)} tok/s</div>
