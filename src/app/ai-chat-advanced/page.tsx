@@ -552,7 +552,7 @@ export default function AdvancedAIChatPage() {
               <></>
             </Form>
           </div>
-        </div> d
+        </div>
 
         {/* Column 2: System Prompt */}
         <div className="border-r border-gray-700 bg-gray-900 flex flex-col overflow-hidden">
