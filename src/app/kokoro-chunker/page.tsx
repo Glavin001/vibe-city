@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Chunk } from "../../lib/sentence-stream-chunker/sentence-stream-chunker";
 import { SentenceStreamChunker } from "../../lib/sentence-stream-chunker/sentence-stream-chunker";
 import { KokoroWorkerClient } from "../../lib/tts/kokoro-worker-client";
+import { useTtsQueue } from "../../hooks/use-tts-queue";
 
 type VoiceInfo = {
   name: string;
@@ -43,9 +44,9 @@ export default function Page() {
   // Chunker options
   const [locale, setLocale] = useState<string>("en");
   const [charEnabled, setCharEnabled] = useState<boolean>(true);
-  const [charLimit, setCharLimit] = useState<number>(220);
-  const [wordEnabled, setWordEnabled] = useState<boolean>(false);
-  const [wordLimit, setWordLimit] = useState<number>(45);
+  const [charLimit, setCharLimit] = useState<number>(120);
+  const [wordEnabled, setWordEnabled] = useState<boolean>(true);
+  const [wordLimit, setWordLimit] = useState<number>(10);
   const [softPunctSrc, setSoftPunctSrc] = useState<string>(defaultSoftPunct);
 
   const softPunct: RegExp = useMemo(() => {
@@ -75,13 +76,12 @@ export default function Page() {
   const workerClientRef = useRef<KokoroWorkerClient | null>(null);
   const [voices, setVoices] = useState<Record<string, VoiceInfo>>({});
   const [selectedVoice, setSelectedVoice] = useState<string>("af_heart");
-  const [speed, setSpeed] = useState<number>(1.0);
+  const [speed, setSpeed] = useState<number>(1.3);
   const [device, setDevice] = useState<string | null>(null);
   const [workerError, setWorkerError] = useState<string | null>(null);
   const [workerReady, setWorkerReady] = useState<boolean>(false);
 
   // Playback
-  const audioRef = useRef<HTMLAudioElement | null>(null);
   const [autoplay, setAutoplay] = useState<boolean>(true);
   const [playhead, setPlayhead] = useState<number>(0); // index in uiChunks
   const [isUserPaused, setIsUserPaused] = useState<boolean>(false);
@@ -170,59 +170,22 @@ export default function Page() {
     queueNextGenerationRef.current = queueNextGeneration;
   }, [queueNextGeneration]);
 
-  // Playback autoplay: play next ready chunk at or after playhead
-  useEffect(() => {
-    if (!autoplay || isUserPaused) return;
-    const audio = audioRef.current;
-    if (!audio) return;
-
-    const current = uiChunks[playhead];
-    if (!current) return;
-
-    if (current.status === "ready" && current.audioUrl) {
-      // Start playing this chunk
-      audio.src = current.audioUrl;
-      audio.play().then(() => {
-        setUiChunks((prev) => prev.map((c, i) => (i === playhead ? { ...c, status: "playing" } : c)));
-      }).catch(() => {
-        // Autoplay may be blocked; switch off autoplay
-        setAutoplay(false);
-        setIsUserPaused(true);
-      });
-    } else if (current.status === "played" || current.status === "skipped") {
-      // advance
-      setPlayhead((p) => p + 1);
-    }
-  }, [autoplay, isUserPaused, playhead, uiChunks]);
-
-  // Handle audio events
-  useEffect(() => {
-    const audio = audioRef.current;
-    if (!audio) return;
-    const onEnded = () => {
-      setUiChunks((prev) => prev.map((c, i) => (i === playhead ? { ...c, status: "played" } : c)));
-      setPlayhead((p) => p + 1);
-      // Ensure we remain in autoplay state
-      setIsUserPaused(false);
-    };
-    const onPlay = () => {
-      setIsUserPaused(false);
-    };
-    const onPauseEvent = () => {
-      // Ignore pause events that are a result of reaching the end of the track
-      if (audio.ended) return;
-      setIsUserPaused(true);
-      setUiChunks((prev) => prev.map((c, i) => (i === playhead && c.status === "playing" ? { ...c, status: "paused" } : c)));
-    };
-    audio.addEventListener("ended", onEnded);
-    audio.addEventListener("play", onPlay);
-    audio.addEventListener("pause", onPauseEvent);
-    return () => {
-      audio.removeEventListener("ended", onEnded);
-      audio.removeEventListener("play", onPlay);
-      audio.removeEventListener("pause", onPauseEvent);
-    };
-  }, [playhead]);
+  // Low-latency queued playback (dual audio, preload & swap)
+  const [crossfadeMs, setCrossfadeMs] = useState<number>(800);
+  const { audioARef, audioBRef, activeAudioIndex, play, pause, stop, skip, clearAudioSources } = useTtsQueue({
+    items: useMemo(() => uiChunks.map((c) => ({ audioUrl: c.audioUrl, status: c.status })), [uiChunks]),
+    playhead,
+    setPlayhead,
+    autoplay,
+    setAutoplay,
+    isUserPaused,
+    setIsUserPaused,
+    onStatusChange: (idx, status) => {
+      setUiChunks((prev) => prev.map((c, i) => (i === idx ? { ...c, status } : c)));
+    },
+    onError: (m) => setWorkerError(m),
+    crossfadeMs,
+  });
 
   // Map chunk to UI model
   const toUiChunk = useCallback((c: Chunk): UiChunk => {
@@ -303,43 +266,13 @@ export default function Page() {
   }, [autoStream, cursor, inputText.length, onFlush, onPushChunk]);
 
   // Controls
-  const onPlay = () => {
-    setAutoplay(true);
-    setIsUserPaused(false);
-    const audio = audioRef.current;
-    if (!audio) return;
-    const current = uiChunks[playhead];
-    if (current?.audioUrl) {
-      audio.src = current.audioUrl;
-      audio.play().catch(() => {
-        setAutoplay(false);
-        setIsUserPaused(true);
-      });
-    }
-  };
+  const onPlay = () => { play(); };
 
-  const onPause = () => {
-    const audio = audioRef.current;
-    setIsUserPaused(true);
-    if (audio && !audio.paused) audio.pause();
-  };
+  const onPause = () => { pause(); };
 
-  const onStop = () => {
-    const audio = audioRef.current;
-    if (audio) {
-      audio.pause();
-      audio.currentTime = 0;
-    }
-    setIsUserPaused(true);
-    setAutoplay(false);
-  };
+  const onStop = () => { stop(); };
 
-  const onSkip = () => {
-    const audio = audioRef.current;
-    if (audio && !audio.paused) audio.pause();
-    setUiChunks((prev) => prev.map((c, i) => (i === playhead && (c.status === "playing" || c.status === "paused") ? { ...c, status: "skipped" } : c)));
-    setPlayhead((p) => p + 1);
-  };
+  const onSkip = () => { skip(); };
 
   const onResetAll = () => {
     // Reset everything
@@ -350,6 +283,7 @@ export default function Page() {
     requestToChunkId.current.clear();
     genBusyRef.current = false;
     resetChunker();
+    clearAudioSources();
   };
 
   const remainingChars = Math.max(0, inputText.length - cursor);
@@ -475,10 +409,20 @@ export default function Page() {
             <label className="ml-auto flex items-center gap-2 text-sm text-gray-600">
               <input type="checkbox" checked={autoplay} onChange={(e) => setAutoplay(e.target.checked)} /> Autoplay
             </label>
+            <div className="flex items-center gap-2 ml-4">
+              <label className="text-sm text-gray-600" htmlFor="crossfade-range">Crossover</label>
+              <input id="crossfade-range" type="range" min={0} max={3000} step={10} value={crossfadeMs} onChange={(e) => setCrossfadeMs(Number(e.target.value))} />
+              <span className="text-sm text-gray-600">{crossfadeMs}ms</span>
+            </div>
           </div>
-          <audio ref={audioRef} className="w-full" controls>
-            <track kind="captions" label="TTS audio" />
-          </audio>
+          <div className="relative">
+            <audio ref={audioARef} className={`w-full ${activeAudioIndex === 0 ? "" : "hidden"}`} controls preload="auto">
+              <track kind="captions" label="TTS audio A" />
+            </audio>
+            <audio ref={audioBRef} className={`w-full ${activeAudioIndex === 1 ? "" : "hidden"}`} controls preload="auto">
+              <track kind="captions" label="TTS audio B" />
+            </audio>
+          </div>
         </div>
 
         <div className="border rounded-xl p-4 space-y-2">
