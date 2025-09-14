@@ -63,6 +63,30 @@ export default function Home() {
         >
           🎙️ VAD Demo
         </a>
+        <a
+          href="/bunker-rapier"
+          className="rounded-lg bg-gray-800 hover:bg-gray-700 text-white font-medium text-center py-3 px-4 transition-colors"
+        >
+          ⚡ Bunker (Rapier Physics)
+        </a>
+        <a
+          href="/kokoro-chunker"
+          className="rounded-lg bg-gray-800 hover:bg-gray-700 text-white font-medium text-center py-3 px-4 transition-colors"
+        >
+          ✂️ Kokoro Chunker
+        </a>
+        <a
+          href="/voice-to-voice"
+          className="rounded-lg bg-gray-800 hover:bg-gray-700 text-white font-medium text-center py-3 px-4 transition-colors"
+        >
+          🎤 Voice to Voice
+        </a>
+        <a
+          href="/whisper"
+          className="rounded-lg bg-gray-800 hover:bg-gray-700 text-white font-medium text-center py-3 px-4 transition-colors"
+        >
+          🔊 Whisper STT
+        </a>
       </div>
     </div>
   );
