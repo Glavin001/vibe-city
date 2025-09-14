@@ -107,7 +107,7 @@ export class KokoroWorkerClient {
       if (!w) {
         this.reqMap.delete(id);
         this.errMap.delete(id);
-        reject(new Error("Worker not initialized"));
+        reject(new Error("Kokoro worker not initialized"));
         return;
       }
       w.postMessage({ type: "generate", text, voice, speed, requestId: id });
