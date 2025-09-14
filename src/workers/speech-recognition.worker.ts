@@ -19,7 +19,8 @@ const SAMPLING_RATE = 16000;
 
 let tokenizer: AutoTokenizer | null = null;
 let processor: AutoProcessor | null = null;
-let model: WhisperForConditionalGeneration | null = null;
+type GenerativeModel = { generate: (args: any) => Promise<any> };
+let model: GenerativeModel | null = null;
 let isLoading = false;
 
 const progressCallback: ProgressCallback = (progress: ProgressInfo) => {
@@ -54,14 +55,14 @@ async function ensureModelLoaded(): Promise<void> {
 
     // Prefer WebGPU; if unavailable inside worker, transformers will throw.
     // You can change to 'wasm' as a fallback if needed.
-    model = await WhisperForConditionalGeneration.from_pretrained(MODEL_ID, {
+    model = (await WhisperForConditionalGeneration.from_pretrained(MODEL_ID, {
       dtype: {
         encoder_model: 'fp32',
         decoder_model_merged: 'q4',
       },
       device: 'webgpu',
       progress_callback: progressCallback,
-    });
+    })) as unknown as GenerativeModel;
 
     // Warm up to compile shaders
     await model.generate({
@@ -124,7 +125,7 @@ async function handleGenerate(audio: Float32Array, _language?: string): Promise<
         // Prefer batch_decode to handle arrays
         const decoded = (tokenizer as any).batch_decode
           ? (tokenizer as any).batch_decode([tokenIds], { skip_special_tokens: true })
-          : tokenizer.decode(tokenIds, { skip_special_tokens: true });
+          : (tokenizer as any).decode(tokenIds, { skip_special_tokens: true });
         text = Array.isArray(decoded) ? decoded[0] ?? '' : decoded ?? '';
       } catch {
         // Fallback: string from token IDs length

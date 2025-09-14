@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAudioRecorder } from './use-audio-recorder';
 import { useSpeechRecognition } from './use-speech-recognition';
+import type { SpeechRecognitionStatus } from './use-speech-recognition';
 
 export interface WhisperOptions {
   /**
@@ -27,7 +28,7 @@ export interface WhisperOptions {
   /**
    * Callback for when the status changes
    */
-  onStatusChange?: (status: string) => void;
+  onStatusChange?: (status: SpeechRecognitionStatus) => void;
   /**
    * Callback for when an error occurs
    */
@@ -43,7 +44,7 @@ export interface WhisperResult {
   /**
    * The current status of the speech recognition
    */
-  status: string;
+  status: SpeechRecognitionStatus;
   /**
    * The recognized text
    */
