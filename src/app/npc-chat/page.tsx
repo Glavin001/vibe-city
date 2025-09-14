@@ -53,7 +53,13 @@ const upVector = new THREE.Vector3(0, 1, 0)
 const camForward = new THREE.Vector3()
 const camRight = new THREE.Vector3()
 
-function Player({ poseRef, jumpOffsetRef }: { poseRef: React.MutableRefObject<AgentPose>; jumpOffsetRef: React.MutableRefObject<number> }) {
+function Player({ poseRef, jumpOffsetRef, onLock, onUnlock, startSelector }: {
+  poseRef: React.MutableRefObject<AgentPose>;
+  jumpOffsetRef: React.MutableRefObject<number>;
+  onLock?: () => void;
+  onUnlock?: () => void;
+  startSelector?: string;
+}) {
   const [, get] = useKeyboardControls<Controls>()
   const camera = useThree((state) => state.camera)
 
@@ -90,7 +96,7 @@ function Player({ poseRef, jumpOffsetRef }: { poseRef: React.MutableRefObject<Ag
       pitch: camera.rotation.x,
     }
   })
-  return <PointerLockControls makeDefault />
+  return <PointerLockControls makeDefault onLock={onLock} onUnlock={onUnlock} selector={startSelector} />
 }
 
 function FacingArrow({ origin, yaw, length = 1.5, color = '#22d3ee' }: { origin: Vec3; yaw: number; length?: number; color?: string }) {
@@ -518,6 +524,7 @@ export default function NpcChatPage() {
   const playerPoseRef = useRef<AgentPose>(playerPose)
   const playerJumpOffsetRef = useRef<number>(0)
   const playerWave = useRef<{ amp: number; phase: number }>({ amp: 0, phase: 0 })
+  const [isLocked, setIsLocked] = useState<boolean>(false)
   useEffect(() => {
     const id = setInterval(() => setPlayerPose(playerPoseRef.current), 100)
     return () => clearInterval(id)
@@ -832,7 +839,7 @@ export default function NpcChatPage() {
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2">
-            <div className="w-full h-[80vh] bg-black rounded-lg overflow-hidden">
+            <div className="w-full h-[80vh] bg-black rounded-lg overflow-hidden relative">
               <KeyboardControls map={controlsMap}>
                 <Canvas shadows camera={{ fov: 75 }}>
                   <ambientLight intensity={0.6} />
@@ -904,7 +911,13 @@ export default function NpcChatPage() {
                   ))}
 
                   {/* Player and orientation indicator */}
-                  <Player poseRef={playerPoseRef} jumpOffsetRef={playerJumpOffsetRef} />
+                  <Player
+                    poseRef={playerPoseRef}
+                    jumpOffsetRef={playerJumpOffsetRef}
+                    onLock={() => setIsLocked(true)}
+                    onUnlock={() => setIsLocked(false)}
+                    startSelector="#startPointerLock"
+                  />
                   <FacingArrow origin={[playerPose.position[0], playerPose.position[1], playerPose.position[2]]} yaw={playerPose.yaw} length={1.2} color={playerIndicatorColor} />
 
                   {/* Player inventory */}
@@ -915,6 +928,11 @@ export default function NpcChatPage() {
                   {/* No in-world action buttons */}
                 </Canvas>
               </KeyboardControls>
+              <div className="absolute inset-0 bg-black/40 backdrop-blur-[1px] flex items-center justify-center select-none" style={{ display: isLocked ? 'none' : 'flex' }}>
+                <button id="startPointerLock" type="button" className="px-6 py-3 text-base rounded-md bg-blue-600 hover:bg-blue-700 text-white shadow-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                  Click to Start
+                </button>
+              </div>
             </div>
             <div className="mt-2 text-gray-400 text-sm flex items-center gap-3 justify-between">
               <span>Controls: WASD move, Shift run, Space jump, G wave, E interact, X detonate.</span>
