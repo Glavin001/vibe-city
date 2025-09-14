@@ -6,6 +6,7 @@ import { type RJSFSchema, type UiSchema, type ValidatorType } from "@rjsf/utils"
 import validator from "@rjsf/validator-ajv8";
 import { useClientSideChat } from "@/ai/hooks/use-chat";
 import { google } from "@/ai/providers/google";
+import { useVoiceSegments } from "@/hooks/use-voice-segments";
 
 const LOCAL_STORAGE_KEY = "GOOGLE_API_KEY";
 const LOCAL_STORAGE_PERSONA_KEY = "AI_PERSONA_JSON";
@@ -586,6 +587,46 @@ function ChatPanel({ apiKey, system }: { apiKey: string; system: string }) {
   useEffect(() => { setSystemPrompt(system); }, [system, setSystemPrompt]);
   const [input, setInput] = useState("");
 
+  // Voice input (Whisper + VAD)
+  const [voiceEnabled, setVoiceEnabled] = useState(false);
+  const [vadThreshold, setVadThreshold] = useState<number>(0.6);
+  const onFinalSegment = useCallback((text: string) => {
+    const t = (text || "").trim();
+    if (!voiceEnabled || t.length === 0) return;
+    sendMessage({ text: t });
+  }, [voiceEnabled, sendMessage]);
+  const {
+    status: vsStatus,
+    liveText,
+    vadListening,
+    vadUserSpeaking,
+    errors: { whisper: whisperError, vad: vadScopedError },
+    start: segmentsStart,
+    stop: segmentsStop,
+    toggle: segmentsToggle,
+    load: segmentsLoad,
+  } = useVoiceSegments({
+    whisper: { language: "en", autoStart: true, dataRequestInterval: 250 },
+    vad: { model: "v5", startOnLoad: false, userSpeakingThreshold: vadThreshold, baseAssetPath: "/vad/", onnxWASMBasePath: "/vad/" },
+    settleMs: 300,
+    autoLoad: voiceEnabled,
+    onLiveUpdate: (text) => {
+      // no-op; shown in UI below
+    },
+    onSegment: onFinalSegment,
+  });
+  useEffect(() => {
+    if (!voiceEnabled && vadListening) {
+      segmentsStop();
+    }
+  }, [voiceEnabled, vadListening, segmentsStop]);
+  useEffect(() => {
+    if (voiceEnabled && vsStatus === "boot") {
+      // Preload models when enabling voice
+      segmentsLoad();
+    }
+  }, [voiceEnabled, vsStatus, segmentsLoad]);
+
   const removeMessage = useCallback((messageId: string) => {
     setMessages(prevMessages => prevMessages.filter(m => m.id !== messageId));
   }, [setMessages]);
@@ -650,9 +691,14 @@ function ChatPanel({ apiKey, system }: { apiKey: string; system: string }) {
                   }
                   if (part.type === "reasoning") {
                     return (
-                      <div key={`${m.id}-${i}`} className="whitespace-pre-wrap text-gray-200">
-                        {part.text}
-                      </div>
+                      <details key={`${m.id}-${i}`} className="mb-2" open>
+                        <summary className="cursor-pointer text-xs text-gray-400 hover:text-gray-300 select-none">
+                          💭 Reasoning
+                        </summary>
+                        <div className="mt-2 pl-4 border-l-2 border-gray-600 text-sm text-gray-300 whitespace-pre-wrap bg-gray-800/50 p-3 rounded-r">
+                          {part.text}
+                        </div>
+                      </details>
                     );
                   }
                   if (part.type === "text") {
@@ -695,37 +741,114 @@ function ChatPanel({ apiKey, system }: { apiKey: string; system: string }) {
         </div>
       )}
 
-      <div className="p-4 border-t border-gray-700 bg-gray-900">
-        <div className="flex gap-2">
-          <input
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder={status !== "ready" ? "AI is thinking..." : "Type a message..."}
-            disabled={status !== "ready" || error != null}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
+      <div className="border-t border-gray-700 bg-gray-900">
+        {/* Voice Input Panel */}
+        <div className="p-4 border-b border-gray-700">
+          <div className="flex items-center gap-3 mb-3">
+            <h3 className="text-sm font-semibold text-white m-0">Voice Input (Whisper + VAD)</h3>
+            <label className="ml-auto flex items-center gap-2 text-sm text-gray-300">
+              <input
+                type="checkbox"
+                checked={voiceEnabled}
+                onChange={(e) => setVoiceEnabled(e.target.checked)}
+              />
+              Enable
+            </label>
+          </div>
+          {voiceEnabled && (
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  className="rounded-lg px-3 py-2 bg-blue-600 text-white disabled:opacity-50 text-sm"
+                  onClick={segmentsLoad}
+                  disabled={vsStatus !== "boot"}
+                >
+                  {vsStatus === "boot" ? "Load Models" : "Models Ready"}
+                </button>
+                <button
+                  type="button"
+                  className="rounded-lg px-3 py-2 border border-gray-600 text-gray-200 disabled:opacity-50 text-sm"
+                  onClick={vadListening ? segmentsStop : segmentsStart}
+                  disabled={vsStatus === "boot"}
+                >
+                  {vadListening ? "Stop" : "Start"}
+                </button>
+                <button
+                  type="button"
+                  className="rounded-lg px-3 py-2 border border-gray-600 text-gray-200 disabled:opacity-50 text-sm"
+                  onClick={segmentsToggle}
+                  disabled={vsStatus === "boot"}
+                >
+                  {vadListening ? "Pause" : "Resume"}
+                </button>
+                <span className="text-sm text-gray-400 ml-auto">
+                  {vsStatus} {vadUserSpeaking ? "· speaking" : ""}
+                </span>
+              </div>
+              {(whisperError || vadScopedError) && (
+                <div className="text-sm text-red-500">
+                  {whisperError ? `Whisper: ${whisperError}` : null}
+                  {vadScopedError ? `${whisperError ? " · " : ""}VAD: ${vadScopedError}` : null}
+                </div>
+              )}
+              <div className="flex items-center gap-2">
+                <label htmlFor="vad-th" className="text-sm text-gray-400">Threshold</label>
+                <input
+                  id="vad-th"
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={vadThreshold}
+                  onChange={(e) => setVadThreshold(parseFloat(e.target.value))}
+                  className="flex-1"
+                />
+                <span className="text-sm text-gray-300 tabular-nums">{vadThreshold.toFixed(2)}</span>
+              </div>
+              <div>
+                <div className="text-xs text-gray-500 mb-1">Live transcript</div>
+                <div className="min-h-[32px] border border-gray-700 rounded px-2 py-1 bg-gray-950 text-gray-200 text-sm">
+                  {liveText || <span className="text-gray-500">Speak…</span>}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+        
+        {/* Text Input */}
+        <div className="p-4">
+          <div className="flex gap-2">
+            <input
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder={status !== "ready" ? "AI is thinking..." : "Type a message..."}
+              disabled={status !== "ready" || error != null}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  if (input.trim().length === 0) return;
+                  sendMessage({ text: input });
+                  setInput("");
+                }
+              }}
+              className="flex-1 px-3.5 py-2.5 border border-gray-600 rounded-md text-sm bg-gray-800 text-gray-200 focus:border-blue-500 focus:outline-none transition-colors"
+            />
+            <button
+              type="button"
+              onClick={() => {
                 if (input.trim().length === 0) return;
                 sendMessage({ text: input });
                 setInput("");
-              }
-            }}
-            className="flex-1 px-3.5 py-2.5 border border-gray-600 rounded-md text-sm bg-gray-800 text-gray-200 focus:border-blue-500 focus:outline-none transition-colors"
-          />
-          <button
-            type="button"
-            onClick={() => {
-              if (input.trim().length === 0) return;
-              sendMessage({ text: input });
-              setInput("");
-            }}
-            disabled={status !== "ready" || error != null}
-            className={`px-5 py-2.5 rounded-md text-sm font-medium transition-all ${
-              status === "ready" && !error
-                ? "bg-blue-600 text-white hover:bg-blue-700 cursor-pointer"
-                : "bg-gray-700 text-gray-400 cursor-not-allowed"
-            }`}
-          >Send</button>
+              }}
+              disabled={status !== "ready" || error != null}
+              className={`px-5 py-2.5 rounded-md text-sm font-medium transition-all ${
+                status === "ready" && !error
+                  ? "bg-blue-600 text-white hover:bg-blue-700 cursor-pointer"
+                  : "bg-gray-700 text-gray-400 cursor-not-allowed"
+              }`}
+            >Send</button>
+          </div>
         </div>
       </div>
 
