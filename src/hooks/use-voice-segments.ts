@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useMicVAD } from '@ricky0123/vad-react';
+import { ReactRealTimeVADOptions, useMicVAD } from '@ricky0123/vad-react';
 import { useWhisper, type WhisperOptions } from './use-whisper';
 import type { SpeechRecognitionStatus } from './use-speech-recognition';
 
@@ -12,7 +12,7 @@ export interface VoiceSegmentsOptions {
 
   /** Options forwarded to VAD */
   vad?: {
-    model?: string; // e.g., 'v5'
+    model?: ReactRealTimeVADOptions['model']; // e.g., 'v5'
     startOnLoad?: boolean; // whether to start listening immediately
     userSpeakingThreshold?: number; // default 0.6
     baseAssetPath?: string; // default '/vad/'
