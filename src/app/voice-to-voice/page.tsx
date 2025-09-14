@@ -2,15 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useVoiceSegments } from "../../hooks/use-voice-segments";
-import { SentenceStreamChunker } from "../../lib/sentence-stream-chunker/sentence-stream-chunker";
-import { KokoroWorkerClient } from "../../lib/tts/kokoro-worker-client";
+import { useSentenceChunker } from "../../hooks/use-sentence-chunker";
+import { useKokoroTtsGenerator } from "../../hooks/use-kokoro-tts-generator";
 import { useTtsQueue } from "../../hooks/use-tts-queue";
-
-type VoiceInfo = {
-  name: string;
-  language: string;
-  gender: string;
-};
 
 type UiChunk = {
   id: number;
@@ -65,20 +59,13 @@ export default function Page() {
   });
 
   // Chunker
-  const chunkerRef = useRef<SentenceStreamChunker | null>(null);
   const nextUiIdRef = useRef<number>(1);
-  const resetChunker = useCallback(() => {
-    chunkerRef.current = new SentenceStreamChunker({
-      locale: "en",
-      charLimit: 220,
-      wordLimit: Number.POSITIVE_INFINITY,
-      softPunct: /[,;:—–\-]/,
-    });
-  }, []);
-
-  useEffect(() => {
-    resetChunker();
-  }, [resetChunker]);
+  const { push: chunkPush, reset: chunkReset } = useSentenceChunker({
+    locale: "en",
+    charLimit: 220,
+    wordLimit: Number.POSITIVE_INFINITY,
+    softPunct: /[,;:—–\-]/,
+  });
 
   const [uiChunks, setUiChunks] = useState<UiChunk[]>([]);
 
@@ -99,41 +86,24 @@ export default function Page() {
   }, []);
 
   const pushText = useCallback((s: string, eos: boolean = false) => {
-    if (!chunkerRef.current) resetChunker();
-    const ck = chunkerRef.current;
-    if (!ck) return;
-    const newChunks = ck.push(s, { eos });
+    const newChunks = chunkPush(s, eos);
     if (newChunks.length > 0) {
       setUiChunks((prev) => [...prev, ...newChunks.map(toUiChunk)]);
     }
-  }, [resetChunker, toUiChunk]);
+  }, [chunkPush, toUiChunk]);
 
-  // Kokoro TTS worker
-  const workerClientRef = useRef<KokoroWorkerClient | null>(null);
-  const [voices, setVoices] = useState<Record<string, VoiceInfo>>({});
-  const [selectedVoice, setSelectedVoice] = useState<string>("af_heart");
-  const [speed, setSpeed] = useState<number>(1.3);
-  const [device, setDevice] = useState<string | null>(null);
-  const [workerError, setWorkerError] = useState<string | null>(null);
-  const [workerReady, setWorkerReady] = useState<boolean>(false);
-
-  useEffect(() => {
-    if (workerClientRef.current) return;
-    const client = new KokoroWorkerClient();
-    workerClientRef.current = client;
-    client.init((v, d) => {
-      setVoices(v);
-      setDevice(d);
-      setWorkerReady(true);
-      if (v && Object.keys(v).length > 0) setSelectedVoice(Object.keys(v)[0]);
-    }, (err) => {
-      setWorkerError(err.message);
-    });
-    return () => {
-      client.dispose();
-      workerClientRef.current = null;
-    };
-  }, []);
+  // Kokoro TTS worker (shared)
+  const {
+    voices,
+    selectedVoice,
+    setSelectedVoice,
+    speed,
+    setSpeed,
+    device,
+    error: workerError,
+    ready: workerReady,
+    generate,
+  } = useKokoroTtsGenerator();
 
   // Playback & generation queue
   const [autoplay, setAutoplay] = useState<boolean>(true);
@@ -144,28 +114,26 @@ export default function Page() {
   const queueNextGenerationRef = useRef<() => void>(() => {});
 
   const sendGenerate = useCallback((chunk: UiChunk) => {
-    const client = workerClientRef.current;
-    if (!client || !workerReady) return false;
+    if (!workerReady) return false;
     const voiceId = selectedVoice && voices[selectedVoice] ? selectedVoice : Object.keys(voices)[0];
     if (!voiceId) {
-      setWorkerError("No voice available. Please wait for voices to load.");
+      // No voice yet
       return false;
     }
     setUiChunks((prev) => prev.map((c) => (c.id === chunk.id ? { ...c, status: "generating" } : c)));
-    client.generate({ text: chunk.text, voice: voiceId, speed })
+    generate({ text: chunk.text, voice: voiceId, speed })
       .then(({ url }) => {
         setUiChunks((prev) => prev.map((c) => (c.id === chunk.id ? { ...c, status: "ready", audioUrl: url } : c)));
         genBusyRef.current = false;
         queueNextGenerationRef.current();
       })
-      .catch((err) => {
-        setWorkerError(err.message);
+      .catch(() => {
         setUiChunks((prev) => prev.map((c) => (c.id === chunk.id && c.status === "generating" ? { ...c, status: "error" } : c)));
         genBusyRef.current = false;
         queueNextGenerationRef.current();
       });
     return true;
-  }, [selectedVoice, speed, workerReady, voices]);
+  }, [generate, selectedVoice, speed, workerReady, voices]);
 
   const queueNextGeneration = useCallback(() => {
     if (genBusyRef.current) return;
@@ -194,7 +162,7 @@ export default function Page() {
     onStatusChange: (idx, status) => {
       setUiChunks((prev) => prev.map((c, i) => (i === idx ? { ...c, status } : c)));
     },
-    onError: (m) => setWorkerError(m),
+    onError: (m) => console.error(m),
     crossfadeMs,
   });
 
@@ -214,7 +182,7 @@ export default function Page() {
     setUiChunks([]);
     setPlayhead(0);
     nextUiIdRef.current = 1;
-    resetChunker();
+    chunkReset();
     clearAudioSources();
   };
 
