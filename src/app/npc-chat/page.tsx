@@ -1,11 +1,12 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import * as THREE from 'three'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { KeyboardControls, PointerLockControls, useKeyboardControls, Line } from '@react-three/drei'
-import { Ground, BoxMarker, Building, LabelSprite } from '../../lib/bunker-scene'
+import { Ground, BoxMarker, Building, LabelSprite, EnhancedObject, SmallSphere, InventoryItem } from '../../lib/bunker-scene'
 import { BUILDINGS, N, NODE_POS, type Vec3, type NodeId } from '../../lib/bunker-world'
+import type * as React from 'react'
 
 type Controls = 'forward' | 'backward' | 'left' | 'right' | 'run'
 
@@ -13,6 +14,18 @@ type AgentPose = {
   position: Vec3
   yaw: number // radians, around +Y
   pitch: number // radians, around +X
+}
+
+type WorldState = {
+  keyOnTable: boolean
+  c4Available: boolean
+  starPresent: boolean
+  hasKey: boolean
+  hasC4: boolean
+  hasStar: boolean
+  storageUnlocked: boolean
+  c4Placed: boolean
+  bunkerBreached: boolean
 }
 
 // type retained only if needed in future
@@ -40,7 +53,7 @@ const upVector = new THREE.Vector3(0, 1, 0)
 const camForward = new THREE.Vector3()
 const camRight = new THREE.Vector3()
 
-function Player({ poseRef }: { poseRef: React.MutableRefObject<AgentPose> }) {
+function Player({ poseRef, jumpOffsetRef }: { poseRef: React.MutableRefObject<AgentPose>; jumpOffsetRef: React.MutableRefObject<number> }) {
   const [, get] = useKeyboardControls<Controls>()
   const camera = useThree((state) => state.camera)
 
@@ -69,7 +82,7 @@ function Player({ poseRef }: { poseRef: React.MutableRefObject<AgentPose> }) {
     if (rightMove !== 0) direction.addScaledVector(camRight, rightMove * speed)
 
     camera.position.add(direction)
-    camera.position.y = PLAYER_EYE_HEIGHT
+    camera.position.y = PLAYER_EYE_HEIGHT + (jumpOffsetRef.current || 0)
 
     poseRef.current = {
       position: [camera.position.x, camera.position.y, camera.position.z],
@@ -89,11 +102,28 @@ function FacingArrow({ origin, yaw, length = 1.5, color = '#22d3ee' }: { origin:
   return <Line points={[origin, end]} color={color} lineWidth={2} dashed={false} />
 }
 
+// (Removed in-world ActionButton; replaced with DOM toolbar buttons below the canvas)
+
 // --- NPC ACTION SYSTEM ---
 type MoveAction = { type: 'move'; to: NodeId }
 type JumpAction = { type: 'jump'; height?: number; durationMs?: number }
 type WaveAction = { type: 'wave'; durationMs?: number }
-type NpcAction = MoveAction | JumpAction | WaveAction
+type PickupKeyAction = { type: 'pickup_key' }
+type UnlockStorageAction = { type: 'unlock_storage' }
+type PickupC4Action = { type: 'pickup_c4' }
+type PlaceC4Action = { type: 'place_c4' }
+type DetonateAction = { type: 'detonate' }
+type PickupStarAction = { type: 'pickup_star' }
+type NpcAction =
+  | MoveAction
+  | JumpAction
+  | WaveAction
+  | PickupKeyAction
+  | UnlockStorageAction
+  | PickupC4Action
+  | PlaceC4Action
+  | DetonateAction
+  | PickupStarAction
 
 // NodeId type is imported from bunker-world
 
@@ -169,6 +199,7 @@ function parseCommandToActions(input: string): { actions?: NpcAction[]; error?: 
     if (/^(stop|abort|cancel)$/i.test(seg)) {
       return { isAbort: true }
     }
+    // planner intents handled outside (sendMessage)
     let m = seg.match(/^((move|go)\s+to)\s+(.+)$/i)
     if (m) {
       const locStr = m[3].trim()
@@ -188,15 +219,41 @@ function parseCommandToActions(input: string): { actions?: NpcAction[]; error?: 
       actions.push({ type: 'wave', durationMs: dur })
       continue
     }
+    // direct action commands
+    if (/^pick\s*up\s*key$/.test(seg)) { actions.push({ type: 'pickup_key' }); continue }
+    if (/^unlock(\s*storage)?$/.test(seg)) { actions.push({ type: 'unlock_storage' }); continue }
+    if (/^pick\s*up\s*c4$/.test(seg)) { actions.push({ type: 'pickup_c4' }); continue }
+    if (/^place\s*c4$/.test(seg)) { actions.push({ type: 'place_c4' }); continue }
+    if (/^detonate$/.test(seg)) { actions.push({ type: 'detonate' }); continue }
+    if (/^pick\s*up\s*star$/.test(seg)) { actions.push({ type: 'pickup_star' }); continue }
     return { error: `Unknown command: "${seg}"` }
   }
   if (!actions.length) return { error: 'No commands found' }
   return { actions }
 }
 
-function NpcAgent({ id, name, color, initialPos, apiRegistry }: { id: string; name: string; color: string; initialPos: Vec3; apiRegistry: React.MutableRefObject<Record<string, NpcApi>> }) {
+type Inventory = { hasKey: boolean; hasC4: boolean; hasStar: boolean }
+
+function NpcAgent({ id, name, color, initialPos, apiRegistry, inv, worldOps }: {
+  id: string;
+  name: string;
+  color: string;
+  initialPos: Vec3;
+  apiRegistry: React.MutableRefObject<Record<string, NpcApi>>;
+  inv: Inventory;
+  worldOps: React.MutableRefObject<{
+    getWorld: () => WorldState;
+    pickupKey: (by: string) => Promise<boolean>;
+    unlockStorage: (by: string) => Promise<boolean>;
+    pickupC4: (by: string) => Promise<boolean>;
+    placeC4: (by: string) => Promise<boolean>;
+    detonate: (by: string) => Promise<boolean>;
+    pickupStar: (by: string) => Promise<boolean>;
+    setNpcInventory: (id: string, next: Partial<Inventory>) => void;
+  }>;
+}): React.ReactElement {
   const groupRef = useRef<THREE.Group | null>(null)
-  const poseRef = useRef<AgentPose>({ position: [...initialPos], yaw: 0, pitch: 0 })
+  const poseRef = useRef<AgentPose>({ position: [...initialPos] as Vec3, yaw: 0, pitch: 0 })
   const wavePhaseRef = useRef<number>(0)
   const waveAmpRef = useRef<number>(0)
   const baseY = initialPos[1]
@@ -206,7 +263,7 @@ function NpcAgent({ id, name, color, initialPos, apiRegistry }: { id: string; na
   const isBusyRef = useRef<boolean>(false)
 
   useEffect(() => {
-    poseRef.current.position = [...initialPos]
+    poseRef.current.position = [...initialPos] as Vec3
   }, [initialPos])
 
   // Register API for this NPC
@@ -235,7 +292,7 @@ function NpcAgent({ id, name, color, initialPos, apiRegistry }: { id: string; na
   }, [apiRegistry, id])
 
   // Action executors
-  function execMove(to: Vec3, speed = 3): Promise<void> {
+  function execMove(to: Vec3, speed = 3, toNodeId?: NodeId): Promise<void> {
     let cancelled = false
     cancelCurrentRef.current = () => { cancelled = true }
     const epsilon = 0.05
@@ -249,7 +306,7 @@ function NpcAgent({ id, name, color, initialPos, apiRegistry }: { id: string; na
         const dist = distance2D(cur, to)
         if (dist <= epsilon) {
           poseRef.current.position = [to[0], baseY, to[2]]
-          apiRegistry.current[id]?.emit(`✅ Reached ${NODE_TITLES[Object.entries(N).find(([,v]) => v === (Object.keys(NODE_POS).find(k => (NODE_POS as any)[k] === to) as unknown as NodeId))?.[1] as NodeId] || 'target'}`)
+          apiRegistry.current[id]?.emit(`✅ Reached ${toNodeId ? NODE_TITLES[toNodeId] : 'target'}`)
           resolve(); return
         }
         const [dx, dz] = direction2D(cur, to)
@@ -260,7 +317,7 @@ function NpcAgent({ id, name, color, initialPos, apiRegistry }: { id: string; na
         // apiRegistry.current[id]?.emit(`… Moving ${(dist).toFixed(1)}m left`)
         requestAnimationFrame(step)
       }
-      apiRegistry.current[id]?.emit(`▶️ Moving to ${NODE_TITLES[Object.entries(N).find(([,v]) => v === (Object.keys(NODE_POS).find(k => (NODE_POS as any)[k] === to) as unknown as NodeId))?.[1] as NodeId] || 'target'}`)
+      apiRegistry.current[id]?.emit(`▶️ Moving to ${toNodeId ? NODE_TITLES[toNodeId] : 'target'}`)
       requestAnimationFrame(step)
     })
   }
@@ -306,7 +363,71 @@ function NpcAgent({ id, name, color, initialPos, apiRegistry }: { id: string; na
     })
   }
 
-  const runLoop = useRef<() => Promise<void>>({} as any)
+  async function execPickupKey(): Promise<void> {
+    let cancelled = false
+    cancelCurrentRef.current = () => { cancelled = true }
+    apiRegistry.current[id]?.emit(`🗝️ Picking up key`)
+    const ok = await worldOps.current.pickupKey(id)
+    if (ok && !cancelled) {
+      worldOps.current.setNpcInventory(id, { hasKey: true })
+      apiRegistry.current[id]?.emit(`✅ Key acquired`)
+    } else if (!ok) {
+      apiRegistry.current[id]?.emit(`⚠️ Cannot pick up key`)
+    }
+  }
+
+  async function execUnlockStorage(): Promise<void> {
+    let cancelled = false
+    cancelCurrentRef.current = () => { cancelled = true }
+    apiRegistry.current[id]?.emit(`🔓 Unlocking storage`)
+    const ok = await worldOps.current.unlockStorage(id)
+    if (ok && !cancelled) apiRegistry.current[id]?.emit(`✅ Storage unlocked`)
+    else apiRegistry.current[id]?.emit(`⚠️ Cannot unlock storage`)
+  }
+
+  async function execPickupC4(): Promise<void> {
+    let cancelled = false
+    cancelCurrentRef.current = () => { cancelled = true }
+    apiRegistry.current[id]?.emit(`📦 Picking up C4`)
+    const ok = await worldOps.current.pickupC4(id)
+    if (ok && !cancelled) {
+      worldOps.current.setNpcInventory(id, { hasC4: true })
+      apiRegistry.current[id]?.emit(`✅ C4 acquired`)
+    } else apiRegistry.current[id]?.emit(`⚠️ Cannot pick up C4`)
+  }
+
+  async function execPlaceC4(): Promise<void> {
+    let cancelled = false
+    cancelCurrentRef.current = () => { cancelled = true }
+    apiRegistry.current[id]?.emit(`📍 Placing C4 at bunker door`)
+    const ok = await worldOps.current.placeC4(id)
+    if (ok && !cancelled) {
+      worldOps.current.setNpcInventory(id, { hasC4: false })
+      apiRegistry.current[id]?.emit(`✅ C4 placed`)
+    } else apiRegistry.current[id]?.emit(`⚠️ Cannot place C4`)
+  }
+
+  async function execDetonate(): Promise<void> {
+    let cancelled = false
+    cancelCurrentRef.current = () => { cancelled = true }
+    apiRegistry.current[id]?.emit(`💥 Detonating`) 
+    const ok = await worldOps.current.detonate(id)
+    if (ok && !cancelled) apiRegistry.current[id]?.emit(`✅ Bunker breached`) 
+    else apiRegistry.current[id]?.emit(`⚠️ Cannot detonate`)
+  }
+
+  async function execPickupStar(): Promise<void> {
+    let cancelled = false
+    cancelCurrentRef.current = () => { cancelled = true }
+    apiRegistry.current[id]?.emit(`⭐ Picking up star`)
+    const ok = await worldOps.current.pickupStar(id)
+    if (ok && !cancelled) {
+      worldOps.current.setNpcInventory(id, { hasStar: true })
+      apiRegistry.current[id]?.emit(`✅ Star acquired`)
+    } else apiRegistry.current[id]?.emit(`⚠️ Cannot pick up star`)
+  }
+
+  const runLoop = useRef<() => Promise<void>>(() => Promise.resolve())
   runLoop.current = async function () {
     if (isBusyRef.current) return
     isBusyRef.current = true
@@ -317,11 +438,23 @@ function NpcAgent({ id, name, color, initialPos, apiRegistry }: { id: string; na
         const action = maybe
         if (action.type === 'move') {
           const to = NODE_POS[action.to]
-          await execMove(to, 3)
+          await execMove(to, 3, action.to)
         } else if (action.type === 'jump') {
           await execJump(action)
         } else if (action.type === 'wave') {
           await execWave(action)
+        } else if (action.type === 'pickup_key') {
+          await execPickupKey()
+        } else if (action.type === 'unlock_storage') {
+          await execUnlockStorage()
+        } else if (action.type === 'pickup_c4') {
+          await execPickupC4()
+        } else if (action.type === 'place_c4') {
+          await execPlaceC4()
+        } else if (action.type === 'detonate') {
+          await execDetonate()
+        } else if (action.type === 'pickup_star') {
+          await execPickupStar()
         }
       }
     } finally {
@@ -358,6 +491,9 @@ function NpcAgent({ id, name, color, initialPos, apiRegistry }: { id: string; na
       </mesh>
       <LabelSprite position={labelPos} text={name} />
       <FacingArrow origin={[poseRef.current.position[0], baseY + 1.6, poseRef.current.position[2]]} yaw={poseRef.current.yaw} />
+      {inv.hasKey && (<InventoryItem agentPos={[poseRef.current.position[0], baseY, poseRef.current.position[2]]} type="key" color="#fbbf24" index={0} />)}
+      {inv.hasC4 && (<InventoryItem agentPos={[poseRef.current.position[0], baseY, poseRef.current.position[2]]} type="c4" color="#ef4444" index={1} />)}
+      {inv.hasStar && (<InventoryItem agentPos={[poseRef.current.position[0], baseY, poseRef.current.position[2]]} type="star" color="#fde68a" index={2} />)}
     </group>
   )
 }
@@ -380,10 +516,13 @@ export default function NpcChatPage() {
   // Player pose state
   const [playerPose, setPlayerPose] = useState<AgentPose>({ position: [0, PLAYER_EYE_HEIGHT, 0], yaw: 0, pitch: 0 })
   const playerPoseRef = useRef<AgentPose>(playerPose)
+  const playerJumpOffsetRef = useRef<number>(0)
+  const playerWave = useRef<{ amp: number; phase: number }>({ amp: 0, phase: 0 })
   useEffect(() => {
     const id = setInterval(() => setPlayerPose(playerPoseRef.current), 100)
     return () => clearInterval(id)
   }, [])
+  // no-op placeholder removed
 
   // NPCs
   const [npcs] = useState([
@@ -392,6 +531,16 @@ export default function NpcChatPage() {
     { id: 'npc_sam', name: 'Sam', color: '#34d399', pos: [NODE_POS[N.STORAGE_DOOR][0] - 2, 0, NODE_POS[N.STORAGE_DOOR][2]] as Vec3 },
   ])
   const npcApisRef = useRef<Record<string, NpcApi>>({})
+  const [npcInventories, setNpcInventories] = useState<Record<string, { hasKey: boolean; hasC4: boolean; hasStar: boolean }>>({})
+  const npcInventoriesRef = useRef(npcInventories)
+  useEffect(() => { npcInventoriesRef.current = npcInventories }, [npcInventories])
+  function setNpcInventory(id: string, next: Partial<{ hasKey: boolean; hasC4: boolean; hasStar: boolean }>) {
+    setNpcInventories((prev) => {
+      const existing = prev[id] || { hasKey: false, hasC4: false, hasStar: false }
+      const merged = { ...existing, ...next }
+      return { ...prev, [id]: merged }
+    })
+  }
 
   // Chat state
   const [selectedNpcId, setSelectedNpcId] = useState<string>('npc_alex')
@@ -402,13 +551,218 @@ export default function NpcChatPage() {
   })
   const [draft, setDraft] = useState('')
 
-  function sendMessage() {
+  // Shared world state
+  const [world, setWorld] = useState<WorldState>({
+    keyOnTable: true,
+    c4Available: true,
+    starPresent: true,
+    hasKey: false,
+    hasC4: false,
+    hasStar: false,
+    storageUnlocked: false,
+    c4Placed: false,
+    bunkerBreached: false,
+  })
+  const worldRef = useRef(world)
+  useEffect(() => { worldRef.current = world }, [world])
+  const [boom, setBoom] = useState<{ at?: Vec3; t?: number }>({})
+  // Player inventory separate from world flags
+  const [playerInv, setPlayerInv] = useState<{ hasKey: boolean; hasC4: boolean; hasStar: boolean }>({ hasKey: false, hasC4: false, hasStar: false })
+  const playerInvRef = useRef(playerInv)
+  useEffect(() => { playerInvRef.current = playerInv }, [playerInv])
+
+  // Helpers
+  const distTo = useCallback((pos: Vec3) => {
+    const p = playerPoseRef.current.position
+    const dx = p[0] - pos[0]
+    const dz = p[2] - pos[2]
+    return Math.hypot(dx, dz)
+  }, [])
+
+  // Shared world operations (used by NPCs and player)
+  const worldOps = useRef({
+    getWorld: () => world,
+    pickupKey: async (by: string) => {
+      // Must be near table and key available
+      const pos = by === 'player' ? playerPoseRef.current.position : (npcApisRef.current[by]?.getPose().position || [0, 0, 0])
+      const near = distance2D(pos, NODE_POS[N.TABLE]) <= 1.6
+      if (!world.keyOnTable || !near) return false
+      setWorld((w) => ({ ...w, keyOnTable: false }))
+      if (by === 'player') setPlayerInv((i) => ({ ...i, hasKey: true }))
+      return true
+    },
+    unlockStorage: async (by: string) => {
+      const pos = by === 'player' ? playerPoseRef.current.position : (npcApisRef.current[by]?.getPose().position || [0, 0, 0])
+      const near = distance2D(pos, NODE_POS[N.STORAGE_DOOR]) <= 1.8
+      const hasKey = by === 'player' ? playerInvRef.current.hasKey : (npcInventoriesRef.current[by]?.hasKey === true)
+      if (worldRef.current.storageUnlocked || !hasKey || !near) return false
+      await new Promise((r) => setTimeout(r, 150))
+      setWorld((w) => ({ ...w, storageUnlocked: true }))
+      return true
+    },
+    pickupC4: async (by: string) => {
+      const pos = by === 'player' ? playerPoseRef.current.position : (npcApisRef.current[by]?.getPose().position || [0, 0, 0])
+      const near = distance2D(pos, NODE_POS[N.C4_TABLE]) <= 1.6
+      if (!worldRef.current.c4Available || !near) return false
+      setWorld((w) => ({ ...w, c4Available: false }))
+      if (by === 'player') setPlayerInv((i) => ({ ...i, hasC4: true }))
+      return true
+    },
+    placeC4: async (by: string) => {
+      const pos = by === 'player' ? playerPoseRef.current.position : (npcApisRef.current[by]?.getPose().position || [0, 0, 0])
+      const near = distance2D(pos, NODE_POS[N.BUNKER_DOOR]) <= 1.8
+      const hasC4 = by === 'player' ? playerInvRef.current.hasC4 : (npcInventoriesRef.current[by]?.hasC4 === true)
+      if (worldRef.current.c4Placed || worldRef.current.bunkerBreached || !hasC4 || !near) return false
+      setWorld((w) => ({ ...w, c4Placed: true }))
+      if (by === 'player') setPlayerInv((i) => ({ ...i, hasC4: false }))
+      return true
+    },
+    detonate: async (_by: string) => {
+      if (!worldRef.current.c4Placed || worldRef.current.bunkerBreached) return false
+      setBoom({ at: [NODE_POS[N.BUNKER_DOOR][0], NODE_POS[N.BUNKER_DOOR][1] + 0.6, NODE_POS[N.BUNKER_DOOR][2]], t: performance.now() })
+      await new Promise((r) => setTimeout(r, 380))
+      setBoom({})
+      setWorld((w) => ({ ...w, bunkerBreached: true, c4Placed: false }))
+      return true
+    },
+    pickupStar: async (by: string) => {
+      const pos = by === 'player' ? playerPoseRef.current.position : (npcApisRef.current[by]?.getPose().position || [0, 0, 0])
+      const near = distance2D(pos, NODE_POS[N.STAR]) <= 1.6
+      if (!world.starPresent || !near) return false
+      setWorld((w) => ({ ...w, starPresent: false }))
+      if (by === 'player') setPlayerInv((i) => ({ ...i, hasStar: true }))
+      return true
+    },
+    setNpcInventory: setNpcInventory,
+  })
+
+  // Player action helpers
+  const [interactPrompt, setInteractPrompt] = useState<string>('')
+  const [interactionHint, setInteractionHint] = useState<{ node: NodeId; text: string } | null>(null)
+  const interactHandlerRef = useRef<() => void>(() => {})
+  useEffect(() => {
+    const id = setInterval(() => {
+      const near = (node: NodeId, r: number) => distTo(NODE_POS[node]) <= r
+      const pKey = world.keyOnTable && near(N.TABLE, 1.7)
+      const pUnlock = !world.storageUnlocked && playerInv.hasKey && near(N.STORAGE_DOOR, 1.9)
+      const pC4 = world.c4Available && near(N.C4_TABLE, 1.7)
+      const pPlace = !world.bunkerBreached && !world.c4Placed && playerInv.hasC4 && near(N.BUNKER_DOOR, 1.9)
+      const pStar = world.starPresent && near(N.STAR, 1.7)
+      if (pKey) {
+        setInteractPrompt('Press E to Pick up Key')
+        setInteractionHint({ node: N.TABLE, text: 'Press E to pick up key' })
+        interactHandlerRef.current = () => { void worldOps.current.pickupKey('player') }
+        return
+      }
+      if (pUnlock) {
+        setInteractPrompt('Press E to Unlock Storage')
+        setInteractionHint({ node: N.STORAGE_DOOR, text: 'Press E to unlock' })
+        interactHandlerRef.current = () => { void worldOps.current.unlockStorage('player') }
+        return
+      }
+      if (pC4) {
+        setInteractPrompt('Press E to Pick up C4')
+        setInteractionHint({ node: N.C4_TABLE, text: 'Press E to pick up C4' })
+        interactHandlerRef.current = () => { void worldOps.current.pickupC4('player') }
+        return
+      }
+      if (pPlace) {
+        setInteractPrompt('Press E to Place C4')
+        setInteractionHint({ node: N.BUNKER_DOOR, text: 'Press E to place C4' })
+        interactHandlerRef.current = () => { void worldOps.current.placeC4('player') }
+        return
+      }
+      if (pStar) {
+        setInteractPrompt('Press E to Pick up Star')
+        setInteractionHint({ node: N.STAR, text: 'Press E to pick up star' })
+        interactHandlerRef.current = () => { void worldOps.current.pickupStar('player') }
+        return
+      }
+      setInteractPrompt('')
+      setInteractionHint(null)
+      interactHandlerRef.current = () => {}
+    }, 120)
+    return () => clearInterval(id)
+  }, [world, playerInv, distTo])
+
+  // Keyboard bindings for player actions
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'e' || e.key === 'E') {
+        interactHandlerRef.current()
+      } else if (e.key === ' ') {
+        // jump
+        if (playerJumpOffsetRef.current > 0) return
+        const start = performance.now()
+        const dur = 600
+        function tick() {
+          const p = Math.min(1, (performance.now() - start) / dur)
+          playerJumpOffsetRef.current = Math.sin(p * Math.PI) * 0.9
+          if (p < 1) requestAnimationFrame(tick)
+          else playerJumpOffsetRef.current = 0
+        }
+        requestAnimationFrame(tick)
+      } else if (e.key === 'g' || e.key === 'G') {
+        // wave
+        playerWave.current.amp = 0.4
+        const start = performance.now()
+        const dur = 1200
+        function tick() {
+          const p = Math.min(1, (performance.now() - start) / dur)
+          playerWave.current.phase = p * Math.PI * 2
+          if (p < 1) requestAnimationFrame(tick)
+          else playerWave.current.amp = 0
+        }
+        requestAnimationFrame(tick)
+      } else if (e.key === 'x' || e.key === 'X') {
+        void worldOps.current.detonate('player')
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  async function sendMessage() {
     const npcId = selectedNpcId
     if (!draft.trim()) return
     const text = draft.trim()
     const msg: ChatMessage = { id: crypto.randomUUID(), npcId, sender: 'me', text, ts: Date.now() }
     setMessagesByNpc((prev) => ({ ...prev, [npcId]: [...(prev[npcId] || []), msg] }))
     setDraft('')
+    // Planner shortcuts
+    const lc = text.toLowerCase()
+    if (/^(plan\s*)?(get\s*)?star|has\s*star/.test(lc)) {
+      // plan to get star
+      const worker = new Worker('/workers/planner.worker.js', { type: 'module' })
+      const requestPayload = { initial: { storageUnlocked: world.storageUnlocked, bunkerBreached: world.bunkerBreached }, goal: { hasStar: true } }
+      const steps: string[] = await new Promise((resolve, reject) => {
+        worker.onmessage = (ev) => {
+          const { type, result, steps } = ev.data || {}
+          if (type === 'result') resolve((result && Array.isArray(result.plan)) ? result.plan : (steps || []))
+          else if (type === 'error') reject(new Error(ev.data?.message || 'planner error'))
+          worker.terminate()
+        }
+        worker.postMessage({ type: 'planRequest', request: requestPayload, enableDebug: false })
+      })
+      const actions = steps.map((s): NpcAction | null => {
+        const [op, arg] = s.split(' ')
+        if (op === 'MOVE') return { type: 'move', to: arg as NodeId }
+        if (op === 'PICKUP_KEY') return { type: 'pickup_key' }
+        if (op === 'UNLOCK_STORAGE') return { type: 'unlock_storage' }
+        if (op === 'PICKUP_C4') return { type: 'pickup_c4' }
+        if (op === 'PLACE_C4') return { type: 'place_c4' }
+        if (op === 'DETONATE') return { type: 'detonate' }
+        if (op === 'PICKUP_STAR') return { type: 'pickup_star' }
+        return null
+      }).filter(Boolean)
+      const planSummary = (actions as NpcAction[]).map((a) => a.type === 'move' ? `MOVE→${a.to}` : a.type.toUpperCase()).join(', ')
+      const ack: ChatMessage = { id: crypto.randomUUID(), npcId, sender: 'npc', text: `✅ Plan accepted: ${planSummary}` , ts: Date.now() }
+      setMessagesByNpc((prev) => ({ ...prev, [npcId]: [...(prev[npcId] || []), ack] }))
+      const npcApi = npcApisRef.current[npcId]
+      if (npcApi) npcApi.enqueuePlan(actions as NpcAction[], { replace: true })
+      return
+    }
+
     // Parse command → actions
     const parsed = parseCommandToActions(text)
     if (parsed.isAbort) {
@@ -457,12 +811,15 @@ export default function NpcChatPage() {
             [npc.id]: [...(prev[npc.id] || []), { id: crypto.randomUUID(), npcId: npc.id, sender: 'npc', text: line, ts: Date.now() }],
           }))
         }
+        if (!npcInventories[npc.id]) {
+          setNpcInventories((prev) => ({ ...prev, [npc.id]: { hasKey: false, hasC4: false, hasStar: false } }))
+        }
       }
     }
     ensureApis()
     const id = setInterval(ensureApis, 250)
     return () => clearInterval(id)
-  }, [npcs])
+  }, [npcs, npcInventories])
 
   // Keep an orientation indicator for the player (optional, small line ahead)
   const playerIndicatorColor = '#f59e0b'
@@ -492,8 +849,8 @@ export default function NpcChatPage() {
                     label="Storage"
                     doorFace={BUILDINGS.STORAGE.doorFace}
                     doorSize={BUILDINGS.STORAGE.doorSize}
-                    doorColor="#a16207"
-                    showDoor={true}
+                    doorColor={world.storageUnlocked ? '#16a34a' : '#a16207'}
+                    showDoor={!world.storageUnlocked}
                     opacity={1}
                     debug={false}
                   />
@@ -504,8 +861,8 @@ export default function NpcChatPage() {
                     label="Bunker"
                     doorFace={BUILDINGS.BUNKER.doorFace}
                     doorSize={BUILDINGS.BUNKER.doorSize}
-                    doorColor="#7c2d12"
-                    showDoor={true}
+                    doorColor={world.bunkerBreached ? '#16a34a' : '#7c2d12'}
+                    showDoor={!world.bunkerBreached}
                     opacity={1}
                     debug={false}
                   />
@@ -518,20 +875,61 @@ export default function NpcChatPage() {
                   <BoxMarker position={NODE_POS[N.STAR]} color="#6b21a8" label="Star" />
                   <BoxMarker position={NODE_POS[N.SAFE]} color="#0ea5e9" label="Blast Safe Zone" />
 
+                  {/* Objects in world */}
+                  <EnhancedObject position={[NODE_POS[N.TABLE][0], NODE_POS[N.TABLE][1] + 0.6, NODE_POS[N.TABLE][2]]} color="#fbbf24" type="key" visible={world.keyOnTable} />
+                  <EnhancedObject position={[NODE_POS[N.C4_TABLE][0], NODE_POS[N.C4_TABLE][1] + 0.6, NODE_POS[N.C4_TABLE][2]]} color="#ef4444" type="c4" visible={world.c4Available} />
+                  <SmallSphere position={[NODE_POS[N.BUNKER_DOOR][0], NODE_POS[N.BUNKER_DOOR][1] + 0.4, NODE_POS[N.BUNKER_DOOR][2]]} color="#ef4444" visible={world.c4Placed} size={0.3} />
+                  <EnhancedObject position={[NODE_POS[N.STAR][0], NODE_POS[N.STAR][1] + 0.5, NODE_POS[N.STAR][2]]} color="#fde68a" type="star" visible={world.starPresent} />
+
+                  {/* Explosion VFX */}
+                  {boom.at && (
+                    <mesh position={boom.at}>
+                      <sphereGeometry args={[0.5, 16, 16]} />
+                      <meshStandardMaterial color="#f97316" emissive="#dc2626" emissiveIntensity={1.2} transparent opacity={0.7} />
+                    </mesh>
+                  )}
+
                   {/* NPCs */}
                   {npcs.map((npc) => (
-                    <NpcAgent key={npc.id} id={npc.id} name={npc.name} color={npc.color} initialPos={npc.pos} apiRegistry={npcApisRef} />
+                    <NpcAgent
+                      key={npc.id}
+                      id={npc.id}
+                      name={npc.name}
+                      color={npc.color}
+                      initialPos={npc.pos}
+                      apiRegistry={npcApisRef}
+                      inv={{ hasKey: (npcInventories[npc.id]?.hasKey) || false, hasC4: (npcInventories[npc.id]?.hasC4) || false, hasStar: (npcInventories[npc.id]?.hasStar) || false }}
+                      worldOps={worldOps}
+                    />
                   ))}
 
                   {/* Player and orientation indicator */}
-                  <Player poseRef={playerPoseRef} />
+                  <Player poseRef={playerPoseRef} jumpOffsetRef={playerJumpOffsetRef} />
                   <FacingArrow origin={[playerPose.position[0], playerPose.position[1], playerPose.position[2]]} yaw={playerPose.yaw} length={1.2} color={playerIndicatorColor} />
+
+                  {/* Player inventory */}
+                  {playerInv.hasKey && (<InventoryItem agentPos={[playerPose.position[0], 0, playerPose.position[2]]} type="key" color="#fbbf24" index={0} />)}
+                  {playerInv.hasC4 && (<InventoryItem agentPos={[playerPose.position[0], 0, playerPose.position[2]]} type="c4" color="#ef4444" index={1} />)}
+                  {playerInv.hasStar && (<InventoryItem agentPos={[playerPose.position[0], 0, playerPose.position[2]]} type="star" color="#fde68a" index={2} />)}
+
+                  {/* No in-world action buttons */}
                 </Canvas>
               </KeyboardControls>
             </div>
-            <div className="mt-2 text-gray-400 text-sm">
-              <span>Controls: WASD to move, Shift to run, click canvas to lock pointer.</span>
+            <div className="mt-2 text-gray-400 text-sm flex items-center gap-3 justify-between">
+              <span>Controls: WASD move, Shift run, Space jump, G wave, E interact, X detonate.</span>
+              <div className="flex items-center gap-2">
+                <button type="button" className="px-2 py-1 text-xs rounded bg-slate-700 hover:bg-slate-600 text-white" onClick={() => void worldOps.current.pickupKey('player')}>Pick Key</button>
+                <button type="button" className="px-2 py-1 text-xs rounded bg-slate-700 hover:bg-slate-600 text-white" onClick={() => void worldOps.current.unlockStorage('player')}>Unlock Storage</button>
+                <button type="button" className="px-2 py-1 text-xs rounded bg-slate-700 hover:bg-slate-600 text-white" onClick={() => void worldOps.current.pickupC4('player')}>Pick C4</button>
+                <button type="button" className="px-2 py-1 text-xs rounded bg-slate-700 hover:bg-slate-600 text-white" onClick={() => void worldOps.current.placeC4('player')}>Place C4</button>
+                <button type="button" className="px-2 py-1 text-xs rounded bg-rose-700 hover:bg-rose-600 text-white" onClick={() => void worldOps.current.detonate('player')}>Detonate</button>
+                <button type="button" className="px-2 py-1 text-xs rounded bg-slate-700 hover:bg-slate-600 text-white" onClick={() => void worldOps.current.pickupStar('player')}>Pick Star</button>
+              </div>
             </div>
+            {interactPrompt && (
+              <div className="mt-2 text-emerald-300 text-sm">{interactPrompt}</div>
+            )}
           </div>
 
           {/* Chat sidebar */}
@@ -541,6 +939,15 @@ export default function NpcChatPage() {
                 <span className="text-green-400 text-sm">💬</span>
                 Chat
               </h2>
+              {/* Inventory summary */}
+              <div className="flex items-center gap-3 text-xs text-gray-300">
+                <span className="hidden sm:inline">Inventory:</span>
+                <div className="flex items-center gap-1">
+                  <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded ${playerInv.hasKey ? 'bg-amber-600/30 text-amber-300' : 'bg-gray-700 text-gray-400'}`}>🔑 Key</span>
+                  <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded ${playerInv.hasC4 ? 'bg-red-600/30 text-red-300' : 'bg-gray-700 text-gray-400'}`}>💣 C4</span>
+                  <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded ${playerInv.hasStar ? 'bg-yellow-600/30 text-yellow-300' : 'bg-gray-700 text-gray-400'}`}>⭐ Star</span>
+                </div>
+              </div>
             </div>
             <div className="flex-1 flex overflow-hidden">
               <div className="w-40 border-r border-gray-700 overflow-y-auto">
@@ -554,6 +961,12 @@ export default function NpcChatPage() {
                     <div className="flex items-center gap-2">
                       <span className="inline-block w-2 h-2 rounded-full" style={{ background: n.color }} />
                       <span className="truncate">{n.name}</span>
+                    </div>
+                    {/* NPC inventory badges */}
+                    <div className="mt-1 flex items-center gap-1">
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded ${ (npcInventories[n.id]?.hasKey) ? 'bg-amber-600/30 text-amber-300' : 'bg-gray-700 text-gray-500'}`}>🔑</span>
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded ${ (npcInventories[n.id]?.hasC4) ? 'bg-red-600/30 text-red-300' : 'bg-gray-700 text-gray-500'}`}>💣</span>
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded ${ (npcInventories[n.id]?.hasStar) ? 'bg-yellow-600/30 text-yellow-300' : 'bg-gray-700 text-gray-500'}`}>⭐</span>
                     </div>
                   </button>
                 ))}
@@ -583,7 +996,7 @@ export default function NpcChatPage() {
               </div>
             </div>
             <div className="px-3 py-2 border-t border-gray-700 text-xs text-gray-400">
-              Player: pos [{playerPose.position.map((v) => v.toFixed(1)).join(', ')}] yaw {(playerPose.yaw * 180 / Math.PI).toFixed(0)}°
+              Player: pos [{playerPose.position.map((v) => v.toFixed(1)).join(', ')}] yaw {(playerPose.yaw * 180 / Math.PI).toFixed(0)}° | Inv: key {String(playerInv.hasKey)} c4 {String(playerInv.hasC4)} star {String(playerInv.hasStar)} | Storage {world.storageUnlocked ? 'Unlocked' : 'Locked'} | Bunker {world.bunkerBreached ? 'Breached' : 'Sealed'}
             </div>
             <div className="px-3 pb-2 text-xs text-gray-500">
               Tip: You can later compute each NPC's camera from their pose (position + yaw/pitch) to render their POV.
