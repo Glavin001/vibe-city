@@ -1182,10 +1182,10 @@ export default function NpcChatPage() {
                   {/* No in-world action buttons */}
                 </Canvas>
               </KeyboardControls>
-              <div className="absolute inset-0 bg-black/40 backdrop-blur-[1px] flex items-center justify-center select-none" style={{ display: isLocked ? 'none' : 'flex' }}>
-                <button id="startPointerLock" type="button" className="px-6 py-3 text-base rounded-md bg-blue-600 hover:bg-blue-700 text-white shadow-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
-                  Click to Start
-                </button>
+              <div id="startPointerLock" className="absolute inset-0 select-none cursor-pointer" style={{ display: isLocked ? 'none' : 'block' }} title="Click to start (Esc to unlock)">
+                <div className="pointer-events-none absolute bottom-3 right-3 text-[11px] bg-gray-900/40 text-gray-200 px-2 py-1 rounded">
+                  Click to start · Esc to unlock
+                </div>
               </div>
             </div>
             <div className="mt-2 text-gray-400 text-sm flex items-center gap-3 justify-between">
