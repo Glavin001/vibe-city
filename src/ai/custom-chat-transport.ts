@@ -41,11 +41,11 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
       abortSignal: options.abortSignal,
       toolChoice: "auto",
       system: this.systemPrompt || undefined,
-      providerOptions: {
+      providerOptions: { // TODO: Add to options
         google: {
           thinkingConfig: {
             // thinkingBudget: 8192,
-            thinkingBudget: 512,
+            thinkingBudget: 0, // 512, // 512,
             includeThoughts: true,
           },
         } satisfies GoogleGenerativeAIProviderOptions,

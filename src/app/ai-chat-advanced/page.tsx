@@ -1,12 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Form, { type IChangeEvent } from "@rjsf/core";
 import { type RJSFSchema, type UiSchema, type ValidatorType } from "@rjsf/utils";
 import validator from "@rjsf/validator-ajv8";
 import { useClientSideChat } from "@/ai/hooks/use-chat";
 import { google } from "@/ai/providers/google";
 import { useVoiceSegments } from "@/hooks/use-voice-segments";
+import { useSentenceChunker } from "@/hooks/use-sentence-chunker";
+import { useKokoroTtsGenerator } from "@/hooks/use-kokoro-tts-generator";
+import { useTtsQueue } from "@/hooks/use-tts-queue";
+import { splitTextByWeightedRatio } from "@/lib/tts/progressSplit";
 
 const LOCAL_STORAGE_KEY = "GOOGLE_API_KEY";
 const LOCAL_STORAGE_PERSONA_KEY = "AI_PERSONA_JSON";
@@ -586,6 +590,8 @@ function ChatPanel({ apiKey, system }: { apiKey: string; system: string }) {
   const { messages, sendMessage, status, error, setSystemPrompt, setMessages, regenerate } = useClientSideChat(model, {});
   useEffect(() => { setSystemPrompt(system); }, [system, setSystemPrompt]);
   const [input, setInput] = useState("");
+  const [ttsInterruptKey, setTtsInterruptKey] = useState(0);
+  const [ttsResumeKey, setTtsResumeKey] = useState(0);
 
   // Voice input (Whisper + VAD)
   const [voiceEnabled, setVoiceEnabled] = useState(false);
@@ -594,6 +600,8 @@ function ChatPanel({ apiKey, system }: { apiKey: string; system: string }) {
     const t = (text || "").trim();
     if (!voiceEnabled || t.length === 0) return;
     sendMessage({ text: t });
+    // After segment finalizes, resume TTS autoplay
+    setTtsResumeKey((k) => k + 1);
   }, [voiceEnabled, sendMessage]);
   const {
     status: vsStatus,
@@ -614,6 +622,10 @@ function ChatPanel({ apiKey, system }: { apiKey: string; system: string }) {
       // no-op; shown in UI below
     },
     onSegment: onFinalSegment,
+    onInterruption: () => {
+      // Signal TTS section to pause
+      setTtsInterruptKey((k) => k + 1);
+    },
   });
   useEffect(() => {
     if (!voiceEnabled && vadListening) {
@@ -626,6 +638,10 @@ function ChatPanel({ apiKey, system }: { apiKey: string; system: string }) {
       segmentsLoad();
     }
   }, [voiceEnabled, vsStatus, segmentsLoad]);
+  useEffect(() => {
+    // Enabling voice input should allow autoplay for TTS
+    if (voiceEnabled) setTtsResumeKey((k) => k + 1);
+  }, [voiceEnabled]);
 
   const removeMessage = useCallback((messageId: string) => {
     setMessages(prevMessages => prevMessages.filter(m => m.id !== messageId));
@@ -645,6 +661,8 @@ function ChatPanel({ apiKey, system }: { apiKey: string; system: string }) {
   return (
     <div className="flex flex-col h-full">
       <div className="flex-1 overflow-auto p-4 flex flex-col bg-gray-950">
+        {/* --- TTS: Streamed assistant → chunker → Kokoro → queue playback --- */}
+        <TtsSection messages={messages} chatStatus={status} interruptKey={ttsInterruptKey} resumeKey={ttsResumeKey} />
         {messages.map((m) => (
           <div key={m.id} className="mb-4 flex gap-3 items-start">
             <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-semibold text-white flex-shrink-0 ${
@@ -924,6 +942,287 @@ function ChatPanel({ apiKey, system }: { apiKey: string; system: string }) {
           color: #fff;
         }
       `}</style>
+    </div>
+  );
+}
+
+// ---- TTS Section: streams assistant text → sentence chunker → Kokoro → queue playback
+function TtsSection({ messages, chatStatus, interruptKey, resumeKey }: { messages: ReturnType<typeof useClientSideChat>["messages"]; chatStatus: string; interruptKey: number; resumeKey: number }) {
+  // Kokoro TTS worker
+  const {
+    voices,
+    selectedVoice,
+    setSelectedVoice,
+    speed,
+    setSpeed,
+    device,
+    error: workerError,
+    ready: workerReady,
+    generate,
+  } = useKokoroTtsGenerator();
+
+  // Sentence chunker
+  const nextUiIdRef = useRef<number>(1);
+  const { push: chunkPush, reset: chunkReset } = useSentenceChunker({
+    locale: "en",
+    charLimit: 220,
+    wordLimit: Number.POSITIVE_INFINITY,
+    softPunct: /[,;:—–\-]/,
+  });
+
+  type UiChunk = {
+    id: number;
+    text: string;
+    status: "pending" | "generating" | "ready" | "playing" | "paused" | "played" | "error" | "skipped";
+    audioUrl?: string;
+  };
+  const [uiChunks, setUiChunks] = useState<UiChunk[]>([]);
+
+  const toUiChunk = useCallback((c: import("@/lib/sentence-stream-chunker/sentence-stream-chunker").Chunk): UiChunk => {
+    const id = nextUiIdRef.current++;
+    return { id, text: c.text, status: "pending" };
+  }, []);
+
+  // Track currently streaming assistant message text
+  const lastAssistant = useMemo(() => {
+    const last = [...messages].reverse().find((m) => m.role === "assistant");
+    return last ?? null;
+  }, [messages]);
+  const streamingAssistantText = useMemo(() => {
+    if (!lastAssistant) return "";
+    const textParts = lastAssistant.parts
+      .filter((p: { type: string }) => p.type === "text")
+      .map((p: { type: string; text?: string }) => p.text || "");
+    return textParts.join("");
+  }, [lastAssistant]);
+
+  // Feed stream into chunker (push only new delta). Keep small diff tracker
+  const prevStreamLenRef = useRef<number>(0);
+  const lastAssistantIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    // Reset tracking when a new assistant message begins
+    const currentAssistantId = (lastAssistant && (lastAssistant as any).id) || null;
+    if (currentAssistantId && lastAssistantIdRef.current !== currentAssistantId) {
+      lastAssistantIdRef.current = currentAssistantId;
+      prevStreamLenRef.current = 0;
+    }
+    const cur = streamingAssistantText || "";
+    const prevLen = prevStreamLenRef.current;
+    if (cur.length < prevLen) {
+      // Stream restarted (new response); reset and treat delta as full text
+      prevStreamLenRef.current = 0;
+    }
+    if (cur.length > prevLen) {
+      const delta = cur.slice(prevLen);
+      prevStreamLenRef.current = cur.length;
+      const newChunks = chunkPush(delta, false);
+      if (newChunks.length > 0) setUiChunks((prev) => [...prev, ...newChunks.map(toUiChunk)]);
+    }
+  }, [streamingAssistantText, lastAssistant, chunkPush, toUiChunk]);
+
+  // When a response finishes (chatStatus goes from streaming -> ready), flush remaining
+  const lastStatusRef = useRef<string>(chatStatus);
+  useEffect(() => {
+    const prev = lastStatusRef.current;
+    lastStatusRef.current = chatStatus;
+    if (prev === "streaming" && chatStatus === "ready") {
+      const flushed = chunkPush("", true);
+      if (flushed.length > 0) setUiChunks((prev) => [...prev, ...flushed.map(toUiChunk)]);
+    }
+  }, [chatStatus, chunkPush, toUiChunk]);
+
+  // Kokoro generation
+  const genBusyRef = useRef<boolean>(false);
+  const queueNextGenerationRef = useRef<() => void>(() => {});
+  const sendGenerate = useCallback((chunk: UiChunk) => {
+    if (!workerReady) return false;
+    const voiceId = selectedVoice && voices[selectedVoice] ? selectedVoice : Object.keys(voices)[0];
+    if (!voiceId) return false;
+    setUiChunks((prev) => prev.map((c) => (c.id === chunk.id ? { ...c, status: "generating" } : c)));
+    generate({ text: chunk.text, voice: voiceId, speed })
+      .then(({ url }) => {
+        setUiChunks((prev) => prev.map((c) => (c.id === chunk.id ? { ...c, status: "ready", audioUrl: url } : c)));
+        genBusyRef.current = false;
+        queueNextGenerationRef.current();
+      })
+      .catch(() => {
+        setUiChunks((prev) => prev.map((c) => (c.id === chunk.id && c.status === "generating" ? { ...c, status: "error" } : c)));
+        genBusyRef.current = false;
+        queueNextGenerationRef.current();
+      });
+    return true;
+  }, [generate, selectedVoice, speed, workerReady, voices]);
+
+  const queueNextGeneration = useCallback(() => {
+    if (genBusyRef.current) return;
+    const next = uiChunks.find((c) => c.status === "pending");
+    if (!next) return;
+    genBusyRef.current = true;
+    sendGenerate(next);
+  }, [sendGenerate, uiChunks]);
+
+  useEffect(() => { queueNextGeneration(); }, [queueNextGeneration]);
+  useEffect(() => { queueNextGenerationRef.current = queueNextGeneration; }, [queueNextGeneration]);
+
+  // Playback queue
+  const [autoplay, setAutoplay] = useState<boolean>(true);
+  const [playhead, setPlayhead] = useState<number>(0);
+  const [isUserPaused, setIsUserPaused] = useState<boolean>(false);
+  const [crossfadeMs, setCrossfadeMs] = useState<number>(600);
+
+  // Interruption: pause when parent signals
+  useEffect(() => {
+    if (typeof interruptKey === "number") {
+      setAutoplay(false);
+      setIsUserPaused(true);
+    }
+  }, [interruptKey]);
+
+  // Resume autoplay when parent signals resume
+  useEffect(() => {
+    if (typeof resumeKey === "number") {
+      setIsUserPaused(false);
+      setAutoplay(true);
+    }
+  }, [resumeKey]);
+
+  const { audioARef, audioBRef, activeAudioIndex, progressRatio, play, pause, stop, skip, clearAudioSources } = useTtsQueue({
+    items: useMemo(() => uiChunks.map((c) => ({ audioUrl: c.audioUrl, status: c.status })), [uiChunks]),
+    playhead,
+    setPlayhead,
+    autoplay,
+    setAutoplay,
+    isUserPaused,
+    setIsUserPaused,
+    onStatusChange: (idx, status) => {
+      setUiChunks((prev) => prev.map((c, i) => (i === idx ? { ...c, status } : c)));
+    },
+    onError: (m) => console.error(m),
+    crossfadeMs,
+  });
+
+  // Kick playback when first item becomes ready and autoplay is enabled
+  useEffect(() => {
+    if (!autoplay || isUserPaused) return;
+    const current = uiChunks[playhead];
+    if (current && current.status === "ready") {
+      play();
+    }
+  }, [uiChunks, playhead, autoplay, isUserPaused, play]);
+
+  // Spoken vs remaining text (approximate for current chunk using audio progress)
+  const { spokenText, remainingText, streamingText } = useMemo(() => {
+    const before = uiChunks.slice(0, playhead).filter((c) => c.status === "played").map((c) => c.text).join(" ");
+    const current = uiChunks[playhead];
+    let currentSpoken = "";
+    let currentRemain = "";
+    if (current && (current.status === "playing" || current.status === "paused" || current.status === "ready")) {
+      const ratio = progressRatio || 0;
+      const text = current.text || "";
+      const { spoken, remaining } = splitTextByWeightedRatio(text, ratio);
+      currentSpoken = spoken;
+      currentRemain = remaining;
+    }
+    const after = uiChunks.slice(playhead + 1).map((c) => c.text).join(" ");
+    return {
+      spokenText: [before, currentSpoken].filter(Boolean).join(" "),
+      remainingText: [currentRemain, after].filter(Boolean).join(" "),
+      streamingText: streamingAssistantText,
+    };
+  }, [playhead, uiChunks, progressRatio, streamingAssistantText]);
+
+  return (
+    <div className="mb-4 border border-gray-700 rounded-lg p-3 bg-gray-900">
+      <div className="flex items-center gap-3">
+        <h3 className="text-sm font-semibold text-white m-0">TTS Playback</h3>
+        {device ? <span className="text-xs text-gray-400">device: {device}</span> : null}
+        {workerError ? <span className="text-xs text-red-500">{workerError}</span> : null}
+        <label className="ml-auto flex items-center gap-2 text-sm text-gray-300">
+          <span>Autoplay</span>
+          <input type="checkbox" checked={autoplay} onChange={(e) => setAutoplay(e.target.checked)} />
+        </label>
+      </div>
+      <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <div className="text-xs text-gray-500 mb-1">Streaming from LLM</div>
+          <div className="min-h-[56px] whitespace-pre-wrap text-gray-200 bg-gray-950 border border-gray-700 rounded p-2">{streamingText || <span className="text-gray-500">(idle)</span>}</div>
+        </div>
+        <div className="flex items-center gap-3">
+          <label className="text-sm text-gray-600" htmlFor="tts-crossfade-range">Crossfade</label>
+          <input id="tts-crossfade-range" type="range" min={0} max={300} step={10} value={crossfadeMs} onChange={(e) => setCrossfadeMs(Number(e.target.value))} />
+          <span className="text-sm text-gray-600">{crossfadeMs}ms</span>
+          <label className="text-sm text-gray-600 ml-4" htmlFor="voice-select">Voice</label>
+          <select id="voice-select" value={selectedVoice} onChange={(e) => setSelectedVoice(e.target.value)} disabled={!workerReady || Object.keys(voices).length === 0} className="rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-gray-200">
+            {Object.entries(voices).map(([id, v]) => (
+              <option key={id} value={id}>{v.name} ({v.language === "en-us" ? "American" : "British"} {v.gender})</option>
+            ))}
+          </select>
+          <label className="text-sm text-gray-600" htmlFor="speed-range">Speed</label>
+          <input id="speed-range" type="range" min={0.5} max={2} step={0.05} value={speed} onChange={(e) => setSpeed(Number(e.target.value))} disabled={!workerReady} />
+          <span className="text-sm text-gray-600">{speed.toFixed(2)}x</span>
+        </div>
+      </div>
+
+      {/* Player */}
+      <div className="mt-3">
+        <div className="flex items-center gap-3">
+          <button type="button" onClick={play} className="rounded-lg px-3 py-2 bg-blue-600 text-white">Play</button>
+          <button type="button" onClick={pause} className="rounded-lg px-3 py-2 bg-gray-600 text-white">Pause</button>
+          <button type="button" onClick={stop} className="rounded-lg px-3 py-2 bg-gray-700 text-white">Stop</button>
+          <button type="button" onClick={skip} className="rounded-lg px-3 py-2 bg-amber-600 text-white">Skip</button>
+          <button type="button" onClick={() => { setUiChunks([]); setPlayhead(0); nextUiIdRef.current = 1; chunkReset(); clearAudioSources(); }} className="rounded-lg px-3 py-2 bg-gray-200 text-gray-900">Clear</button>
+        </div>
+        <div className="relative mt-2">
+          <audio ref={audioARef} className={`w-full ${activeAudioIndex === 0 ? "" : "hidden"}`} controls preload="auto">
+            <track kind="captions" label="TTS audio A" />
+          </audio>
+          <audio ref={audioBRef} className={`w-full ${activeAudioIndex === 1 ? "" : "hidden"}`} controls preload="auto">
+            <track kind="captions" label="TTS audio B" />
+          </audio>
+        </div>
+      </div>
+
+      {/* Spoken vs Remaining */}
+      <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="border border-gray-700 rounded p-3">
+          <div className="text-sm font-semibold">Spoken (approx)</div>
+          <div className="min-h-[80px] whitespace-pre-wrap text-gray-200">{spokenText || <span className="text-gray-500">Nothing spoken yet.</span>}</div>
+        </div>
+        <div className="border border-gray-700 rounded p-3">
+          <div className="text-sm font-semibold">Remaining</div>
+          <div className="min-h-[80px] whitespace-pre-wrap text-gray-200">{remainingText || <span className="text-gray-500">Queue is empty.</span>}</div>
+        </div>
+      </div>
+
+      {/* Queue view */}
+      <div className="mt-4 border border-gray-700 rounded p-3">
+        <div className="text-sm font-semibold mb-2">Queue</div>
+        <div className="space-y-2 max-h-[30vh] overflow-auto pr-2">
+          {uiChunks.length === 0 && (
+            <div className="text-sm text-gray-500">Awaiting generated speech chunks…</div>
+          )}
+          {uiChunks.map((c, i) => (
+            <div key={c.id} className={`rounded-lg border border-gray-700 p-2 ${i === playhead ? "border-blue-600" : ""}`}>
+              <div className="flex items-center gap-2 text-xs text-gray-500">
+                <span>#{i + 1}</span>
+                <span className="ml-auto">
+                  <span className={`inline-block rounded px-2 py-0.5 text-xs ${
+                    c.status === "pending" ? "bg-gray-200 text-gray-800" :
+                    c.status === "generating" ? "bg-indigo-200 text-indigo-800" :
+                    c.status === "ready" ? "bg-emerald-200 text-emerald-800" :
+                    c.status === "playing" ? "bg-blue-200 text-blue-800" :
+                    c.status === "paused" ? "bg-amber-200 text-amber-800" :
+                    c.status === "played" ? "bg-gray-100 text-gray-500" :
+                    c.status === "skipped" ? "bg-amber-100 text-amber-700" :
+                    "bg-red-200 text-red-800"
+                  }`}>{c.status}</span>
+                </span>
+              </div>
+              <div className="mt-1 whitespace-pre-wrap">{c.text}</div>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }

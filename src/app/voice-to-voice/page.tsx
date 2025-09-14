@@ -5,6 +5,7 @@ import { useVoiceSegments } from "../../hooks/use-voice-segments";
 import { useSentenceChunker } from "../../hooks/use-sentence-chunker";
 import { useKokoroTtsGenerator } from "../../hooks/use-kokoro-tts-generator";
 import { useTtsQueue } from "../../hooks/use-tts-queue";
+import { splitTextByWeightedRatio } from "../../lib/tts/progressSplit";
 
 type UiChunk = {
   id: number;
@@ -195,9 +196,9 @@ export default function Page() {
     if (current && (current.status === "playing" || current.status === "paused" || current.status === "ready")) {
       const ratio = progressRatio || 0;
       const text = current.text || "";
-      const split = Math.max(0, Math.min(text.length, Math.round(text.length * ratio)));
-      currentSpoken = text.slice(0, split);
-      currentRemain = text.slice(split);
+      const { spoken, remaining } = splitTextByWeightedRatio(text, ratio);
+      currentSpoken = spoken;
+      currentRemain = remaining;
     }
     const after = uiChunks.slice(playhead + 1).map((c) => c.text).join(" ");
     return {
