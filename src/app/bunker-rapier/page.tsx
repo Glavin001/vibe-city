@@ -4,13 +4,21 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { KeyboardControls, PointerLockControls, useKeyboardControls } from '@react-three/drei'
 import { Physics, RigidBody, CapsuleCollider, CuboidCollider, useRapier } from '@react-three/rapier'
-import type { RapierRigidBody } from '@react-three/rapier'
-import type Rapier from '@dimforge/rapier3d-compat'
+import type { RapierRigidBody, RapierCollider } from '@react-three/rapier'
 import * as THREE from 'three'
 import { BUILDINGS, type BuildingConfig, NODE_POS, N } from '../../lib/bunker-world'
 import { Ground, Building } from '../../lib/bunker-scene'
 
 type Controls = 'forward' | 'backward' | 'left' | 'right' | 'jump' | 'run'
+// Use a minimal shape for the character controller to avoid cross-package type conflicts
+type CharacterControllerAny = {
+  enableAutostep: (maxStepHeight: number, minStepWidth: number, considerDynamicBodies: boolean) => void
+  enableSnapToGround: (distance: number) => void
+  setApplyImpulsesToDynamicBodies: (enabled: boolean) => void
+  computeColliderMovement: (collider: RapierCollider, movement: { x: number; y: number; z: number }) => void
+  computedMovement: () => { x: number; y: number; z: number }
+  computedGrounded: () => boolean
+}
 
 const PLAYER_EYE_HEIGHT = 1.8
 const WALK_SPEED = 5
@@ -48,9 +56,9 @@ function GroundPhysics() {
 
 function PlayerKCC({ start }: { start: [number, number, number] }) {
   const characterRigidBody = useRef<RapierRigidBody | null>(null)
-  const characterColliderRef = useRef<Rapier.Collider | null>(null)
+  const characterColliderRef = useRef<RapierCollider | null>(null)
   const { world, rapier } = useRapier()
-  const characterController = useRef<Rapier.KinematicCharacterController | null>(null)
+  const characterController = useRef<CharacterControllerAny | null>(null)
   const camera = useThree((s) => s.camera)
   const [, get] = useKeyboardControls<Controls>()
 
@@ -61,14 +69,15 @@ function PlayerKCC({ start }: { start: [number, number, number] }) {
   // Init controller
   useEffect(() => {
     if (!rapier || !world) return
-    const ctrl = world.createCharacterController(0.1)
+    const ctrl = (world as unknown as { createCharacterController: (sn: number) => CharacterControllerAny }).createCharacterController(0.1)
     ctrl.enableAutostep(0.7, 0.3, true)
     ctrl.enableSnapToGround(0.1)
     ctrl.setApplyImpulsesToDynamicBodies(true)
     characterController.current = ctrl
     return () => {
       if (characterController.current) {
-        world.removeCharacterController(characterController.current)
+        // Cast world to minimal shape to avoid duplicate Rapier type instances during type-checking
+        (world as unknown as { removeCharacterController: (c: CharacterControllerAny) => void }).removeCharacterController(characterController.current)
         characterController.current = null
       }
     }
