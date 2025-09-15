@@ -2,8 +2,6 @@ name: Vercel Preview Deployment
 
 on:
   pull_request:
-    branches-ignore:
-      - main
 
 concurrency:
   group: vercel-preview-${{ github.ref }}
