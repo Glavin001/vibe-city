@@ -10,6 +10,12 @@ export default function Home() {
           🎲 THREE.js Demo
         </a>
         <a
+          href="/grass"
+          className="rounded-lg bg-gray-800 hover:bg-gray-700 text-white font-medium text-center py-3 px-4 transition-colors"
+        >
+          🌿 Grass Demo
+        </a>
+        <a
           href="/bunker"
           className="rounded-lg bg-gray-800 hover:bg-gray-700 text-white font-medium text-center py-3 px-4 transition-colors"
         >
