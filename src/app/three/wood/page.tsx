@@ -21,6 +21,7 @@ import {
   WoodGenuses,
   WoodNodeMaterial,
 } from "three/addons/materials/WoodNodeMaterial.js";
+import WebGPU from "three/addons/capabilities/WebGPU.js";
 
 declare module "@react-three/fiber" {
   interface ThreeElements extends ThreeToJSXElements<typeof THREE> {}
@@ -359,6 +360,12 @@ function WoodScene() {
 }
 
 export default function WoodPage() {
+  if (typeof window !== "undefined" && !WebGPU.isAvailable()) {
+    return (
+      <div className="p-4">WebGPU is not supported in this browser.</div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-white">
       <div className="w-full h-[600px]">
