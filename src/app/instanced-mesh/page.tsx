@@ -5,7 +5,7 @@ import { Suspense, useEffect, useMemo } from 'react'
 import * as THREE from 'three'
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import { InstancedMesh2 } from '@three.ez/instanced-mesh'
-import { useGLTF } from '@react-three/drei'
+import { PerformanceMonitor, useGLTF } from '@react-three/drei'
 import { GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js'
 
 function StaticTrees() {
@@ -22,9 +22,13 @@ function StaticTrees() {
       geometry,
       materials,
     )
-    const count = 200
+    const count = 3000
     inst.addInstances(count, (obj) => {
-      obj.position.set((Math.random() - 0.5) * 20, 0, (Math.random() - 0.5) * 20)
+      obj.position.set(
+        (Math.random() - 0.5) * 200,
+        0,
+        (Math.random() - 0.5) * 200,
+      )
       obj.updateMatrix()
     })
     return inst
@@ -43,20 +47,28 @@ const CHARACTER_URL =
 
 function SkinnedCharacters() {
   const gltf = useGLTF(CHARACTER_URL) as unknown as GLTF
-  const count = 10
-  const { mesh, mixer } = useMemo(() => {
+  const count = 2000
+  const { mesh, mixer, instances, velocities } = useMemo(() => {
     const skinned = gltf.scene.getObjectByProperty('type', 'SkinnedMesh') as THREE.SkinnedMesh
     const geometry = skinned.geometry
     const material = skinned.material as THREE.Material
     const inst = new InstancedMesh2<{}, THREE.BufferGeometry, THREE.Material>(
       geometry,
       material,
+      { createEntities: true },
     )
     inst.initSkeleton(skinned.skeleton)
     inst.addInstances(count, (obj) => {
-      obj.position.set((Math.random() - 0.5) * 10, 0, (Math.random() - 0.5) * 10)
+      obj.position.set(
+        (Math.random() - 0.5) * 100,
+        0,
+        (Math.random() - 0.5) * 100,
+      )
       obj.updateMatrix()
     })
+    const tempVel = Array.from({ length: count }, () =>
+      new THREE.Vector3((Math.random() - 0.5) * 2, 0, (Math.random() - 0.5) * 2),
+    )
     gltf.scene.traverse((o) => {
       o.visible = false
     })
@@ -64,12 +76,20 @@ function SkinnedCharacters() {
     gltf.animations.forEach((clip) => {
       mx.clipAction(clip).play()
     })
-    return { mesh: inst, mixer: mx }
+    return { mesh: inst, mixer: mx, instances: inst.instances!, velocities: tempVel }
   }, [gltf])
 
   useFrame((_, delta) => {
     mixer.update(delta)
-    for (let i = 0; i < count; i++) mesh.setBonesAt(i)
+    for (let i = 0; i < count; i++) {
+      const inst = instances[i]
+      const vel = velocities[i]
+      inst.position.addScaledVector(vel, delta)
+      if (Math.abs(inst.position.x) > 50) vel.x *= -1
+      if (Math.abs(inst.position.z) > 50) vel.z *= -1
+      inst.updateMatrix()
+      mesh.setBonesAt(i)
+    }
   })
 
   useEffect(() => () => {
@@ -94,6 +114,7 @@ export default function InstancedMeshPage() {
         </p>
         <div className="w-full h-[600px] bg-black rounded-lg overflow-hidden">
           <Canvas camera={{ position: [10, 10, 10], fov: 50 }}>
+            <PerformanceMonitor />
             <Suspense fallback={null}>
               <ambientLight intensity={0.5} />
               <directionalLight position={[5, 10, 7.5]} intensity={1} />
