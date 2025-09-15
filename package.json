@@ -44,7 +44,8 @@
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "stream-browserify": "^3.0.0",
-    "three": "^0.180.0"
+    "three": "^0.180.0",
+    "tweakpane": "^4.0.5"
   },
   "devDependencies": {
     "@biomejs/biome": "2.2.0",
