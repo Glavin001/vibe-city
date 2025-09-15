@@ -1,6 +1,10 @@
 "use client";
 
-import GrassDemo from "@/components/GrassDemo";
+import dynamic from "next/dynamic";
+
+const GrassDemo = dynamic(() => import("@/components/GrassDemo"), {
+  ssr: false,
+});
 
 export default function GrassPage() {
   return (
