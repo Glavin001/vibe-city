@@ -93,9 +93,11 @@ const GrassMaterial = shaderMaterial(
 
       void main() {
         frc = position.y/float(bladeHeight);
+        float tipWeight = smoothstep(0.0, 1.0, frc);
         float noise = 1.0-(snoise(vec2((time-offset.x/50.0), (time-offset.z/50.0))));
         vec4 direction = vec4(0.0, halfRootAngleSin, 0.0, halfRootAngleCos);
-        direction = slerp(direction, orientation, frc);
+        // Tip-weight the orientation slerp so the base remains more rigid
+        direction = slerp(direction, orientation, tipWeight);
         vec3 vPosition = vec3(position.x, position.y + position.y * stretch, position.z);
         vPosition = rotateVectorByQuaternion(vPosition, direction);
         // Interaction-driven bending/flattening sampled in world XZ using the blade root offset
@@ -115,7 +117,8 @@ const GrassMaterial = shaderMaterial(
           vPosition.y *= (1.0 - flatten);
         }
 
-        float halfAngle = noise * 0.15;
+        // Wind sway is weighted to the tip as well, keeping the root anchored
+        float halfAngle = noise * 0.15 * tipWeight;
         vPosition = rotateVectorByQuaternion(vPosition, normalize(vec4(sin(halfAngle), 0.0, -sin(halfAngle), cos(halfAngle))));
         vUv = uv;
         gl_Position = projectionMatrix * modelViewMatrix * vec4(offset + vPosition, 1.0 );

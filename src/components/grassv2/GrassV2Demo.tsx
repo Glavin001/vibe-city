@@ -106,7 +106,7 @@ function InteractionFader({ fade }: { fade: () => void }) {
 }
 
 export default function GrassV2Demo() {
-  const scale = 5;
+  const scale = 4;
   const W = 80 * scale;
   const boundsMin = useMemo(() => new THREE.Vector2(-W / 2, -W / 2), [W]);
   const boundsSize = useMemo(() => new THREE.Vector2(W, W), [W]);

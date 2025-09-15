@@ -7,6 +7,9 @@ import { useMemo, useRef, type RefObject, type MutableRefObject } from "react";
 import { createNoise2D } from "simplex-noise";
 import "./GrassMaterial";
 
+const GRASS_ROOT_LIFT = 0.0; //0.12; // Small lift to keep blade bases above ground
+const GROUND_SEGMENTS = 128; // Higher resolution ground to better match height field
+
 type GrassOptions = {
   bW?: number;
   bH?: number;
@@ -49,7 +52,7 @@ export function Grass({
     return g;
   }, [bW, bH, joints]);
 
-  const groundGeo = useMemo(() => makeGroundGeometry(width, 48), [width]);
+  const groundGeo = useMemo(() => makeGroundGeometry(width, GROUND_SEGMENTS), [width]);
 
   const { diffuseTexture, alphaTexture } = useMemo(() => createBladeTextures(), []);
 
@@ -117,7 +120,7 @@ function getAttributeData(instances: number, width: number) {
   for (let i = 0; i < instances; i++) {
     const offsetX = Math.random() * width - width / 2;
     const offsetZ = Math.random() * width - width / 2;
-    const offsetY = getYPosition(offsetX, offsetZ);
+    const offsetY = getYPosition(offsetX, offsetZ) + GRASS_ROOT_LIFT;
     offsets[i * 3 + 0] = offsetX;
     offsets[i * 3 + 1] = offsetY;
     offsets[i * 3 + 2] = offsetZ;
