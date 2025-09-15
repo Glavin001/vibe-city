@@ -1,41 +1,65 @@
-'use client'
+"use client";
 
-import React, { Suspense, useMemo } from 'react'
-import { Canvas } from '@react-three/fiber'
-import { OrbitControls, Environment } from '@react-three/drei'
-import { WoodNodeMaterial, WoodGenuses, Finishes } from 'three/examples/jsm/materials/WoodNodeMaterial.js'
-import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js'
+import { Environment, OrbitControls } from "@react-three/drei";
+import { Canvas } from "@react-three/fiber";
+import { Suspense, useMemo } from "react";
+import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
+import {
+  Finishes,
+  WoodGenuses,
+  WoodNodeMaterial,
+} from "three/examples/jsm/materials/WoodNodeMaterial.js";
 
-function WoodBlock({ genus, finish, position }: { genus: string; finish: string; position: [number, number, number] }) {
-  const material = useMemo(() => WoodNodeMaterial.fromPreset(genus, finish), [genus, finish])
-  const geometry = useMemo(() => new RoundedBoxGeometry(0.125, 0.9, 0.9, 10, 0.02), [])
-  return <mesh geometry={geometry} material={material} position={position} />
+function WoodBlock({
+  genus,
+  finish,
+  position,
+}: {
+  genus: string;
+  finish: string;
+  position: [number, number, number];
+}) {
+  const material = useMemo(
+    () => WoodNodeMaterial.fromPreset(genus, finish),
+    [genus, finish],
+  );
+  const geometry = useMemo(
+    () => new RoundedBoxGeometry(0.125, 0.9, 0.9, 10, 0.02),
+    [],
+  );
+  return <mesh geometry={geometry} material={material} position={position} />;
 }
 
 function WoodScene() {
-  return (
-    <>
-      {WoodGenuses.map((genus, x) =>
-        Finishes.map((finish, y) => {
-          const position: [number, number, number] = [
-            (x - WoodGenuses.length / 2) * 1,
-            (Finishes.length / 2 - y) * 1,
-            0,
-          ]
-          return <WoodBlock key={`${genus}-${finish}`} genus={genus} finish={finish} position={position} />
-        }),
-      )}
-    </>
-  )
+  return WoodGenuses.flatMap((genus, x) =>
+    Finishes.map((finish, y) => {
+      const position: [number, number, number] = [
+        (x - WoodGenuses.length / 2) * 1,
+        (Finishes.length / 2 - y) * 1,
+        0,
+      ];
+      return (
+        <WoodBlock
+          key={`${genus}-${finish}`}
+          genus={genus}
+          finish={finish}
+          position={position}
+        />
+      );
+    }),
+  );
 }
 
 export default function WoodPage() {
   return (
     <div className="min-h-screen bg-gray-900">
       <div className="p-8">
-        <h1 className="text-4xl font-bold text-white mb-4">Procedural Wood Materials</h1>
+        <h1 className="text-4xl font-bold text-white mb-4">
+          Procedural Wood Materials
+        </h1>
         <p className="text-gray-300 mb-8">
-          Demonstrates <code>WoodNodeMaterial</code> from three.js using React Three Fiber.
+          Demonstrates <code>WoodNodeMaterial</code> from three.js using React
+          Three Fiber.
         </p>
         <div className="w-full h-[600px] bg-black rounded-lg overflow-hidden">
           <Canvas camera={{ position: [0, 5, 7], fov: 45 }}>
@@ -61,6 +85,5 @@ export default function WoodPage() {
         </div>
       </div>
     </div>
-  )
+  );
 }
-
