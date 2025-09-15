@@ -1,15 +1,16 @@
 "use client";
 
 import { Environment, OrbitControls, StatsGl } from "@react-three/drei";
-import { Canvas, useFrame } from "@react-three/fiber";
-import { useMemo, useRef } from "react";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
+import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
+import { ImprovedNoise } from "three/examples/jsm/math/ImprovedNoise.js";
 
 /**
  * Utility: Build a simple blade geometry
  */
 function makeBladeGeometry({
-  segments = 5,
+  segments = 7,
   width = 0.035,
   height = 0.6,
   tipTaper = 0.9,
@@ -97,10 +98,7 @@ function useInteractionTexture({ size = 512, decay = 0.94 } = {}) {
     [size],
   );
   const ctx = useMemo(
-    () =>
-      canvas.getContext("2d", {
-        willReadFrequently: false,
-      }) as CanvasRenderingContext2D,
+    () => canvas.getContext("2d") as CanvasRenderingContext2D,
     [canvas],
   );
   const texture = useMemo(() => {
@@ -146,6 +144,32 @@ function useInteractionTexture({ size = 512, decay = 0.94 } = {}) {
   return { texture, fade, makeStamper, size };
 }
 
+function createHeightMapTexture(size = 1024) {
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext("2d")!;
+  const img = ctx.createImageData(size, size);
+  const data = img.data;
+  const perlin = new ImprovedNoise();
+  const z = Math.random() * 100;
+  let ptr = 0;
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const v = (perlin.noise(x / 64, y / 64, z) + 1) * 0.5;
+      const col = v * 255;
+      data[ptr++] = col;
+      data[ptr++] = col;
+      data[ptr++] = col;
+      data[ptr++] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.needsUpdate = true;
+  return tex;
+}
+
 const VERT = /* glsl */ `
 precision highp float;
 attribute vec3 aOffset;
@@ -153,6 +177,7 @@ attribute float aScale;
 attribute float aRotation;
 attribute float aCurv;
 attribute float aRand;
+attribute vec2 aTilt;
 uniform float uTime;
 uniform vec2 uWindDir;
 uniform float uWindAmp;
@@ -166,7 +191,7 @@ uniform float uHeightScale;
 uniform sampler2D uInteractTex;
 uniform float uUseInteract;
 uniform vec2 uInteractInvSize;
-uniform float uFlattenStrength;
+uniform float uBendStrength;
 varying vec3 vWorldPos;
 varying float vHeight01;
 vec3 mod289(vec3 x){ return x - floor(x * (1.0 / 289.0)) * 289.0; }
@@ -201,7 +226,14 @@ void main() {
   vec2 windU = (aOffset.xz * uWindFreq * 0.15) + uTime * 0.15;
   float gust = snoise(windU + aRand * 37.0);
   float sway = uWindAmp * mix(0.5, 1.0, aRand) * gust;
-  vec2 dir = normalize(uWindDir + vec2(snoise((aOffset.xz + 2.7) * 0.05)));
+  vec2 dir = normalize(
+    uWindDir +
+    vec2(
+      snoise((aOffset.xz + 2.7) * 0.05),
+      snoise((aOffset.xz + 8.5) * 0.05)
+    )
+  );
+  p.xz += aTilt * p.y;
   vec2 worldXZ = aOffset.xz + rot2(aRotation) * p.xz;
   vec2 uvWorld = (worldXZ - uBoundsMin) / uBoundsSize;
   float interact = 0.0;
@@ -213,18 +245,20 @@ void main() {
     float cyp = texture2D(uInteractTex, uvWorld + vec2(0.0, uInteractInvSize.y)).r;
     float cym = texture2D(uInteractTex, uvWorld - vec2(0.0, uInteractInvSize.y)).r;
     vec2 grad = vec2(cxp - cxm, cyp - cym);
-    bendFromInteract = (length(grad) > 1e-5) ? normalize(grad) : vec2(0.0);
+    bendFromInteract = (length(grad) > 1e-5) ? -normalize(grad) : vec2(0.0);
     interact = c;
   }
-  float bendAmt = (aCurv * 0.35 + sway * 0.25) * (h01 * h01);
-  vec2 bendDir = normalize(dir + bendFromInteract * 1.5);
+  float bendAmt = aCurv * 0.35;
+  bendAmt += interact * uBendStrength * h01;
+  vec2 bendDir = normalize(dir + bendFromInteract);
   p.xz += bendDir * bendAmt * uBladeBase;
-  float flatten = uFlattenStrength * interact * h01;
-  p.y *= aScale * (1.0 - clamp(flatten, 0.0, 0.95));
+  p.xz += dir * (sway * h01) * uBladeBase;
+  p.y *= aScale;
   p.xz = rot2(aRotation) * p.xz;
   float baseY = 0.0;
   if (uUseHeightMap > 0.5) {
-    float h = texture2D(uHeightMap, uvWorld).r;
+    vec2 uvBase = (aOffset.xz - uBoundsMin) / uBoundsSize;
+    float h = texture2D(uHeightMap, uvBase).r;
     baseY = h * uHeightScale;
   }
   vec3 world = vec3(worldXZ.x, baseY + p.y + aOffset.y, worldXZ.y);
@@ -271,7 +305,7 @@ interface GrassFieldProps {
   heightScale?: number;
   interaction?: boolean;
   interactionTexture?: ReturnType<typeof useInteractionTexture>;
-  flattenStrength?: number;
+  bendStrength?: number;
   colorA?: string;
   colorB?: string;
 }
@@ -283,14 +317,14 @@ function GrassField({
   bladeHeight = 0.6,
   bladeWidth = 0.035,
   segments = 5,
-  windAmp = 0.8,
+  windAmp = 1.2,
   windDir = [1, 0],
   windFreq = 0.7,
   heightMap = null,
   heightScale = 2.5,
   interaction = true,
   interactionTexture,
-  flattenStrength = 0.9,
+  bendStrength = 0.9,
   colorA = "#446c3a",
   colorB = "#8bcf4a",
 }: GrassFieldProps) {
@@ -322,17 +356,23 @@ function GrassField({
     const yaws = new Float32Array(count);
     const curvs = new Float32Array(count);
     const rands = new Float32Array(count);
+    const tilts = new Float32Array(count * 2);
     for (let i = 0; i < count; i++) {
       scales[i] = 0.75 + Math.random() * 0.7;
       yaws[i] = Math.random() * Math.PI * 2;
       curvs[i] = 0.3 + Math.random() * 0.7;
       rands[i] = Math.random();
+      const tiltAngle = Math.random() * Math.PI * 2;
+      const tiltAmt = Math.random() * 0.3;
+      tilts[i * 2 + 0] = Math.cos(tiltAngle) * tiltAmt;
+      tilts[i * 2 + 1] = Math.sin(tiltAngle) * tiltAmt;
     }
     g.setAttribute("aOffset", new THREE.InstancedBufferAttribute(offsets, 3));
     g.setAttribute("aScale", new THREE.InstancedBufferAttribute(scales, 1));
     g.setAttribute("aRotation", new THREE.InstancedBufferAttribute(yaws, 1));
     g.setAttribute("aCurv", new THREE.InstancedBufferAttribute(curvs, 1));
     g.setAttribute("aRand", new THREE.InstancedBufferAttribute(rands, 1));
+    g.setAttribute("aTilt", new THREE.InstancedBufferAttribute(tilts, 2));
     g.boundingBox = new THREE.Box3(
       new THREE.Vector3(boundsMin.x, center[1], boundsMin.y),
       new THREE.Vector3(
@@ -390,7 +430,7 @@ function GrassField({
                 : 1,
             ),
           },
-          uFlattenStrength: { value: flattenStrength },
+          uBendStrength: { value: bendStrength },
           uColorA: { value: new THREE.Color(colorA) },
           uColorB: { value: new THREE.Color(colorB) },
           uSunDir: { value: new THREE.Vector3(0.5, 1.0, 0.2).normalize() },
@@ -410,7 +450,7 @@ function GrassField({
       heightScale,
       interaction,
       interactionTexture,
-      flattenStrength,
+      bendStrength,
       colorA,
       colorB,
     ],
@@ -455,46 +495,93 @@ function RollingBall({
   );
 }
 
+interface CursorBallProps {
+  stamper: ReturnType<ReturnType<typeof useInteractionTexture>["makeStamper"]>;
+  boundsMin: THREE.Vector2;
+  boundsSize: THREE.Vector2;
+  radius?: number;
+}
+
+function CursorBall({ stamper, boundsMin, boundsSize, radius = 0.6 }: CursorBallProps) {
+  const ref = useRef<THREE.Mesh>(null);
+  const { camera, gl } = useThree();
+  const mouse = useRef(new THREE.Vector2());
+  useEffect(() => {
+    const handle = (e: PointerEvent) => {
+      const rect = gl.domElement.getBoundingClientRect();
+      mouse.current.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      mouse.current.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+    };
+    gl.domElement.addEventListener("pointermove", handle);
+    return () => gl.domElement.removeEventListener("pointermove", handle);
+  }, [gl]);
+  const plane = useMemo(() => new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), []);
+  const ray = useMemo(() => new THREE.Raycaster(), []);
+  const pos = useMemo(() => new THREE.Vector3(), []);
+  useFrame(() => {
+    ray.setFromCamera(mouse.current, camera);
+    ray.ray.intersectPlane(plane, pos);
+    const x = THREE.MathUtils.clamp(pos.x, boundsMin.x, boundsMin.x + boundsSize.x);
+    const z = THREE.MathUtils.clamp(pos.z, boundsMin.y, boundsMin.y + boundsSize.y);
+    if (ref.current) ref.current.position.set(x, radius, z);
+    if (stamper) stamper(x, z, radius * 2.2, 1.0);
+  });
+  return (
+    <mesh ref={ref} castShadow receiveShadow>
+      <sphereGeometry args={[radius, 32, 32]} />
+      <meshStandardMaterial color="#dd3333" metalness={0.2} roughness={0.6} />
+    </mesh>
+  );
+}
+
 export function GrassDemo({
-  fieldSize = [28, 28],
-  bladeCount = 130_000,
-  useHeightMap = false,
-  heightScale = 2.5,
+  fieldSize = [200, 200],
+  bladeCount = 5_000_000,
+  useHeightMap = true,
+  heightScale = 3.0,
 }) {
   const [W, D] = fieldSize;
   const boundsMin = new THREE.Vector2(-W / 2, -D / 2);
   const boundsSize = new THREE.Vector2(W, D);
-  const heightMap = null;
+  const heightMap = useMemo(() => createHeightMapTexture(1024), []);
   const interact = useInteractionTexture({ size: 512, decay: 0.97 });
   const stamper = interact.makeStamper(
     new THREE.Vector2(boundsMin.x, boundsMin.y),
     new THREE.Vector2(boundsSize.x, boundsSize.y),
   );
+  const [windAmp, setWindAmp] = useState(1.2);
+  const [windFreq, setWindFreq] = useState(0.8);
+  const [bendStrength, setBendStrength] = useState(0.9);
   return (
-    <Canvas shadows camera={{ position: [10, 7, 10], fov: 45 }}>
+    <div style={{ position: "relative", width: "100%", height: "100%" }}>
+      <Canvas shadows camera={{ position: [30, 20, 30], fov: 45 }}>
       <color attach="background" args={["#9fd6ff"]} />
       <hemisphereLight intensity={0.5} groundColor="#7aa07a" />
-      <directionalLight position={[10, 15, 10]} intensity={1.2} castShadow />
+      <directionalLight position={[20, 25, 20]} intensity={1.2} castShadow />
       <mesh
         rotation={[-Math.PI / 2, 0, 0]}
         receiveShadow
-        position={[0, -0.001, 0]}
+        position={[0, -0.01, 0]}
       >
-        <planeGeometry args={[W, D, 1, 1]} />
-        <meshStandardMaterial color="#7cac65" />
+        <planeGeometry args={[W, D, 256, 256]} />
+        <meshStandardMaterial
+          color="#7cac65"
+          displacementMap={useHeightMap ? heightMap : null}
+          displacementScale={heightScale}
+        />
       </mesh>
       <GrassField
         size={[W, D]}
         count={bladeCount}
         center={[0, 0, 0]}
-        windAmp={0.85}
+        windAmp={windAmp}
         windDir={[1, 0]}
-        windFreq={0.8}
+        windFreq={windFreq}
         heightMap={useHeightMap ? heightMap : null}
         heightScale={heightScale}
         interaction
         interactionTexture={interact}
-        flattenStrength={0.9}
+        bendStrength={bendStrength}
       />
       <RollingBall
         stamper={stamper}
@@ -503,10 +590,65 @@ export function GrassDemo({
         radius={0.65}
         speed={1.0}
       />
+      <CursorBall
+        stamper={stamper}
+        boundsMin={boundsMin}
+        boundsSize={boundsSize}
+        radius={0.65}
+      />
       <Environment preset="sunset" />
       <OrbitControls makeDefault />
       <StatsGl />
-    </Canvas>
+      </Canvas>
+      <form
+        style={{
+          position: "absolute",
+          top: 10,
+          left: 10,
+          background: "rgba(255,255,255,0.8)",
+          padding: "8px",
+          borderRadius: "4px",
+          display: "flex",
+          flexDirection: "column",
+          gap: "4px",
+          fontFamily: "sans-serif",
+        }}
+      >
+        <label>
+          Wind Strength
+          <input
+            type="range"
+            min="0"
+            max="3"
+            step="0.01"
+            value={windAmp}
+            onChange={(e) => setWindAmp(parseFloat(e.target.value))}
+          />
+        </label>
+        <label>
+          Wind Frequency
+          <input
+            type="range"
+            min="0"
+            max="3"
+            step="0.01"
+            value={windFreq}
+            onChange={(e) => setWindFreq(parseFloat(e.target.value))}
+          />
+        </label>
+        <label>
+          Bend Strength
+          <input
+            type="range"
+            min="0"
+            max="2"
+            step="0.01"
+            value={bendStrength}
+            onChange={(e) => setBendStrength(parseFloat(e.target.value))}
+          />
+        </label>
+      </form>
+    </div>
   );
 }
 
