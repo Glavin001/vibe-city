@@ -3,7 +3,7 @@
 import * as THREE from "three";
 import { useFrame } from "@react-three/fiber";
 import type { ThreeElements } from "@react-three/fiber";
-import { useMemo, useRef } from "react";
+import { useMemo, useRef, type RefObject, type MutableRefObject } from "react";
 import { createNoise2D } from "simplex-noise";
 import "./GrassMaterial";
 
@@ -17,11 +17,23 @@ export function Grass({
   options = { bW: 0.12, bH: 1, joints: 5 },
   width = 60,
   instances = 80_000,
+  interactionTexture,
+  useInteract = true,
+  boundsMin: boundsMinProp,
+  boundsSize: boundsSizeProp,
+  flattenStrength = 0.9,
+  groundRef,
   ...props
 }: {
   options?: GrassOptions;
   width?: number;
   instances?: number;
+  interactionTexture?: THREE.Texture | null;
+  useInteract?: boolean;
+  boundsMin?: THREE.Vector2;
+  boundsSize?: THREE.Vector2;
+  flattenStrength?: number;
+  groundRef?: RefObject<THREE.Mesh | null> | MutableRefObject<THREE.Mesh | null>;
 } & ThreeElements["group"]) {
   const { bW = 0.12, bH = 1, joints = 5 } = options;
   const materialRef = useRef<THREE.ShaderMaterial | null>(null);
@@ -40,6 +52,16 @@ export function Grass({
   const groundGeo = useMemo(() => makeGroundGeometry(width, 48), [width]);
 
   const { diffuseTexture, alphaTexture } = useMemo(() => createBladeTextures(), []);
+
+  // Interaction uniforms
+  const boundsMin = useMemo(() => boundsMinProp ?? new THREE.Vector2(-width / 2, -width / 2), [boundsMinProp, width]);
+  const boundsSize = useMemo(() => boundsSizeProp ?? new THREE.Vector2(width, width), [boundsSizeProp, width]);
+  const interactInvSize = useMemo(() => {
+    const img = interactionTexture?.image as { width?: number; height?: number } | undefined;
+    const iw = img?.width ?? 512;
+    const ih = img?.height ?? 512;
+    return new THREE.Vector2(1 / iw, 1 / ih);
+  }, [interactionTexture]);
 
   useFrame((state) => {
     if (materialRef.current) materialRef.current.uniforms.time.value = state.clock.elapsedTime / 4;
@@ -61,9 +83,21 @@ export function Grass({
           <instancedBufferAttribute attach={"attributes-halfRootAngleSin"} args={[halfRootAngleSin, 1]} />
           <instancedBufferAttribute attach={"attributes-halfRootAngleCos"} args={[halfRootAngleCos, 1]} />
         </instancedBufferGeometry>
-        <grassMaterial ref={materialRef} map={diffuseTexture} alphaMap={alphaTexture} toneMapped={false} />
+        <grassMaterial
+          ref={materialRef}
+          map={diffuseTexture}
+          alphaMap={alphaTexture}
+          toneMapped={false}
+          bladeHeight={bH}
+          boundsMin={boundsMin}
+          boundsSize={boundsSize}
+          interactTex={interactionTexture ?? null}
+          useInteract={interactionTexture && useInteract ? 1 : 0}
+          interactInvSize={interactInvSize}
+          flattenStrength={flattenStrength}
+        />
       </mesh>
-      <mesh position={[0, 0, 0]} geometry={groundGeo} receiveShadow>
+      <mesh ref={groundRef} position={[0, 0, 0]} geometry={groundGeo} receiveShadow>
         <meshStandardMaterial color="#0a2a0a" />
       </mesh>
     </group>

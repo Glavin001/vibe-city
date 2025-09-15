@@ -13,6 +13,13 @@ const GrassMaterial = shaderMaterial(
     time: 0,
     tipColor: new THREE.Color(0.0, 0.6, 0.0).convertSRGBToLinear(),
     bottomColor: new THREE.Color(0.0, 0.1, 0.0).convertSRGBToLinear(),
+    // Interaction uniforms
+    boundsMin: new THREE.Vector2(-30, -30),
+    boundsSize: new THREE.Vector2(60, 60),
+    interactTex: null,
+    useInteract: 0,
+    interactInvSize: new THREE.Vector2(1, 1),
+    flattenStrength: 0.9,
   },
   /* glsl */ `
       precision mediump float;
@@ -23,6 +30,13 @@ const GrassMaterial = shaderMaterial(
       attribute float stretch;
       uniform float time;
       uniform float bladeHeight;
+      // Interaction uniforms
+      uniform vec2 boundsMin;
+      uniform vec2 boundsSize;
+      uniform sampler2D interactTex;
+      uniform float useInteract;
+      uniform vec2 interactInvSize;
+      uniform float flattenStrength;
       varying vec2 vUv;
       varying float frc;
 
@@ -84,6 +98,22 @@ const GrassMaterial = shaderMaterial(
         direction = slerp(direction, orientation, frc);
         vec3 vPosition = vec3(position.x, position.y + position.y * stretch, position.z);
         vPosition = rotateVectorByQuaternion(vPosition, direction);
+        // Interaction-driven bending/flattening sampled in world XZ using the blade root offset
+        if (useInteract > 0.5) {
+          vec2 uvWorld = (offset.xz - boundsMin) / boundsSize;
+          float c = texture2D(interactTex, uvWorld).r;
+          // Sobel-lite gradient
+          float cxp = texture2D(interactTex, uvWorld + vec2(interactInvSize.x, 0.0)).r;
+          float cxm = texture2D(interactTex, uvWorld - vec2(interactInvSize.x, 0.0)).r;
+          float cyp = texture2D(interactTex, uvWorld + vec2(0.0, interactInvSize.y)).r;
+          float cym = texture2D(interactTex, uvWorld - vec2(0.0, interactInvSize.y)).r;
+          vec2 grad = vec2(cxp - cxm, cyp - cym);
+          vec2 bendDir = (length(grad) > 1e-5) ? normalize(grad) : vec2(0.0);
+          float flatten = clamp(flattenStrength * c * frc, 0.0, 0.95);
+          // push tips away from center and reduce height
+          vPosition.xz += bendDir * (flatten * bladeHeight * 0.35);
+          vPosition.y *= (1.0 - flatten);
+        }
 
         float halfAngle = noise * 0.15;
         vPosition = rotateVectorByQuaternion(vPosition, normalize(vec4(sin(halfAngle), 0.0, -sin(halfAngle), cos(halfAngle))));
@@ -124,7 +154,21 @@ extend({ GrassMaterial });
 export { GrassMaterial };
 
 // TypeScript JSX support for <grassMaterial />
-declare global {
+declare module "react" {
+  namespace JSX {
+    interface IntrinsicElements {
+      grassMaterial: Record<string, unknown>;
+    }
+  }
+}
+declare module "react/jsx-runtime" {
+  namespace JSX {
+    interface IntrinsicElements {
+      grassMaterial: Record<string, unknown>;
+    }
+  }
+}
+declare module "react/jsx-dev-runtime" {
   namespace JSX {
     interface IntrinsicElements {
       grassMaterial: Record<string, unknown>;
