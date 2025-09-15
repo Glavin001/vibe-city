@@ -148,8 +148,6 @@ function useInteractionTexture({ size = 512, decay = 0.94 } = {}) {
 
 const VERT = /* glsl */ `
 precision highp float;
-attribute vec3 position;
-attribute vec2 uv;
 attribute vec3 aOffset;
 attribute float aScale;
 attribute float aRotation;
@@ -244,7 +242,6 @@ uniform vec3 uColorA;
 uniform vec3 uColorB;
 uniform vec3 uSunDir;
 uniform float uAmbient;
-#extension GL_OES_standard_derivatives : enable
 vec3 computeNormal() {
   vec3 dx = dFdx(vWorldPos);
   vec3 dy = dFdy(vWorldPos);
