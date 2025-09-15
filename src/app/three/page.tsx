@@ -87,12 +87,6 @@ export default function ThreePage() {
         </div>
         <div className="mt-6 flex gap-4">
           <a
-            href="/three/wood"
-            className="inline-block bg-green-600 hover:bg-green-700 text-white font-medium py-2 px-4 rounded-lg transition-colors"
-          >
-            Wood Material Demo →
-          </a>
-          <a
             href="/"
             className="inline-block bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg transition-colors"
           >
