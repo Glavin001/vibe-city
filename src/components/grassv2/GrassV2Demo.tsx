@@ -60,6 +60,10 @@ function RollingBall({
   radius = 0.6,
   speed = 1,
   groundRef,
+  phaseX = 0,
+  phaseZ = 0,
+  freqX = 0.35,
+  freqZ = 0.5,
 }: {
   stamper: ReturnType<ReturnType<typeof useInteractionTexture>["makeStamper"]>;
   boundsMin: THREE.Vector2;
@@ -67,13 +71,17 @@ function RollingBall({
   radius?: number;
   speed?: number;
   groundRef?: React.RefObject<THREE.Mesh | null>;
+  phaseX?: number;
+  phaseZ?: number;
+  freqX?: number;
+  freqZ?: number;
 }) {
   const ref = useRef<THREE.Mesh>(null);
   const ray = useMemo(() => new THREE.Raycaster(), []);
   useFrame((state) => {
     const t = state.clock.getElapsedTime() * speed;
-    const x = boundsMin.x + (0.5 + 0.5 * Math.sin(t * 0.35)) * boundsSize.x;
-    const z = boundsMin.y + (0.5 + 0.5 * Math.cos(t * 0.5)) * boundsSize.y;
+    const x = boundsMin.x + (0.5 + 0.5 * Math.sin(t * freqX + phaseX)) * boundsSize.x;
+    const z = boundsMin.y + (0.5 + 0.5 * Math.cos(t * freqZ + phaseZ)) * boundsSize.y;
     let y = radius;
     const ground = groundRef?.current;
     if (ground) {
@@ -98,7 +106,7 @@ function InteractionFader({ fade }: { fade: () => void }) {
 }
 
 export default function GrassV2Demo() {
-  const scale = 2;
+  const scale = 5;
   const W = 80 * scale;
   const boundsMin = useMemo(() => new THREE.Vector2(-W / 2, -W / 2), [W]);
   const boundsSize = useMemo(() => new THREE.Vector2(W, W), [W]);
@@ -128,7 +136,42 @@ export default function GrassV2Demo() {
          />
 
         <InteractionFader fade={interact.fade} />
-        <RollingBall stamper={stamper} boundsMin={boundsMin} boundsSize={boundsSize} radius={5} speed={0.5} groundRef={groundRef} />
+        <RollingBall 
+          stamper={stamper} 
+          boundsMin={boundsMin} 
+          boundsSize={boundsSize} 
+          radius={5} 
+          speed={0.5} 
+          groundRef={groundRef}
+          phaseX={0}
+          phaseZ={0}
+          freqX={0.35}
+          freqZ={0.5}
+        />
+        <RollingBall 
+          stamper={stamper} 
+          boundsMin={boundsMin} 
+          boundsSize={boundsSize} 
+          radius={10} 
+          speed={0.7} 
+          groundRef={groundRef}
+          phaseX={Math.PI}
+          phaseZ={Math.PI * 0.5}
+          freqX={0.25}
+          freqZ={0.4}
+        />
+        <RollingBall 
+          stamper={stamper} 
+          boundsMin={boundsMin} 
+          boundsSize={boundsSize} 
+          radius={20} 
+          speed={0.3} 
+          groundRef={groundRef}
+          phaseX={Math.PI}
+          phaseZ={Math.PI * 0.5}
+          freqX={0.25}
+          freqZ={0.4}
+        />
 
         <Environment preset="sunset" />
         <OrbitControls makeDefault />
