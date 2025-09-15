@@ -1,0 +1,227 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ReactRealTimeVADOptions, useMicVAD } from '@ricky0123/vad-react';
+import { useWhisper, type WhisperOptions } from './use-whisper';
+import type { SpeechRecognitionStatus } from './use-speech-recognition';
+
+export interface VoiceSegmentsOptions {
+  /** Options forwarded to Whisper hook */
+  whisper?: Omit<WhisperOptions, 'onTextUpdate' | 'onTextChange' | 'onStatusChange' | 'onError' | 'autoStart'> & {
+    /** Auto-start Whisper recorder when ready (managed relative to VAD state). Default: true */
+    autoStart?: boolean;
+  };
+
+  /** Options forwarded to VAD */
+  vad?: {
+    model?: ReactRealTimeVADOptions['model']; // e.g., 'v5'
+    startOnLoad?: boolean; // whether to start listening immediately
+    userSpeakingThreshold?: number; // default 0.6
+    baseAssetPath?: string; // default '/vad/'
+    onnxWASMBasePath?: string; // default '/vad/'
+  };
+
+  /** Delay after VAD end before finalizing a segment (ms). Default: 300ms */
+  settleMs?: number;
+  /** Auto-load Whisper model on mount. Default: true */
+  autoLoad?: boolean;
+
+  /** Live preview callback (token updates) */
+  onLiveUpdate?: (text: string) => void;
+  /** Final segment callback after settle period */
+  onSegment?: (finalText: string) => void;
+  /** Called when speech resumes and we should consider pausing TTS */
+  onInterruption?: () => void;
+
+  /** Scoped error callbacks */
+  onWhisperError?: (err: string) => void;
+  onVadError?: (err: string) => void;
+}
+
+export interface VoiceSegmentsResult {
+  // High-level combined status
+  status: 'boot' | 'ready' | 'speaking' | 'settling' | 'idle' | 'error';
+
+  // Live and recent final
+  liveText: string;
+  lastFinalText: string | null;
+
+  // Underlying statuses
+  whisperStatus: SpeechRecognitionStatus;
+  vadListening: boolean;
+  vadUserSpeaking: boolean;
+
+  // Errors
+  errors: { whisper: string | null; vad: string | null };
+
+  // Controls
+  start: () => void; // start listening (VAD)
+  stop: () => void; // stop listening (VAD)
+  toggle: () => void; // toggle listening (VAD)
+  load: () => void; // load Whisper model
+}
+
+export function useVoiceSegments(options: VoiceSegmentsOptions = {}): VoiceSegmentsResult {
+  // console.log("[useVoiceSegments] useVoiceSegments");
+
+  const settleMs = options.settleMs ?? 300;
+  const autoLoad = options.autoLoad !== false;
+
+  // Errors (scoped)
+  const [whisperError, setWhisperError] = useState<string | null>(null);
+  const [vadError, setVadError] = useState<string | null>(null);
+
+  // Live preview text and last finalized text
+  const [liveText, setLiveText] = useState<string>('');
+  const liveTextRef = useRef<string>('');
+  const [lastFinalText, setLastFinalText] = useState<string | null>(null);
+
+  // Settle timer for end-of-speech finalization
+  const settleTimerRef = useRef<number | null>(null);
+  const clearSettleTimer = useCallback(() => {
+    if (settleTimerRef.current) {
+      window.clearTimeout(settleTimerRef.current);
+      settleTimerRef.current = null;
+    }
+  }, []);
+
+  // Whisper integration
+  const {
+    status: whisperStatus,
+    isReady: whisperIsReady,
+    isRecording: whisperIsRecording,
+    startRecording: whisperStartRecording,
+    stopRecording: whisperStopRecording,
+    resetRecording: whisperResetRecording,
+    loadModel: whisperLoadModel,
+    error: whisperErr,
+  } = useWhisper({
+    language: options.whisper?.language ?? 'en',
+    autoStart: options.whisper?.autoStart ?? true,
+    dataRequestInterval: options.whisper?.dataRequestInterval ?? 250,
+    onTextChange: (t) => {
+      console.log("[useVoiceSegments] onTextChange", t);
+      // console.log("[useVoiceSegments] onTextUpdate", t);
+      const txt = t ?? '';
+      liveTextRef.current = txt;
+      setLiveText(txt);
+      if (options.onLiveUpdate) options.onLiveUpdate(txt);
+    },
+    onStatusChange: (s) => {
+      console.log("[useVoiceSegments] onStatusChange", s);
+    },
+    onError: (e) => {
+      console.log("[useVoiceSegments] onError", e);
+      setWhisperError(e);
+      if (options.onWhisperError) options.onWhisperError(e);
+    },
+  });
+
+  useEffect(() => {
+    if (whisperErr) {
+      setWhisperError(whisperErr);
+      if (options.onWhisperError) options.onWhisperError(whisperErr);
+    }
+  }, [whisperErr, options]);
+
+  // Auto-load Whisper model
+  useEffect(() => {
+    if (!autoLoad) return;
+    whisperLoadModel();
+  }, [autoLoad, whisperLoadModel]);
+
+  // VAD integration
+  const prevSpeakingRef = useRef<boolean>(false);
+  const vad = useMicVAD({
+    model: options.vad?.model ?? 'v5',
+    startOnLoad: options.vad?.startOnLoad ?? false,
+    userSpeakingThreshold: options.vad?.userSpeakingThreshold ?? 0.6,
+    baseAssetPath: options.vad?.baseAssetPath ?? '/vad/',
+    onnxWASMBasePath: options.vad?.onnxWASMBasePath ?? '/vad/',
+    onSpeechEnd: () => {
+      console.log("[useVoiceSegments] onSpeechEnd");
+      // Start settle window; finalize after delay
+      clearSettleTimer();
+      settleTimerRef.current = window.setTimeout(() => {
+        const text = (liveTextRef.current || '').trim();
+        if (text.length > 0) {
+          setLastFinalText(text);
+          if (options.onSegment) options.onSegment(text);
+        }
+        liveTextRef.current = '';
+        setLiveText('');
+        // Reset Whisper recorder so next speech doesn't revise prior segment
+        whisperResetRecording();
+      }, settleMs) as unknown as number;
+    },
+  });
+
+  useEffect(() => {
+    if (vad.errored) {
+      setVadError(vad.errored);
+      if (options.onVadError) options.onVadError(vad.errored);
+    }
+  }, [vad.errored, options]);
+
+  // Detect speaking start to trigger interruption callback
+  useEffect(() => {
+    const now = !!vad.userSpeaking;
+    const prev = prevSpeakingRef.current;
+    prevSpeakingRef.current = now;
+    if (!prev && now) {
+      // Interruption if there is any live text or external policy says so
+      const txt = (liveTextRef.current || '').trim();
+      if (txt.length > 0 && options.onInterruption) options.onInterruption();
+      // Cancel pending settle if any
+      clearSettleTimer();
+    }
+  }, [vad.userSpeaking, options, clearSettleTimer]);
+
+  // Keep Whisper recorder aligned to VAD listening state
+  useEffect(() => {
+    if (!whisperIsReady) return;
+    if (vad.listening && !whisperIsRecording) {
+      whisperStartRecording();
+    } else if (!vad.listening && whisperIsRecording) {
+      whisperStopRecording();
+    }
+  }, [vad.listening, whisperIsReady, whisperIsRecording, whisperStartRecording, whisperStopRecording]);
+
+  // Combined status
+  const combinedStatus: VoiceSegmentsResult['status'] = useMemo(() => {
+    if (whisperError || vadError) return 'error';
+    if (!whisperIsReady || vad.loading) return 'boot';
+    if (vad.userSpeaking) return 'speaking';
+    if (settleTimerRef.current) return 'settling';
+    if (vad.listening) return 'ready';
+    return 'idle';
+  }, [whisperError, vadError, whisperIsReady, vad.loading, vad.userSpeaking, vad.listening]);
+
+  // Controls
+  const start = useCallback(() => {
+    if (!vad.listening) vad.toggle();
+  }, [vad]);
+  const stop = useCallback(() => {
+    if (vad.listening) vad.toggle();
+  }, [vad]);
+  const toggle = useCallback(() => {
+    vad.toggle();
+  }, [vad]);
+  const load = useCallback(() => {
+    whisperLoadModel();
+  }, [whisperLoadModel]);
+
+  return {
+    status: combinedStatus,
+    liveText,
+    lastFinalText,
+    whisperStatus,
+    vadListening: vad.listening,
+    vadUserSpeaking: vad.userSpeaking,
+    errors: { whisper: whisperError, vad: vadError },
+    start,
+    stop,
+    toggle,
+    load,
+  };
+}
+
+
