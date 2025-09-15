@@ -6,7 +6,9 @@ import { Suspense, useMemo } from "react";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 import {
   Finishes,
+  type WoodFinish,
   WoodGenuses,
+  type WoodGenus,
   WoodNodeMaterial,
 } from "three/examples/jsm/materials/WoodNodeMaterial.js";
 
@@ -15,8 +17,8 @@ function WoodBlock({
   finish,
   position,
 }: {
-  genus: string;
-  finish: string;
+  genus: WoodGenus;
+  finish: WoodFinish;
   position: [number, number, number];
 }) {
   const material = useMemo(
