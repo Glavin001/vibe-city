@@ -18,7 +18,10 @@ function StaticTrees() {
       new THREE.MeshStandardMaterial({ color: '#8B4513' }),
       new THREE.MeshStandardMaterial({ color: '#228B22' }),
     ]
-    const inst = new InstancedMesh2(geometry, materials)
+    const inst = new InstancedMesh2<THREE.BufferGeometry, THREE.Material[]>(
+      geometry,
+      materials,
+    )
     const count = 200
     inst.addInstances(count, (obj) => {
       obj.position.set((Math.random() - 0.5) * 20, 0, (Math.random() - 0.5) * 20)
@@ -29,8 +32,7 @@ function StaticTrees() {
 
   useEffect(() => () => {
     mesh.geometry.dispose()
-    if (Array.isArray(mesh.material)) mesh.material.forEach((m) => m.dispose())
-    else mesh.material.dispose()
+    mesh.material.forEach((m) => m.dispose())
   }, [mesh])
 
   return <primitive object={mesh} />
@@ -47,7 +49,10 @@ function SkinnedCharacters() {
     const skinned = gltf.scene.getObjectByProperty('type', 'SkinnedMesh') as THREE.SkinnedMesh
     const geometry = skinned.geometry
     const material = skinned.material as THREE.Material
-    const inst = new InstancedMesh2(geometry, material)
+    const inst = new InstancedMesh2<THREE.BufferGeometry, THREE.Material>(
+      geometry,
+      material,
+    )
     inst.initSkeleton(skinned.skeleton)
     inst.addInstances(count, (obj) => {
       obj.position.set((Math.random() - 0.5) * 10, 0, (Math.random() - 0.5) * 10)
