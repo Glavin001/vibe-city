@@ -428,7 +428,7 @@ function GrassField({
 }
 
 interface RollingBallProps {
-  stamper: ReturnType<typeof useInteractionTexture>["makeStamper"];
+  stamper: ReturnType<ReturnType<typeof useInteractionTexture>["makeStamper"]>;
   boundsMin: THREE.Vector2;
   boundsSize: THREE.Vector2;
   radius?: number;
