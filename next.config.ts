@@ -1,6 +1,11 @@
 import type { NextConfig } from "next";
 const path = require('path')
-const CopyWebpackPlugin = require('copy-webpack-plugin')
+let CopyWebpackPlugin: any
+try {
+  CopyWebpackPlugin = require('copy-webpack-plugin')
+} catch {
+  CopyWebpackPlugin = null
+}
 
 const nextConfig: NextConfig = {
   /* config options here */
@@ -27,28 +32,30 @@ const nextConfig: NextConfig = {
     )
 
     // Copy ONNX Runtime and VAD assets to public/vad/ so runtime can fetch them at '/vad/'
-    config.plugins.push(
-      new CopyWebpackPlugin({
-        patterns: [
-          {
-            from: 'node_modules/onnxruntime-web/dist/*.wasm',
-            to: '../public/vad/[name][ext]',
-          },
-          {
-            from: 'node_modules/onnxruntime-web/dist/*.mjs',
-            to: '../public/vad/[name][ext]',
-          },
-          {
-            from: 'node_modules/@ricky0123/vad-web/dist/vad.worklet.bundle.min.js',
-            to: '../public/vad/[name][ext]',
-          },
-          {
-            from: 'node_modules/@ricky0123/vad-web/dist/*.onnx',
-            to: '../public/vad/[name][ext]',
-          },
-        ],
-      })
-    )
+    if (CopyWebpackPlugin) {
+      config.plugins.push(
+        new CopyWebpackPlugin({
+          patterns: [
+            {
+              from: 'node_modules/onnxruntime-web/dist/*.wasm',
+              to: '../public/vad/[name][ext]',
+            },
+            {
+              from: 'node_modules/onnxruntime-web/dist/*.mjs',
+              to: '../public/vad/[name][ext]',
+            },
+            {
+              from: 'node_modules/@ricky0123/vad-web/dist/vad.worklet.bundle.min.js',
+              to: '../public/vad/[name][ext]',
+            },
+            {
+              from: 'node_modules/@ricky0123/vad-web/dist/*.onnx',
+              to: '../public/vad/[name][ext]',
+            },
+          ],
+        })
+      )
+    }
 
     // Alias Node-only deps to browser shims
     config.resolve.alias = {
