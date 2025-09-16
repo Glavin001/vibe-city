@@ -497,6 +497,24 @@ export default function AdvancedAIChatPage() {
     } catch {}
   }, []);
 
+  // Hydration loading screen
+  const [isClient, setIsClient] = useState(false);
+
+  useEffect(() => {
+    setIsClient(true);
+  }, []);
+
+  if (!isClient) {
+    return (
+      <div className="flex items-center justify-center h-screen bg-gray-950 text-gray-200">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-10 h-10 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
+          <span className="text-lg font-semibold">Loading…</span>
+        </div>
+      </div>
+    );
+  }
+
   if (!apiKey) {
     return (
       <div className="max-w-4xl mx-auto mt-8 p-4 grid gap-4">
