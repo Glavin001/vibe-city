@@ -20,6 +20,8 @@ const ENERGY_BASELINE = 5_000
 const MIN_CRATER_RADIUS = 0.6
 const MIN_CRATER_DEPTH = 0.12
 const SKID_ANGLE_THRESHOLD = 0.18
+// Force-respawn meteors that fall too far below the terrain so they keep cycling
+const RESPAWN_Y_THRESHOLD = -12
 
 type MeteorImpact = {
   position: THREE.Vector3
@@ -466,6 +468,18 @@ function FallingMeteors({
 
     recycleBody(id)
   }, [groundName, onImpact, recycleBody])
+
+  useFrame(() => {
+    bodyRefs.current.forEach((rb, id) => {
+      if (!rb || processingIdsRef.current.has(id)) return
+      const translation = rb.translation()
+      if (!translation) return
+      if (translation.y < RESPAWN_Y_THRESHOLD) {
+        processingIdsRef.current.add(id)
+        recycleBody(id)
+      }
+    })
+  })
 
   return (
     <>
