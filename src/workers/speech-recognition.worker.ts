@@ -11,6 +11,7 @@ import {
   full,
   type ProgressCallback,
   type ProgressInfo,
+  WhisperPreTrainedModel,
 } from '@huggingface/transformers';
 
 const MODEL_ID = 'onnx-community/whisper-base';
@@ -19,8 +20,7 @@ const SAMPLING_RATE = 16000;
 
 let tokenizer: AutoTokenizer | null = null;
 let processor: AutoProcessor | null = null;
-type GenerativeModel = { generate: (args: any) => Promise<any> };
-let model: GenerativeModel | null = null;
+let model: WhisperPreTrainedModel | null = null;
 let isLoading = false;
 
 const progressCallback: ProgressCallback = (progress: ProgressInfo) => {
@@ -62,11 +62,12 @@ async function ensureModelLoaded(): Promise<void> {
       },
       device: 'webgpu',
       progress_callback: progressCallback,
-    })) as unknown as GenerativeModel;
+    }));
 
     // Warm up to compile shaders
-    await model.generate({
+    await model!.generate({
       // @ts-ignore - tensor helper from transformers.js
+      language: 'en',
       input_features: full([1, 80, 3000], 0.0),
       max_new_tokens: 1,
     });
@@ -103,6 +104,7 @@ async function handleGenerate(audio: Float32Array, _language?: string): Promise<
       // @ts-ignore - library typing differences
       input_features,
       max_new_tokens: MAX_NEW_TOKENS,
+      language: 'en',
       // Whisper language control can be handled via special tokens; let model auto-detect if not set.
       // Passing language hint via config if supported in future versions.
       // language,
