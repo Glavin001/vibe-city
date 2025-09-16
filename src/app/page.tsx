@@ -76,6 +76,24 @@ export default function Home() {
           ⚡ Bunker (Rapier Physics)
         </a>
         <a
+          href="/heightfield-demo"
+          className="rounded-lg bg-green-600 hover:bg-green-700 text-white font-medium text-center py-3 px-4 transition-colors"
+        >
+          🏔️ Heightfield Physics Demo
+        </a>
+        <a
+          href="/heightfield-dynamic"
+          className="rounded-lg bg-green-500 hover:bg-green-600 text-white font-medium text-center py-3 px-4 transition-colors"
+        >
+          🏔️ Heightfield (Dynamic)
+        </a>
+        <a
+          href="/heightfield-simple"
+          className="rounded-lg bg-green-700 hover:bg-green-800 text-white font-medium text-center py-3 px-4 transition-colors"
+        >
+          🏔️ Heightfield (Simple)
+        </a>
+        <a
           href="/kokoro-chunker"
           className="rounded-lg bg-gray-800 hover:bg-gray-700 text-white font-medium text-center py-3 px-4 transition-colors"
         >
