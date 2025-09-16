@@ -45,7 +45,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
         google: {
           thinkingConfig: {
             // thinkingBudget: 8192,
-            thinkingBudget: 0, // 512, // 512,
+            thinkingBudget: 512,
             includeThoughts: true,
           },
         } satisfies GoogleGenerativeAIProviderOptions,
