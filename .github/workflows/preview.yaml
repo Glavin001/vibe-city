@@ -12,6 +12,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      deployments: write
+    # Create a GitHub Deployment with a "View deployment" button
+    environment:
+      name: preview
+      url: ${{ steps.deploy.outputs.preview_url }}
     env:
       VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
@@ -41,7 +46,14 @@ jobs:
         run: vercel build --token=${{ secrets.VERCEL_TOKEN }}
 
       - name: Deploy prebuilt artifacts to Vercel (preview)
-        run: vercel deploy --prebuilt --token=${{ secrets.VERCEL_TOKEN }}
+        id: deploy
+        run: |
+          url=$(vercel deploy --prebuilt --yes --token=${{ secrets.VERCEL_TOKEN }})
+          echo "preview_url=$url" >> "$GITHUB_OUTPUT"
+          echo "Preview URL: $url"
+
+      - name: Wait for deployment to be READY
+        run: vercel inspect "${{ steps.deploy.outputs.preview_url }}" --wait --token=${{ secrets.VERCEL_TOKEN }}
 
 
       # - name: Run tests
