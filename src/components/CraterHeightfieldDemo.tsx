@@ -12,17 +12,42 @@ import * as THREE from 'three'
 const colliderFps = 60
 
 /**
- * CRATER TUNING — adjust these to control crater size/depth
+ * Impact tuning constants derived from simple physics heuristics.
+ * We use kinetic energy scaling to estimate crater radius/depth and
+ * keep everything in a range that still runs comfortably in real-time.
  */
-const CRATER_RADIUS_MULTIPLIER = 10.0
-const CRATER_RADIUS_MIN = 1.25
-const CRATER_DEPTH_MULTIPLIER = 3
-const CRATER_DEPTH_MIN = 0.22
+const ENERGY_BASELINE = 5_000
+const MIN_CRATER_RADIUS = 0.6
+const MIN_CRATER_DEPTH = 0.12
+const SKID_ANGLE_THRESHOLD = 0.18
 
-type CraterConfig = {
-  craterRadiusWorld: number
-  craterDepthWorld: number
+type MeteorImpact = {
+  position: THREE.Vector3
+  radius: number
+  mass: number
+  velocity: THREE.Vector3
 }
+
+type DeformationProfile = {
+  position: THREE.Vector3
+  majorRadius: number
+  minorRadius: number
+  depth: number
+  rimHeight: number
+  skidLength: number
+  direction: THREE.Vector2
+  shockFactor: number
+}
+
+const METEOR_COLORS = [
+  '#ff6b6b',
+  '#4ecdc4',
+  '#45b7d1',
+  '#f9ca24',
+  '#f0932b',
+  '#eb4d4b',
+  '#6c5ce7',
+] as const
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value))
@@ -83,37 +108,92 @@ function CraterHeightfieldScene() {
   const needsColliderUpdateRef = useRef(false)
   const colliderTimerRef = useRef(0)
 
-  const applyCraterAt = useCallback((worldPos: THREE.Vector3, config: CraterConfig) => {
-    const { craterRadiusWorld, craterDepthWorld } = config
+  const carveCrater = useCallback((profile: DeformationProfile) => {
+    const {
+      position,
+      majorRadius,
+      minorRadius,
+      depth,
+      rimHeight,
+      skidLength,
+      direction,
+      shockFactor,
+    } = profile
     const heights = heightsRef.current
-    const radius = craterRadiusWorld
-    const depthUnits = craterDepthWorld / scaleY // convert world Y to height units
+    const depthUnits = depth / scaleY
+    const rimUnits = rimHeight / scaleY
+    const baseRadius = Math.max(majorRadius, minorRadius)
+    const influence = baseRadius + skidLength + rimHeight * 2
 
     // IMPORTANT: Z and X are swapped here to match Rapier orientation
-    const cx = worldPos.z
-    const cz = worldPos.x
+    const cx = position.z
+    const cz = position.x
 
-    // Affect entire grid (small enough). Optimize by bounding box if needed.
+    const forwardDir = direction.lengthSq() > 1e-6 ? direction.clone().normalize() : new THREE.Vector2(0, 1)
+    const sideDir = new THREE.Vector2(-forwardDir.y, forwardDir.x)
+    const shockOuter = baseRadius * (1.4 + shockFactor * 0.8)
+
     for (let r = 0; r < rows; r++) {
-      const z = sampleWorldZ[r]
-      const dz = z - cz
-      // Quick reject by Z distance
-      if (Math.abs(dz) > radius) continue
+      const worldX = sampleWorldZ[r]
+      const dz = worldX - cz
+      if (Math.abs(dz) > influence) continue
       for (let c = 0; c < cols; c++) {
-        const x = sampleWorldX[c]
-        const dx = x - cx
-        const d = Math.hypot(dx, dz)
-        if (d > radius) continue
-        const t = 1 - d / radius
-        const falloff = smoothstep(0, 1, t) // 0..1
+        const worldZ = sampleWorldX[c]
+        const dx = worldZ - cx
+        if (Math.abs(dx) > influence) continue
+
+        const forward = dx * forwardDir.x + dz * forwardDir.y
+        const lateral = dx * sideDir.x + dz * sideDir.y
+
+        const normForward = majorRadius > 0 ? forward / majorRadius : 0
+        const normLateral = minorRadius > 0 ? lateral / minorRadius : 0
+        const radial = Math.sqrt(normForward * normForward + normLateral * normLateral)
+        const planarDistance = Math.hypot(dx, dz)
         const i = r * cols + c
-        heights[i] = heights[i] - falloff * depthUnits
+
+        if (radial <= 1) {
+          const t = 1 - radial
+          const bowl = smoothstep(0, 1, t)
+          const centerBoost = 0.6 + 0.4 * t
+          heights[i] -= bowl * centerBoost * depthUnits
+        }
+
+        if (rimUnits > 0) {
+          const rimBand = smoothstep(0.75, 1, radial) - smoothstep(1, 1.6, radial)
+          if (rimBand > 0) {
+            heights[i] += rimBand * rimUnits
+          }
+        }
+
+        if (skidLength > 0) {
+          const skidStart = -majorRadius * 0.25
+          const skidEnd = skidLength
+          if (forward >= skidStart && forward <= skidEnd) {
+            const along = 1 - clamp((forward - skidStart) / (skidEnd - skidStart), 0, 1)
+            const lateralFactor = 1 - clamp(Math.abs(lateral) / (minorRadius * 0.9 + 1e-4), 0, 1)
+            if (along > 0 && lateralFactor > 0) {
+              const gouge = Math.pow(along, 1.4) * Math.pow(lateralFactor, 1.6)
+              heights[i] -= gouge * depthUnits * 0.55
+              if (rimUnits > 0) {
+                const berm = Math.pow(along, 1.1) * (1 - Math.pow(lateralFactor, 0.6)) * 0.35
+                heights[i] += berm * rimUnits * 0.5
+              }
+            }
+          }
+        }
+
+        if (shockFactor > 0 && planarDistance > baseRadius) {
+          const shock = 1 - smoothstep(baseRadius, shockOuter, planarDistance)
+          if (shock > 0) {
+            heights[i] -= shock * depthUnits * 0.08 * shockFactor
+          }
+        }
       }
     }
 
     // Mark collider and normals update
     needsColliderUpdateRef.current = true
-  }, [sampleWorldX, sampleWorldZ, rows, cols])
+  }, [sampleWorldX, sampleWorldZ, rows, cols, scaleY])
 
   // Visual update + throttled normals/collider refresh
   useFrame((_, delta) => {
@@ -137,6 +217,56 @@ function CraterHeightfieldScene() {
       colliderTimerRef.current = 0
     }
   })
+
+  const applyMeteorImpact = useCallback((impact: MeteorImpact) => {
+    const velocity = impact.velocity
+    const speed = velocity.length()
+    if (speed < 0.1) return
+
+    const horizontalSpeed = Math.hypot(velocity.x, velocity.z)
+    const horizontalRatio = speed > 0 ? horizontalSpeed / speed : 0
+    const energy = 0.5 * impact.mass * speed * speed
+    const energyScale = clamp(Math.cbrt(Math.max(energy, 1) / ENERGY_BASELINE), 0.35, 5)
+
+    const baseRadius = Math.max(
+      MIN_CRATER_RADIUS,
+      impact.radius * (1.2 + 0.5 * energyScale),
+    )
+    const baseDepth = Math.max(
+      MIN_CRATER_DEPTH,
+      impact.radius * (0.3 + 0.25 * energyScale),
+    )
+
+    const elongation = 1 + horizontalRatio * (0.9 + 0.4 * energyScale)
+    const majorRadius = baseRadius * elongation
+    const minorRadius = baseRadius * Math.max(0.55, 1 - 0.3 * horizontalRatio)
+    const rimHeight = baseDepth * Math.min(0.75, 0.25 + 0.18 * energyScale)
+
+    let skidLength = 0
+    if (horizontalRatio > SKID_ANGLE_THRESHOLD && horizontalSpeed > 0.2) {
+      skidLength =
+        (horizontalSpeed * 0.12 + baseRadius * 0.5 * energyScale) * horizontalRatio
+      skidLength = Math.min(skidLength, baseRadius * 6)
+    }
+
+    const direction =
+      horizontalSpeed > 1e-3
+        ? new THREE.Vector2(velocity.z, velocity.x)
+        : new THREE.Vector2(0, 1)
+
+    const shockFactor = clamp(0.2 + energyScale * 0.2 + horizontalRatio * 0.25, 0.2, 0.8)
+
+    carveCrater({
+      position: impact.position,
+      majorRadius,
+      minorRadius,
+      depth: baseDepth,
+      rimHeight,
+      skidLength,
+      direction,
+      shockFactor,
+    })
+  }, [carveCrater])
 
   return (
     <>
@@ -172,13 +302,7 @@ function CraterHeightfieldScene() {
         spawnDepth={scaleZ}
         spawnHeight={14}
         numMeteors={10}
-        radius={0.35}
-        onImpact={(pos, radius) => {
-          // Map meteor size to crater size/depth using tuning constants
-          const craterRadiusWorld = Math.max(CRATER_RADIUS_MIN, radius * CRATER_RADIUS_MULTIPLIER)
-          const craterDepthWorld = Math.max(CRATER_DEPTH_MIN, radius * CRATER_DEPTH_MULTIPLIER)
-          applyCraterAt(pos, { craterRadiusWorld, craterDepthWorld })
-        }}
+        onImpact={applyMeteorImpact}
       />
 
       {/* UI */}
@@ -201,7 +325,6 @@ function FallingMeteors({
   spawnDepth,
   spawnHeight = 12,
   numMeteors = 20,
-  radius = 0.3,
   onImpact,
 }: {
   groundName: string
@@ -209,8 +332,7 @@ function FallingMeteors({
   spawnDepth: number
   spawnHeight?: number
   numMeteors?: number
-  radius?: number
-  onImpact: (position: THREE.Vector3, radius: number) => void
+  onImpact: (impact: MeteorImpact) => void
 }) {
   const bodyRefs = useRef<Map<number, RapierRigidBody | null>>(new Map())
   const processingIdsRef = useRef<Set<number>>(new Set())
@@ -220,53 +342,130 @@ function FallingMeteors({
     const x = (Math.random() - 0.5) * spawnWidth
     const z = (Math.random() - 0.5) * spawnDepth
     const y = spawnHeight + Math.random() * 6
-    // const x = (-0.1) * spawnWidth
-    // const z = (-0.0) * spawnDepth
-    // const y = spawnHeight + 0 * 6
     return [x, y, z]
   }, [spawnWidth, spawnDepth, spawnHeight])
 
-  type Meteor = { id: number, color: string, position: THREE.Vector3 }
+  type MeteorTraits = {
+    color: string
+    radius: number
+    density: number
+    mass: number
+    initialVelocity: THREE.Vector3
+    spin: THREE.Vector3
+  }
 
-  const [meteors] = useState<Array<Meteor>>(() => {
+  type Meteor = MeteorTraits & {
+    id: number
+    position: THREE.Vector3
+  }
+
+  const randomMeteorTraits = useCallback((): MeteorTraits => {
+    const radius = THREE.MathUtils.lerp(0.18, 0.65, Math.random() ** 0.6)
+    const density = THREE.MathUtils.lerp(650, 2300, Math.random())
+    const volume = (4 / 3) * Math.PI * radius * radius * radius
+    const mass = density * volume
+
+    const entrySpeed = THREE.MathUtils.lerp(10, 32, Math.random() ** 0.4)
+    const angleFromVertical = Math.pow(Math.random(), 1.8) * (Math.PI / 2 * 0.9)
+    const azimuth = Math.random() * Math.PI * 2
+    const horizontalSpeed = Math.sin(angleFromVertical) * entrySpeed
+    const verticalSpeed = Math.cos(angleFromVertical) * entrySpeed
+
+    const vx = Math.cos(azimuth) * horizontalSpeed
+    const vz = Math.sin(azimuth) * horizontalSpeed
+    const vy = -Math.abs(verticalSpeed)
+
+    const initialVelocity = new THREE.Vector3(vx, vy, vz)
+    const spin = new THREE.Vector3(
+      (Math.random() - 0.5) * 6,
+      (Math.random() - 0.5) * 4,
+      (Math.random() - 0.5) * 6,
+    )
+
+    const color = METEOR_COLORS[Math.floor(Math.random() * METEOR_COLORS.length)]
+
+    return { color, radius, density, mass, initialVelocity, spin }
+  }, [])
+
+  const computeSpawnPosition = useCallback((traits: MeteorTraits) => {
+    let [x, y, z] = randomSpawnPosition()
+    const horizontal = new THREE.Vector2(traits.initialVelocity.x, traits.initialVelocity.z)
+    const horizontalMag = horizontal.length()
+    if (horizontalMag > 1e-3) {
+      horizontal.divideScalar(horizontalMag)
+      const travelBias = clamp(horizontalMag / 32, 0, 1)
+      const halfWidth = spawnWidth / 2
+      const halfDepth = spawnDepth / 2
+      x = clamp(x - horizontal.x * halfWidth * 0.6 * travelBias, -halfWidth, halfWidth)
+      z = clamp(z - horizontal.y * halfDepth * 0.6 * travelBias, -halfDepth, halfDepth)
+      y += travelBias * 3
+    }
+    return new THREE.Vector3(x, y, z)
+  }, [randomSpawnPosition, spawnWidth, spawnDepth])
+
+  const createMeteor = useCallback((): Meteor => {
+    const traits = randomMeteorTraits()
+    const position = computeSpawnPosition(traits)
+    const id = ++objectIdRef.current
+    return { id, position, ...traits }
+  }, [computeSpawnPosition, randomMeteorTraits])
+
+  const [meteors, setMeteors] = useState<Array<Meteor>>(() => {
     const next: Array<Meteor> = []
     for (let i = 0; i < numMeteors; i++) {
-      const id = ++objectIdRef.current
-      const color = ['#ff6b6b', '#4ecdc4', '#45b7d1', '#f9ca24', '#f0932b', '#eb4d4b', '#6c5ce7'][Math.floor(Math.random() * 7)]
-      const position = new THREE.Vector3(...randomSpawnPosition())
-      next.push({ id, color, position })
+      next.push(createMeteor())
     }
     return next
   })
+  const meteorsRef = useRef(meteors)
+  meteorsRef.current = meteors
 
   const recycleBody = useCallback((id: number) => {
     const rb = bodyRefs.current.get(id)
     if (!rb) return
-    const [x, y, z] = randomSpawnPosition()
+    const traits = randomMeteorTraits()
+    const position = computeSpawnPosition(traits)
+    setMeteors((prev) =>
+      prev.map((meteor) => (meteor.id === id ? { ...meteor, position, ...traits } : meteor)),
+    )
     try {
-      rb.setTranslation({ x, y, z }, true)
-      rb.setLinvel({ x: 0, y: 0, z: 0 }, true)
-      rb.setAngvel({ x: 0, y: 0, z: 0 }, true)
+      rb.setTranslation({ x: position.x, y: position.y, z: position.z }, true)
+      rb.setLinvel(
+        { x: traits.initialVelocity.x, y: traits.initialVelocity.y, z: traits.initialVelocity.z },
+        true,
+      )
+      rb.setAngvel({ x: traits.spin.x, y: traits.spin.y, z: traits.spin.z }, true)
       rb.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true)
+      rb.setCcdEnabled(true)
     } catch {}
     setTimeout(() => {
       processingIdsRef.current.delete(id)
     }, 10)
-  }, [randomSpawnPosition])
+  }, [computeSpawnPosition, randomMeteorTraits])
 
   const handleCollisionEnter = useCallback((id: number, event: CollisionEnterPayload) => {
     if (processingIdsRef.current.has(id)) return
-    // Only process impacts with the ground
     const otherName = event.other?.rigidBodyObject?.name
     if (otherName !== groundName) return
 
+    const rb = event.target.rigidBody
+    if (!rb) return
+    const meteor = meteorsRef.current.find((m) => m.id === id)
+    if (!meteor) return
+
+    const translation = rb.translation()
+    const linvel = rb.linvel()
+    if (!translation || !linvel) return
+
     processingIdsRef.current.add(id)
-    const t = event.target.rigidBody ? event.target.rigidBody.translation() : undefined
-    if (!t) return
-    const pos = new THREE.Vector3(t.x, t.y, t.z)
-    onImpact(pos, radius)
+
+    const position = new THREE.Vector3(translation.x, translation.y, translation.z)
+    const velocity = new THREE.Vector3(linvel.x, linvel.y, linvel.z)
+
+    onImpact({ position, radius: meteor.radius, mass: meteor.mass, velocity })
+
     recycleBody(id)
-  }, [groundName, onImpact, radius, recycleBody])
+  }, [groundName, onImpact, recycleBody])
 
   return (
     <>
@@ -277,13 +476,18 @@ function FallingMeteors({
           position={m.position}
           colliders={false}
           canSleep={false}
+          density={m.density}
           ref={(rb) => {
             bodyRefs.current.set(m.id, rb as unknown as RapierRigidBody)
             if (rb) {
               try {
-                rb.setLinvel({ x: 0, y: 0, z: 0 }, true)
-                rb.setAngvel({ x: 0, y: 0, z: 0 }, true)
+                rb.setLinvel(
+                  { x: m.initialVelocity.x, y: m.initialVelocity.y, z: m.initialVelocity.z },
+                  true,
+                )
+                rb.setAngvel({ x: m.spin.x, y: m.spin.y, z: m.spin.z }, true)
                 rb.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true)
+                rb.setCcdEnabled(true)
               } catch {}
             }
           }}
@@ -291,11 +495,10 @@ function FallingMeteors({
           name={`Meteor-${m.id}`}
           friction={1}
           restitution={0.05}
-          density={1}
         >
-          <BallCollider args={[radius]} />
+          <BallCollider args={[m.radius]} />
           <mesh castShadow>
-            <sphereGeometry args={[radius, 16, 16]} />
+            <sphereGeometry args={[m.radius, 16, 16]} />
             <meshStandardMaterial color={m.color} />
           </mesh>
         </RigidBody>
