@@ -43,7 +43,7 @@ export const BlueprintCanvas = ({
       }}
     >
       <color attach="background" args={['#04060a']} />
-      <fog attach="fog" color={'#04060a'} near={35} far={120} />
+      <fog attach="fog" args={['#04060a', 35, 120]} />
       <ambientLight intensity={0.6} />
       <directionalLight
         position={[10, 16, 12]}

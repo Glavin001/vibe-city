@@ -11,7 +11,7 @@ import {
   CuboidCollider,
   CylinderCollider,
   RigidBody,
-  type RigidBodyApi,
+  type RapierRigidBody,
   useRapier,
 } from '@react-three/rapier'
 import type {
@@ -24,13 +24,13 @@ import type {
   SocketDef,
 } from '../../types/assembly'
 import {
-  IDENTITY_QUAT
+  IDENTITY_QUAT,
   quatToEulerRad,
   rotateVectorByQuat,
 } from '../../lib/assemblyMath'
 
 export interface BlueprintRuntimeApi {
-  getRigidBody: (id: string) => RigidBodyApi | null
+  getRigidBody: (id: string) => RapierRigidBody | null
   setJointMotorTarget: (jointId: string, target: number, maxForce?: number) => void
   nudgeJoint: (jointId: string, velocity: number, durationMs?: number) => void
   setManualWheelVelocity: (velocity: number) => void
@@ -51,7 +51,7 @@ export interface BlueprintSceneProps {
   variantKey?: string
 }
 
-type BodyRef = MutableRefObject<RigidBodyApi | null>
+type BodyRef = MutableRefObject<RapierRigidBody | null>
 
 type JointHandleInfo = {
   joint: any
@@ -64,15 +64,28 @@ const KEYBOARD_WHEEL_SPEED = 9
 const TURN_GAIN = 3.2
 
 const toRapierVector = (value: [number, number, number]) => ({ x: value[0], y: value[1], z: value[2] })
+const toRapierRotation = (value: [number, number, number, number]) => ({
+  x: value[0],
+  y: value[1],
+  z: value[2],
+  w: value[3],
+})
 
-const resolveDriveConfig = (template: JointTemplate | undefined, joint: JointInstance) => {
+const resolveDriveConfig = (
+  template: JointTemplate | undefined,
+  joint: JointInstance,
+): (JointTemplateDrive & { target?: number }) | undefined => {
   const override = joint.driveOverride
   if (override?.mode === 'velocity') {
-    return { mode: 'velocity', target: override.target ?? 0, maxForce: override.maxForce }
+    return {
+      mode: 'velocity',
+      target: override.target ?? 0,
+      maxForce: override.maxForce,
+    }
   }
   const templateDrive = template?.drive?.find((drive) => drive.mode === 'velocity')
   if (templateDrive) {
-    return { mode: 'velocity', target: templateDrive.target ?? 0, maxForce: templateDrive.maxForce }
+    return { ...templateDrive, target: templateDrive.target ?? 0 }
   }
   return undefined
 }
@@ -125,7 +138,7 @@ const PartInstanceBody = ({
   register: (id: string, ref: BodyRef | null) => void
   showSockets?: boolean
 }) => {
-  const bodyRef = useRef<RigidBodyApi | null>(null)
+  const bodyRef = useRef<RapierRigidBody | null>(null)
   const [hovered, setHovered] = useState(false)
 
   useEffect(() => {
@@ -325,13 +338,15 @@ const JointInstanceComponent = ({
     const bodyBApi = bodyB?.current
     if (!bodyAApi || !bodyBApi) return
 
-    const rawA = bodyAApi.raw ? bodyAApi.raw() : bodyAApi
-    const rawB = bodyBApi.raw ? bodyBApi.raw() : bodyBApi
+    const rawA = bodyAApi
+    const rawB = bodyBApi
 
     const anchorA = socketA.frame.position
     const anchorB = socketB.frame.position
+    const frameAQuat = socketA.frame.rotationQuat ?? IDENTITY_QUAT
+    const frameBQuat = socketB.frame.rotationQuat ?? IDENTITY_QUAT
     const baseAxis = template.axis ?? [0, 1, 0]
-    const axis = rotateVectorByQuat(baseAxis, socketA.frame.rotationQuat ?? IDENTITY_QUAT)
+    const axis = rotateVectorByQuat(baseAxis, frameAQuat)
 
     let created: any = null
 
@@ -345,9 +360,9 @@ const JointInstanceComponent = ({
     } else if (template.type === 'fixed') {
       const data = rapier.JointData.fixed(
         toRapierVector(anchorA),
+        toRapierRotation(frameAQuat),
         toRapierVector(anchorB),
-        { w: 1, x: 0, y: 0, z: 0 },
-        { w: 1, x: 0, y: 0, z: 0 },
+        toRapierRotation(frameBQuat),
       )
       created = world.createImpulseJoint(data, rawA, rawB, true)
     } else {
@@ -367,12 +382,8 @@ const JointInstanceComponent = ({
 
     return () => {
       registerJoint(joint.id, null)
-      if (created) {
-        if (typeof world.removeImpulseJoint === 'function') {
-          world.removeImpulseJoint(created, true)
-        } else if (world.impulseJoints && typeof world.impulseJoints.remove === 'function') {
-          world.impulseJoints.remove(created)
-        }
+      if (created && typeof world.removeImpulseJoint === 'function') {
+        world.removeImpulseJoint(created, true)
       }
     }
   }, [bodyA, bodyB, joint, rapier, registerJoint, socketA, socketB, template, world])
@@ -400,6 +411,7 @@ const JointAnchorGizmo = ({
   const sphereARef = useRef<Mesh>(null)
   const sphereBRef = useRef<Mesh>(null)
   const lineRef = useRef<Line>(null)
+  const linePositions = useMemo(() => new Float32Array(6), [])
 
   const updatePositions = useCallback(() => {
     const bodyAApi = bodyA?.current
@@ -453,12 +465,12 @@ const JointAnchorGizmo = ({
         <sphereGeometry args={[0.1, 12, 12]} />
         <meshBasicMaterial color={color} />
       </mesh>
-      <line ref={lineRef} onPointerDown={handleSelect}>
+      <threeLine ref={lineRef} onPointerDown={handleSelect}>
         <bufferGeometry>
-          <bufferAttribute attach="attributes-position" count={2} itemSize={3} array={new Float32Array(6)} />
+          <bufferAttribute attach="attributes-position" args={[linePositions, 3]} />
         </bufferGeometry>
         <lineBasicMaterial color={color} linewidth={selected ? 2 : 1} />
-      </line>
+      </threeLine>
     </group>
   )
 }
