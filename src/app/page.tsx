@@ -10,6 +10,12 @@ export default function Home() {
           🎲 THREE.js Demo
         </a>
         <a
+          href="/assembly-editor"
+          className="rounded-lg bg-blue-500/80 hover:bg-blue-600 text-white font-medium text-center py-3 px-4 transition-colors"
+        >
+          🛠️ Assembly Playground
+        </a>
+        <a
           href="/grass-v2"
           className="rounded-lg bg-gray-800 hover:bg-gray-700 text-white font-medium text-center py-3 px-4 transition-colors"
         >
