@@ -2,7 +2,7 @@
 
 import { Environment, OrbitControls, StatsGl } from "@react-three/drei";
 import { Canvas, useFrame } from "@react-three/fiber";
-import { useMemo, useRef } from "react";
+import { Suspense, useMemo, useRef } from "react";
 import * as THREE from "three";
 
 /**
@@ -472,40 +472,42 @@ export function GrassDemo({
   );
   return (
     <Canvas shadows camera={{ position: [10, 7, 10], fov: 45 }}>
-      <color attach="background" args={["#9fd6ff"]} />
-      <hemisphereLight intensity={0.5} groundColor="#7aa07a" />
-      <directionalLight position={[10, 15, 10]} intensity={1.2} castShadow />
-      <mesh
-        rotation={[-Math.PI / 2, 0, 0]}
-        receiveShadow
-        position={[0, -0.001, 0]}
-      >
-        <planeGeometry args={[W, D, 1, 1]} />
-        <meshStandardMaterial color="#7cac65" />
-      </mesh>
-      <GrassField
-        size={[W, D]}
-        count={bladeCount}
-        center={[0, 0, 0]}
-        windAmp={0.85}
-        windDir={[1, 0]}
-        windFreq={0.8}
-        heightMap={useHeightMap ? heightMap : null}
-        heightScale={heightScale}
-        interaction
-        interactionTexture={interact}
-        flattenStrength={0.9}
-      />
-      <RollingBall
-        stamper={stamper}
-        boundsMin={boundsMin}
-        boundsSize={boundsSize}
-        radius={0.65}
-        speed={1.0}
-      />
-      <Environment preset="sunset" />
-      <OrbitControls makeDefault />
-      <StatsGl />
+      <Suspense fallback={null}>
+        <color attach="background" args={["#9fd6ff"]} />
+        <hemisphereLight intensity={0.5} groundColor="#7aa07a" />
+        <directionalLight position={[10, 15, 10]} intensity={1.2} castShadow />
+        <mesh
+          rotation={[-Math.PI / 2, 0, 0]}
+          receiveShadow
+          position={[0, -0.001, 0]}
+        >
+          <planeGeometry args={[W, D, 1, 1]} />
+          <meshStandardMaterial color="#7cac65" />
+        </mesh>
+        <GrassField
+          size={[W, D]}
+          count={bladeCount}
+          center={[0, 0, 0]}
+          windAmp={0.85}
+          windDir={[1, 0]}
+          windFreq={0.8}
+          heightMap={useHeightMap ? heightMap : null}
+          heightScale={heightScale}
+          interaction
+          interactionTexture={interact}
+          flattenStrength={0.9}
+        />
+        <RollingBall
+          stamper={stamper}
+          boundsMin={boundsMin}
+          boundsSize={boundsSize}
+          radius={0.65}
+          speed={1.0}
+        />
+        <Environment preset="sunset" />
+        <OrbitControls makeDefault />
+        <StatsGl />
+      </Suspense>
     </Canvas>
   );
 }
