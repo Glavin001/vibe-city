@@ -1087,22 +1087,6 @@ function TtsSection({ messages, chatStatus, interruptKey, resumeKey }: { message
   const [isUserPaused, setIsUserPaused] = useState<boolean>(false);
   const [crossfadeMs, setCrossfadeMs] = useState<number>(600);
 
-  // Interruption: pause when parent signals
-  useEffect(() => {
-    if (typeof interruptKey === "number") {
-      setAutoplay(false);
-      setIsUserPaused(true);
-    }
-  }, [interruptKey]);
-
-  // Resume autoplay when parent signals resume
-  useEffect(() => {
-    if (typeof resumeKey === "number") {
-      setIsUserPaused(false);
-      setAutoplay(true);
-    }
-  }, [resumeKey]);
-
   const { audioARef, audioBRef, activeAudioIndex, progressRatio, play, pause, stop, skip, clearAudioSources } = useTtsQueue({
     items: useMemo(() => uiChunks.map((c) => ({ audioUrl: c.audioUrl, status: c.status })), [uiChunks]),
     playhead,
@@ -1117,6 +1101,24 @@ function TtsSection({ messages, chatStatus, interruptKey, resumeKey }: { message
     onError: (m) => console.error(m),
     crossfadeMs,
   });
+
+  // Interruption: pause when parent signals
+  useEffect(() => {
+    if (typeof interruptKey === "number") {
+      // Immediately pause playback like voice-to-voice
+      setAutoplay(false);
+      setIsUserPaused(true);
+      try { pause(); } catch {}
+    }
+  }, [interruptKey, pause]);
+
+  // Resume autoplay when parent signals resume
+  useEffect(() => {
+    if (typeof resumeKey === "number") {
+      setIsUserPaused(false);
+      setAutoplay(true);
+    }
+  }, [resumeKey]);
 
   // Kick playback when first item becomes ready and autoplay is enabled
   useEffect(() => {
