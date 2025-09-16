@@ -22,6 +22,8 @@ const MIN_CRATER_DEPTH = 0.12
 const SKID_ANGLE_THRESHOLD = 0.18
 // Force-respawn meteors that fall too far below the terrain so they keep cycling
 const RESPAWN_Y_THRESHOLD = -12
+// Allow meteors to linger after impact so they can tumble inside their crater before recycling
+const IMPACT_RESPAWN_DELAY = 2000
 
 type MeteorImpact = {
   position: THREE.Vector3
@@ -422,28 +424,46 @@ function FallingMeteors({
   const meteorsRef = useRef(meteors)
   meteorsRef.current = meteors
 
-  const recycleBody = useCallback((id: number) => {
-    const rb = bodyRefs.current.get(id)
-    if (!rb) return
-    const traits = randomMeteorTraits()
-    const position = computeSpawnPosition(traits)
-    setMeteors((prev) =>
-      prev.map((meteor) => (meteor.id === id ? { ...meteor, position, ...traits } : meteor)),
-    )
-    try {
-      rb.setTranslation({ x: position.x, y: position.y, z: position.z }, true)
-      rb.setLinvel(
-        { x: traits.initialVelocity.x, y: traits.initialVelocity.y, z: traits.initialVelocity.z },
-        true,
-      )
-      rb.setAngvel({ x: traits.spin.x, y: traits.spin.y, z: traits.spin.z }, true)
-      rb.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true)
-      rb.enableCcd(true)
-    } catch {}
-    setTimeout(() => {
-      processingIdsRef.current.delete(id)
-    }, 10)
-  }, [computeSpawnPosition, randomMeteorTraits])
+  const recycleBody = useCallback(
+    (id: number, delayMs = 0) => {
+      const execute = () => {
+        const rb = bodyRefs.current.get(id)
+        if (!rb) {
+          processingIdsRef.current.delete(id)
+          return
+        }
+        const traits = randomMeteorTraits()
+        const position = computeSpawnPosition(traits)
+        setMeteors((prev) =>
+          prev.map((meteor) => (meteor.id === id ? { ...meteor, position, ...traits } : meteor)),
+        )
+        try {
+          rb.setTranslation({ x: position.x, y: position.y, z: position.z }, true)
+          rb.setLinvel(
+            {
+              x: traits.initialVelocity.x,
+              y: traits.initialVelocity.y,
+              z: traits.initialVelocity.z,
+            },
+            true,
+          )
+          rb.setAngvel({ x: traits.spin.x, y: traits.spin.y, z: traits.spin.z }, true)
+          rb.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true)
+          rb.enableCcd(true)
+        } catch {}
+        setTimeout(() => {
+          processingIdsRef.current.delete(id)
+        }, 10)
+      }
+
+      if (delayMs > 0) {
+        setTimeout(execute, delayMs)
+      } else {
+        execute()
+      }
+    },
+    [computeSpawnPosition, randomMeteorTraits],
+  )
 
   const handleCollisionEnter = useCallback((id: number, event: CollisionEnterPayload) => {
     if (processingIdsRef.current.has(id)) return
@@ -466,7 +486,7 @@ function FallingMeteors({
 
     onImpact({ position, radius: meteor.radius, mass: meteor.mass, velocity })
 
-    recycleBody(id)
+    recycleBody(id, IMPACT_RESPAWN_DELAY)
   }, [groundName, onImpact, recycleBody])
 
   useFrame(() => {
