@@ -470,7 +470,13 @@ function buildSystemPromptV2(persona: Persona): string {
 }
 
 export default function AdvancedAIChatPage() {
-  const [apiKey, setApiKey] = useState<string | null>(null);
+  const [apiKey, setApiKey] = useState<string | null>(() => {
+    try {
+      return typeof window !== "undefined" ? window.localStorage.getItem(LOCAL_STORAGE_KEY) : null;
+    } catch {
+      return null;
+    }
+  });
   const [inputKey, setInputKey] = useState("");
   const [formData, setFormData] = useState<Persona>(() => {
     try {
@@ -480,13 +486,6 @@ export default function AdvancedAIChatPage() {
       return {};
     }
   });
-
-  useEffect(() => {
-    try {
-      const stored = window.localStorage.getItem(LOCAL_STORAGE_KEY);
-      if (stored) setApiKey(stored);
-    } catch {}
-  }, []);
 
   const systemPrompt = useMemo(() => buildSystemPromptV2(formData), [formData]);
 
