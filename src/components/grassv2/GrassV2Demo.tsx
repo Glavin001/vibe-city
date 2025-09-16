@@ -176,7 +176,7 @@ export default function GrassV2Demo() {
         <Environment preset="sunset" />
         <OrbitControls makeDefault />
       </Suspense>
-      <StatsGl />
+      <StatsGl className="absolute top-0 left-0" />
     </Canvas>
   );
 }
