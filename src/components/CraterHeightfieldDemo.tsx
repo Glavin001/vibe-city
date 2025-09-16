@@ -436,7 +436,7 @@ function FallingMeteors({
       )
       rb.setAngvel({ x: traits.spin.x, y: traits.spin.y, z: traits.spin.z }, true)
       rb.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true)
-      rb.setCcdEnabled(true)
+      rb.enableCcd(true)
     } catch {}
     setTimeout(() => {
       processingIdsRef.current.delete(id)
@@ -487,7 +487,7 @@ function FallingMeteors({
                 )
                 rb.setAngvel({ x: m.spin.x, y: m.spin.y, z: m.spin.z }, true)
                 rb.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true)
-                rb.setCcdEnabled(true)
+                rb.enableCcd(true)
               } catch {}
             }
           }}
