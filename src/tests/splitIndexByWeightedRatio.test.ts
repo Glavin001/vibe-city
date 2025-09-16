@@ -65,4 +65,16 @@ describe("splitTextByWeightedRatio", () => {
   });
 });
 
-
+describe("no character loss across ratios", () => {
+  it("keeps all characters for the provided example input", () => {
+    const text = "Hey there! I'm doing well, thanks for asking. Just taking it all in, you know? How about yourself? What's new in your world?";
+    for (let i = 0; i <= 100; i++) {
+      const r = i / 100;
+      const idx = splitIndexByWeightedRatio(text, r);
+      const spoken = text.slice(0, idx);
+      const remaining = text.slice(idx);
+      expect(spoken.length + remaining.length).toBe(text.length);
+      expect(spoken + remaining).toBe(text);
+    }
+  });
+});
