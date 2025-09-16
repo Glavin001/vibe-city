@@ -11,6 +11,12 @@ const GrassMaterial = shaderMaterial(
     map: null,
     alphaMap: null,
     time: 0,
+    // Wind uniforms (texture-driven wind instead of heavy simplex noise)
+    windTex: null,
+    windScale: 0.02,
+    windSpeed: 0.2,
+    // Tile origin in world XZ for correct interaction/wind sampling
+    tileOrigin: new THREE.Vector2(0, 0),
     tipColor: new THREE.Color(0.0, 0.6, 0.0).convertSRGBToLinear(),
     bottomColor: new THREE.Color(0.0, 0.1, 0.0).convertSRGBToLinear(),
     // Interaction uniforms
@@ -30,6 +36,11 @@ const GrassMaterial = shaderMaterial(
       attribute float stretch;
       uniform float time;
       uniform float bladeHeight;
+      // Wind
+      uniform sampler2D windTex;
+      uniform float windScale;
+      uniform float windSpeed;
+      uniform vec2 tileOrigin;
       // Interaction uniforms
       uniform vec2 boundsMin;
       uniform vec2 boundsSize;
@@ -40,31 +51,11 @@ const GrassMaterial = shaderMaterial(
       varying vec2 vUv;
       varying float frc;
 
-      //WEBGL-NOISE FROM https://github.com/stegu/webgl-noise
-      vec3 mod289(vec3 x) {return x - floor(x * (1.0 / 289.0)) * 289.0;}
-      vec2 mod289(vec2 x) {return x - floor(x * (1.0 / 289.0)) * 289.0;}
-      vec3 permute(vec3 x) {return mod289(((x*34.0)+1.0)*x);} 
-      float snoise(vec2 v){
-        const vec4 C = vec4(0.211324865405187, 0.366025403784439, -0.577350269189626, 0.024390243902439);
-        vec2 i  = floor(v + dot(v, C.yy) );
-        vec2 x0 = v -   i + dot(i, C.xx);
-        vec2 i1; i1 = (x0.x > x0.y) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
-        vec4 x12 = x0.xyxy + C.xxzz;
-        x12.xy -= i1;
-        i = mod289(i);
-        vec3 p = permute( permute( i.y + vec3(0.0, i1.y, 1.0 )) + i.x + vec3(0.0, i1.x, 1.0 ));
-        vec3 m = max(0.5 - vec3(dot(x0,x0), dot(x12.xy,x12.xy), dot(x12.zw,x12.zw)), 0.0);
-        m = m*m ;
-        m = m*m ;
-        vec3 x = 2.0 * fract(p * C.www) - 1.0;
-        vec3 h = abs(x) - 0.5;
-        vec3 ox = floor(x + 0.5);
-        vec3 a0 = x - ox;
-        m *= 1.79284291400159 - 0.85373472095314 * ( a0*a0 + h*h );
-        vec3 g;
-        g.x  = a0.x  * x0.x  + h.x  * x0.y;
-        g.yz = a0.yz * x12.xz + h.yz * x12.yw;
-        return 130.0 * dot(m, g);
+      // Simple hash for dithering if needed
+      float hash12(vec2 p) {
+        vec3 p3  = fract(vec3(p.xyx) * 0.1031);
+        p3 += dot(p3, p3.yzx + 33.33);
+        return fract((p3.x + p3.y) * p3.z);
       }
 
       // rotate vector by quaternion
@@ -94,7 +85,10 @@ const GrassMaterial = shaderMaterial(
       void main() {
         frc = position.y/float(bladeHeight);
         float tipWeight = smoothstep(0.0, 1.0, frc);
-        float noise = 1.0-(snoise(vec2((time-offset.x/50.0), (time-offset.z/50.0))));
+        // Sample tiled wind texture in world XZ using the blade root offset in world space
+        vec2 worldXZ = offset.xz + tileOrigin;
+        vec2 wuv = worldXZ * windScale + vec2(time * windSpeed, time * windSpeed * 0.73);
+        float noise = texture2D(windTex, wuv).r;
         vec4 direction = vec4(0.0, halfRootAngleSin, 0.0, halfRootAngleCos);
         // Tip-weight the orientation slerp so the base remains more rigid
         direction = slerp(direction, orientation, tipWeight);
@@ -102,7 +96,7 @@ const GrassMaterial = shaderMaterial(
         vPosition = rotateVectorByQuaternion(vPosition, direction);
         // Interaction-driven bending/flattening sampled in world XZ using the blade root offset
         if (useInteract > 0.5) {
-          vec2 uvWorld = (offset.xz - boundsMin) / boundsSize;
+          vec2 uvWorld = (worldXZ - boundsMin) / boundsSize;
           float c = texture2D(interactTex, uvWorld).r;
           // Sobel-lite gradient
           float cxp = texture2D(interactTex, uvWorld + vec2(interactInvSize.x, 0.0)).r;
@@ -148,7 +142,10 @@ const GrassMaterial = shaderMaterial(
   (self) => {
     if (!self) return;
     self.side = THREE.DoubleSide;
-    self.transparent = true;
+    // Use alpha testing cutout to reduce overdraw and keep depth writes
+    self.transparent = false;
+    self.depthWrite = true;
+    self.alphaTest = 0.15;
   }
 );
 
