@@ -1,8 +1,9 @@
 'use client';
 
 import { shaderMaterial } from '@react-three/drei';
-import { extend, type Object3DNode, useFrame } from '@react-three/fiber';
+import { extend, useFrame, type ReactThreeFiber } from '@react-three/fiber';
 import { useEffect, useMemo, useRef } from 'react';
+import type { Ref } from 'react';
 import * as THREE from 'three';
 import { MeshSurfaceSampler } from 'three/examples/jsm/math/MeshSurfaceSampler.js';
 
@@ -288,6 +289,11 @@ type SmokeMaterialInstance = SmokeParticlesMaterialType & {
   uOpacity: number;
 };
 
+type ShaderMaterialElement<T extends THREE.ShaderMaterial> =
+  Omit<ReactThreeFiber.ThreeElements['shaderMaterial'], 'ref'> & {
+    ref?: Ref<T>;
+  };
+
 export type FireShape =
   | { kind: 'plane'; width: number; height: number }
   | { kind: 'sphere'; radius: number }
@@ -327,7 +333,7 @@ export interface SmokeControls {
   color: string;
 }
 
-export interface VolumetricFireProps extends JSX.IntrinsicElements['group'] {
+export type VolumetricFireProps = ReactThreeFiber.ThreeElements['group'] & {
   shape: FireShape;
   flameCount?: number;
   smokeCount?: number;
@@ -335,7 +341,7 @@ export interface VolumetricFireProps extends JSX.IntrinsicElements['group'] {
   heightSpread?: number;
   flameControls: FlameControls;
   smokeControls?: SmokeControls;
-}
+};
 
 type FireGeometryAttributes = {
   position: THREE.BufferAttribute;
@@ -486,12 +492,10 @@ function buildSmokeGeometry(
   return geometry;
 }
 
-declare global {
-  namespace JSX {
-    interface IntrinsicElements {
-      fireParticlesMaterial: Object3DNode<FireParticlesMaterialType, typeof FireParticlesMaterial>;
-      smokeParticlesMaterial: Object3DNode<SmokeParticlesMaterialType, typeof SmokeParticlesMaterial>;
-    }
+declare module '@react-three/fiber' {
+  interface ThreeElements {
+    fireParticlesMaterial: ShaderMaterialElement<FireMaterialInstance>;
+    smokeParticlesMaterial: ShaderMaterialElement<SmokeMaterialInstance>;
   }
 }
 
