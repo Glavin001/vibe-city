@@ -41,6 +41,8 @@ type DeformationProfile = {
   skidLength: number
   direction: THREE.Vector2
   shockFactor: number
+  horizontalRatio: number
+  verticalRatio: number
 }
 
 const METEOR_COLORS = [
@@ -122,6 +124,8 @@ function CraterHeightfieldScene() {
       skidLength,
       direction,
       shockFactor,
+      horizontalRatio,
+      verticalRatio,
     } = profile
     const heights = heightsRef.current
     const depthUnits = depth / scaleY
@@ -136,6 +140,22 @@ function CraterHeightfieldScene() {
     const forwardDir = direction.lengthSq() > 1e-6 ? direction.clone().normalize() : new THREE.Vector2(0, 1)
     const sideDir = new THREE.Vector2(-forwardDir.y, forwardDir.x)
     const shockOuter = baseRadius * (1.4 + shockFactor * 0.8)
+    const glancing = clamp(horizontalRatio, 0, 1)
+    const verticalImpact = clamp(verticalRatio, 0, 1)
+
+    let touched = false
+    let rowMin = rows
+    let rowMax = -1
+    let colMin = cols
+    let colMax = -1
+
+    const markTouched = (r: number, c: number) => {
+      touched = true
+      if (r < rowMin) rowMin = r
+      if (r > rowMax) rowMax = r
+      if (c < colMin) colMin = c
+      if (c > colMax) colMax = c
+    }
 
     for (let r = 0; r < rows; r++) {
       const worldX = sampleWorldZ[r]
@@ -158,14 +178,20 @@ function CraterHeightfieldScene() {
         if (radial <= 1) {
           const t = 1 - radial
           const bowl = smoothstep(0, 1, t)
-          const centerBoost = 0.6 + 0.4 * t
-          heights[i] -= bowl * centerBoost * depthUnits
+          if (bowl > 0) {
+            const verticalWeight = 0.55 + 0.45 * verticalImpact
+            const centerBoost = (0.6 + 0.4 * t) * verticalWeight
+            markTouched(r, c)
+            heights[i] -= bowl * centerBoost * depthUnits
+          }
         }
 
         if (rimUnits > 0) {
           const rimBand = smoothstep(0.75, 1, radial) - smoothstep(1, 1.6, radial)
           if (rimBand > 0) {
-            heights[i] += rimBand * rimUnits
+            const rimWeight = 0.6 + 0.4 * verticalImpact
+            markTouched(r, c)
+            heights[i] += rimBand * rimUnits * rimWeight
           }
         }
 
@@ -177,10 +203,33 @@ function CraterHeightfieldScene() {
             const lateralFactor = 1 - clamp(Math.abs(lateral) / (minorRadius * 0.9 + 1e-4), 0, 1)
             if (along > 0 && lateralFactor > 0) {
               const gouge = Math.pow(along, 1.4) * Math.pow(lateralFactor, 1.6)
+              markTouched(r, c)
               heights[i] -= gouge * depthUnits * 0.55
               if (rimUnits > 0) {
                 const berm = Math.pow(along, 1.1) * (1 - Math.pow(lateralFactor, 0.6)) * 0.35
+                markTouched(r, c)
                 heights[i] += berm * rimUnits * 0.5
+              }
+            }
+          }
+        }
+
+        if (glancing > 0.08) {
+          const collapseBand = smoothstep(0.55, 1.35, radial)
+          if (collapseBand > 0) {
+            const forwardNorm = clamp(
+              (forward + majorRadius * 0.25) /
+                ((majorRadius + skidLength * 0.6 + 1e-4) * 1.1),
+              0,
+              1,
+            )
+            if (forwardNorm > 0) {
+              const lateralSpread = 1 - clamp(Math.abs(lateral) / (minorRadius * 1.4 + 1e-4), 0, 1)
+              const collapseStrength =
+                collapseBand * Math.pow(forwardNorm, 1.4) * Math.pow(lateralSpread, 0.9)
+              if (collapseStrength > 0) {
+                markTouched(r, c)
+                heights[i] -= collapseStrength * depthUnits * (0.35 + 0.45 * glancing)
               }
             }
           }
@@ -189,6 +238,7 @@ function CraterHeightfieldScene() {
         if (shockFactor > 0 && planarDistance > baseRadius) {
           const shock = 1 - smoothstep(baseRadius, shockOuter, planarDistance)
           if (shock > 0) {
+            markTouched(r, c)
             heights[i] -= shock * depthUnits * 0.08 * shockFactor
           }
         }
@@ -197,6 +247,48 @@ function CraterHeightfieldScene() {
 
     // Mark collider and normals update
     needsColliderUpdateRef.current = true
+
+    if (touched) {
+      const padding = 2
+      const smoothRowStart = Math.max(0, rowMin - padding)
+      const smoothRowEnd = Math.min(rows - 1, rowMax + padding)
+      const smoothColStart = Math.max(0, colMin - padding)
+      const smoothColEnd = Math.min(cols - 1, colMax + padding)
+      const snapshot = heights.slice()
+      const smoothingStrength = clamp(0.18 + shockFactor * 0.25 + glancing * 0.35, 0.12, 0.65)
+
+      for (let r = smoothRowStart; r <= smoothRowEnd; r++) {
+        const worldX = sampleWorldZ[r]
+        const dz = worldX - cz
+        for (let c = smoothColStart; c <= smoothColEnd; c++) {
+          const worldZ = sampleWorldX[c]
+          const dx = worldZ - cx
+          const planarDistance = Math.hypot(dx, dz)
+          if (planarDistance > influence * 1.1) continue
+
+          const idx = r * cols + c
+          let sum = 0
+          let count = 0
+          for (let dr = -1; dr <= 1; dr++) {
+            const rr = r + dr
+            if (rr < 0 || rr >= rows) continue
+            for (let dc = -1; dc <= 1; dc++) {
+              const cc = c + dc
+              if (cc < 0 || cc >= cols) continue
+              const neighborIdx = rr * cols + cc
+              sum += snapshot[neighborIdx]
+              count++
+            }
+          }
+
+          if (count === 0) continue
+          const average = sum / count
+          const falloff = 1 - clamp(planarDistance / (influence * 1.1), 0, 1)
+          const blend = smoothingStrength * falloff
+          heights[idx] = THREE.MathUtils.lerp(snapshot[idx], average, blend)
+        }
+      }
+    }
   }, [sampleWorldX, sampleWorldZ, rows, cols, scaleY])
 
   // Visual update + throttled normals/collider refresh
@@ -229,6 +321,7 @@ function CraterHeightfieldScene() {
 
     const horizontalSpeed = Math.hypot(velocity.x, velocity.z)
     const horizontalRatio = speed > 0 ? horizontalSpeed / speed : 0
+    const verticalRatio = speed > 0 ? Math.abs(velocity.y) / speed : 1
     const energy = 0.5 * impact.mass * speed * speed
     const energyScale = clamp(Math.cbrt(Math.max(energy, 1) / ENERGY_BASELINE), 0.35, 5)
 
@@ -238,19 +331,31 @@ function CraterHeightfieldScene() {
     )
     const baseDepth = Math.max(
       MIN_CRATER_DEPTH,
-      impact.radius * (0.3 + 0.25 * energyScale),
+      impact.radius * (0.3 + 0.25 * energyScale) * (0.65 + 0.35 * verticalRatio),
     )
 
     const elongation = 1 + horizontalRatio * (0.9 + 0.4 * energyScale)
     const majorRadius = baseRadius * elongation
     const minorRadius = baseRadius * Math.max(0.55, 1 - 0.3 * horizontalRatio)
-    const rimHeight = baseDepth * Math.min(0.75, 0.25 + 0.18 * energyScale)
+    const rimHeight =
+      baseDepth * Math.min(0.75, 0.25 + 0.18 * energyScale) * (0.6 + 0.4 * verticalRatio)
 
     let skidLength = 0
     if (horizontalRatio > SKID_ANGLE_THRESHOLD && horizontalSpeed > 0.2) {
       skidLength =
         (horizontalSpeed * 0.12 + baseRadius * 0.5 * energyScale) * horizontalRatio
       skidLength = Math.min(skidLength, baseRadius * 6)
+    }
+
+    const craterPosition = impact.position.clone()
+    if (horizontalSpeed > 1e-3) {
+      const offsetDir = new THREE.Vector3(velocity.x, 0, velocity.z)
+      const len = offsetDir.length()
+      if (len > 1e-4) {
+        offsetDir.divideScalar(len)
+        const push = baseRadius * (0.45 + 0.25 * energyScale) * horizontalRatio
+        craterPosition.add(offsetDir.multiplyScalar(push))
+      }
     }
 
     const direction =
@@ -261,7 +366,7 @@ function CraterHeightfieldScene() {
     const shockFactor = clamp(0.2 + energyScale * 0.2 + horizontalRatio * 0.25, 0.2, 0.8)
 
     carveCrater({
-      position: impact.position,
+      position: craterPosition,
       majorRadius,
       minorRadius,
       depth: baseDepth,
@@ -269,6 +374,8 @@ function CraterHeightfieldScene() {
       skidLength,
       direction,
       shockFactor,
+      horizontalRatio,
+      verticalRatio,
     })
   }, [carveCrater])
 
