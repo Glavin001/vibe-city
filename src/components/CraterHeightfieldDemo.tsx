@@ -24,12 +24,21 @@ const SKID_ANGLE_THRESHOLD = 0.18
 const RESPAWN_Y_THRESHOLD = -12
 // Allow meteors to linger after impact so they can tumble inside their crater before recycling
 const IMPACT_RESPAWN_DELAY = 2000
+const BASE_LINEAR_DAMPING = 0.08
+const BASE_ANGULAR_DAMPING = 0.06
 
 type MeteorImpact = {
   position: THREE.Vector3
   radius: number
   mass: number
   velocity: THREE.Vector3
+}
+
+type MeteorImpactResponse = {
+  postImpactVelocity?: THREE.Vector3
+  linearDamping?: number
+  angularDamping?: number
+  angularVelocityScale?: number
 }
 
 type DeformationProfile = {
@@ -110,6 +119,59 @@ function CraterHeightfieldScene() {
     return arr
   }, [rows])
 
+  const sampleHeightAtWorld = useCallback(
+    (x: number, z: number) => {
+      const heights = heightsRef.current
+      const halfWidth = scaleX / 2
+      const halfDepth = scaleZ / 2
+      const clampedZ = clamp(z, -halfWidth, halfWidth)
+      const clampedX = clamp(x, -halfDepth, halfDepth)
+
+      const colFloat = ((clampedZ / scaleX) + 0.5) * (cols - 1)
+      const rowFloat = ((clampedX / scaleZ) + 0.5) * (rows - 1)
+
+      const col0 = Math.floor(colFloat)
+      const row0 = Math.floor(rowFloat)
+      const col1 = Math.min(cols - 1, col0 + 1)
+      const row1 = Math.min(rows - 1, row0 + 1)
+      const tx = colFloat - col0
+      const tz = rowFloat - row0
+
+      const h00 = heights[row0 * cols + col0]
+      const h10 = heights[row0 * cols + col1]
+      const h01 = heights[row1 * cols + col0]
+      const h11 = heights[row1 * cols + col1]
+
+      const hx0 = h00 * (1 - tx) + h10 * tx
+      const hx1 = h01 * (1 - tx) + h11 * tx
+      const h = hx0 * (1 - tz) + hx1 * tz
+      return h * scaleY
+    },
+    [cols, rows, scaleX, scaleY, scaleZ],
+  )
+
+  const surfaceNormalAt = useCallback(
+    (position: THREE.Vector3) => {
+      const heights = heightsRef.current
+      if (!heights) return new THREE.Vector3(0, 1, 0)
+
+      const stepX = rows > 1 ? scaleZ / (rows - 1) : 1
+      const stepZ = cols > 1 ? scaleX / (cols - 1) : 1
+
+      const hxPlus = sampleHeightAtWorld(position.x + stepX, position.z)
+      const hxMinus = sampleHeightAtWorld(position.x - stepX, position.z)
+      const hzPlus = sampleHeightAtWorld(position.x, position.z + stepZ)
+      const hzMinus = sampleHeightAtWorld(position.x, position.z - stepZ)
+
+      const gradientX = stepX !== 0 ? (hxPlus - hxMinus) / (2 * stepX) : 0
+      const gradientZ = stepZ !== 0 ? (hzPlus - hzMinus) / (2 * stepZ) : 0
+
+      const normal = new THREE.Vector3(-gradientX, 1, -gradientZ)
+      return normal.normalize()
+    },
+    [cols, rows, sampleHeightAtWorld, scaleX, scaleZ],
+  )
+
   // Crater application flag + timer for throttled collider rebuild
   const needsColliderUpdateRef = useRef(false)
   const colliderTimerRef = useRef(0)
@@ -179,17 +241,40 @@ function CraterHeightfieldScene() {
           const t = 1 - radial
           const bowl = smoothstep(0, 1, t)
           if (bowl > 0) {
-            const verticalWeight = 0.55 + 0.45 * verticalImpact
-            const centerBoost = (0.6 + 0.4 * t) * verticalWeight
+            const verticalWeight = 0.62 + 0.38 * verticalImpact
+            const centerBoost = (0.7 + 0.35 * t) * verticalWeight
             markTouched(r, c)
             heights[i] -= bowl * centerBoost * depthUnits
+
+            if (horizontalRatio > 0.05) {
+              const forwardSpan = majorRadius + skidLength * 0.6 + rimHeight * 0.5
+              const forwardNorm = clamp(
+                (forward + majorRadius * 0.25) / (forwardSpan + 1e-4),
+                0,
+                1,
+              )
+              if (forwardNorm > 0) {
+                const lateralTightness = 1 - clamp(
+                  Math.abs(lateral) /
+                    (minorRadius * (0.65 + 0.35 * glancing) + 1e-4),
+                  0,
+                  1,
+                )
+                if (lateralTightness > 0) {
+                  const plow =
+                    Math.pow(forwardNorm, 1.8) * Math.pow(lateralTightness, 1.2)
+                  const trenchScale = (0.55 + 0.35 * shockFactor) * (0.6 + 0.4 * glancing)
+                  heights[i] -= plow * depthUnits * trenchScale
+                }
+              }
+            }
           }
         }
 
         if (rimUnits > 0) {
           const rimBand = smoothstep(0.75, 1, radial) - smoothstep(1, 1.6, radial)
           if (rimBand > 0) {
-            const rimWeight = 0.6 + 0.4 * verticalImpact
+            const rimWeight = 0.48 + 0.32 * verticalImpact
             markTouched(r, c)
             heights[i] += rimBand * rimUnits * rimWeight
           }
@@ -202,13 +287,13 @@ function CraterHeightfieldScene() {
             const along = 1 - clamp((forward - skidStart) / (skidEnd - skidStart), 0, 1)
             const lateralFactor = 1 - clamp(Math.abs(lateral) / (minorRadius * 0.9 + 1e-4), 0, 1)
             if (along > 0 && lateralFactor > 0) {
-              const gouge = Math.pow(along, 1.4) * Math.pow(lateralFactor, 1.6)
+              const gouge = Math.pow(along, 1.25) * Math.pow(lateralFactor, 1.5)
               markTouched(r, c)
-              heights[i] -= gouge * depthUnits * 0.55
+              heights[i] -= gouge * depthUnits * (0.7 + 0.35 * glancing)
               if (rimUnits > 0) {
-                const berm = Math.pow(along, 1.1) * (1 - Math.pow(lateralFactor, 0.6)) * 0.35
+                const berm = Math.pow(along, 1.05) * (1 - Math.pow(lateralFactor, 0.7)) * 0.3
                 markTouched(r, c)
-                heights[i] += berm * rimUnits * 0.5
+                heights[i] += berm * rimUnits * (0.4 + 0.3 * verticalImpact)
               }
             }
           }
@@ -229,7 +314,7 @@ function CraterHeightfieldScene() {
                 collapseBand * Math.pow(forwardNorm, 1.4) * Math.pow(lateralSpread, 0.9)
               if (collapseStrength > 0) {
                 markTouched(r, c)
-                heights[i] -= collapseStrength * depthUnits * (0.35 + 0.45 * glancing)
+                heights[i] -= collapseStrength * depthUnits * (0.45 + 0.5 * glancing)
               }
             }
           }
@@ -239,7 +324,8 @@ function CraterHeightfieldScene() {
           const shock = 1 - smoothstep(baseRadius, shockOuter, planarDistance)
           if (shock > 0) {
             markTouched(r, c)
-            heights[i] -= shock * depthUnits * 0.08 * shockFactor
+            const shockScale = 0.1 + 0.15 * shockFactor + 0.1 * glancing
+            heights[i] -= shock * depthUnits * shockScale
           }
         }
       }
@@ -255,7 +341,9 @@ function CraterHeightfieldScene() {
       const smoothColStart = Math.max(0, colMin - padding)
       const smoothColEnd = Math.min(cols - 1, colMax + padding)
       const snapshot = heights.slice()
-      const smoothingStrength = clamp(0.18 + shockFactor * 0.25 + glancing * 0.35, 0.12, 0.65)
+      const smoothingStrength = clamp(0.2 + shockFactor * 0.28 + glancing * 0.38, 0.14, 0.58)
+      const compactionRadius = baseRadius + skidLength * 0.6 + rimHeight * 0.5
+      const compactionStrength = depthUnits * (0.025 + 0.09 * shockFactor + 0.06 * glancing)
 
       for (let r = smoothRowStart; r <= smoothRowEnd; r++) {
         const worldX = sampleWorldZ[r]
@@ -286,6 +374,11 @@ function CraterHeightfieldScene() {
           const falloff = 1 - clamp(planarDistance / (influence * 1.1), 0, 1)
           const blend = smoothingStrength * falloff
           heights[idx] = THREE.MathUtils.lerp(snapshot[idx], average, blend)
+
+          const compactionFalloff = 1 - clamp(planarDistance / (compactionRadius + 1e-4), 0, 1)
+          if (compactionFalloff > 0) {
+            heights[idx] -= compactionStrength * compactionFalloff
+          }
         }
       }
     }
@@ -314,7 +407,7 @@ function CraterHeightfieldScene() {
     }
   })
 
-  const applyMeteorImpact = useCallback((impact: MeteorImpact) => {
+  const applyMeteorImpact = useCallback((impact: MeteorImpact): MeteorImpactResponse | void => {
     const velocity = impact.velocity
     const speed = velocity.length()
     if (speed < 0.1) return
@@ -327,24 +420,25 @@ function CraterHeightfieldScene() {
 
     const baseRadius = Math.max(
       MIN_CRATER_RADIUS,
-      impact.radius * (1.2 + 0.5 * energyScale),
+      impact.radius * (1.25 + 0.55 * energyScale),
     )
     const baseDepth = Math.max(
       MIN_CRATER_DEPTH,
-      impact.radius * (0.3 + 0.25 * energyScale) * (0.65 + 0.35 * verticalRatio),
+      impact.radius * (0.36 + 0.28 * energyScale) * (0.7 + 0.3 * verticalRatio),
     )
 
-    const elongation = 1 + horizontalRatio * (0.9 + 0.4 * energyScale)
+    const elongation = 1 + horizontalRatio * (1 + 0.45 * energyScale)
     const majorRadius = baseRadius * elongation
-    const minorRadius = baseRadius * Math.max(0.55, 1 - 0.3 * horizontalRatio)
+    const minorRadius = baseRadius * Math.max(0.5, 1 - 0.32 * horizontalRatio)
     const rimHeight =
-      baseDepth * Math.min(0.75, 0.25 + 0.18 * energyScale) * (0.6 + 0.4 * verticalRatio)
+      baseDepth * Math.min(0.72, 0.28 + 0.2 * energyScale) * (0.58 + 0.42 * verticalRatio)
 
     let skidLength = 0
     if (horizontalRatio > SKID_ANGLE_THRESHOLD && horizontalSpeed > 0.2) {
       skidLength =
-        (horizontalSpeed * 0.12 + baseRadius * 0.5 * energyScale) * horizontalRatio
-      skidLength = Math.min(skidLength, baseRadius * 6)
+        (horizontalSpeed * 0.18 + baseRadius * 0.65 * energyScale) *
+        (0.8 + 0.2 * horizontalRatio)
+      skidLength = Math.min(skidLength, baseRadius * 7.5)
     }
 
     const craterPosition = impact.position.clone()
@@ -363,7 +457,7 @@ function CraterHeightfieldScene() {
         ? new THREE.Vector2(velocity.z, velocity.x)
         : new THREE.Vector2(0, 1)
 
-    const shockFactor = clamp(0.2 + energyScale * 0.2 + horizontalRatio * 0.25, 0.2, 0.8)
+    const shockFactor = clamp(0.24 + energyScale * 0.22 + horizontalRatio * 0.25, 0.25, 0.85)
 
     carveCrater({
       position: craterPosition,
@@ -377,7 +471,57 @@ function CraterHeightfieldScene() {
       horizontalRatio,
       verticalRatio,
     })
-  }, [carveCrater])
+
+    const craterNormal = surfaceNormalAt(craterPosition)
+    const normalComponent = velocity.dot(craterNormal)
+    const tangential = velocity
+      .clone()
+      .sub(craterNormal.clone().multiplyScalar(normalComponent))
+    const tangentialSpeed = tangential.length()
+    const horizontalDirection =
+      horizontalSpeed > 1e-3
+        ? new THREE.Vector3(velocity.x, 0, velocity.z).normalize()
+        : new THREE.Vector3(0, 0, 1)
+
+    const skidRatio = skidLength > 0 ? clamp(skidLength / (baseRadius * 5 + 1e-4), 0, 1) : 0
+    const craterLoss = clamp(
+      0.35 + 0.25 * verticalRatio + 0.2 * shockFactor + 0.15 * skidRatio,
+      0.35,
+      0.9,
+    )
+    const plowLoss = clamp(horizontalRatio * (0.25 + 0.25 * energyScale), 0, 0.55)
+    const totalLoss = Math.min(0.95, craterLoss + plowLoss)
+    const residualEnergy = energy * (1 - totalLoss)
+    let residualSpeed = residualEnergy > 0 ? Math.sqrt((2 * residualEnergy) / impact.mass) : 0
+    if (!Number.isFinite(residualSpeed)) residualSpeed = 0
+    residualSpeed = Math.min(residualSpeed, tangentialSpeed)
+
+    let tangentialVelocity = new THREE.Vector3()
+    if (residualSpeed > 0.02) {
+      const tangentDir =
+        tangentialSpeed > 1e-5 ? tangential.clone().normalize() : horizontalDirection
+      tangentialVelocity = tangentDir.multiplyScalar(residualSpeed)
+    }
+
+    const embedSpeed = THREE.MathUtils.clamp(
+      normalComponent * (0.08 + 0.18 * verticalRatio) -
+        (0.4 + 0.25 * shockFactor + 0.3 * horizontalRatio),
+      -3.5,
+      -0.25,
+    )
+
+    const postImpactVelocity = tangentialVelocity
+      .clone()
+      .add(craterNormal.clone().multiplyScalar(embedSpeed))
+      .clampLength(0, speed * 0.6)
+
+    return {
+      postImpactVelocity,
+      linearDamping: 1.1 + 0.9 * horizontalRatio,
+      angularDamping: 1.4 + 0.4 * shockFactor,
+      angularVelocityScale: 0.3,
+    }
+  }, [carveCrater, surfaceNormalAt])
 
   return (
     <>
@@ -388,7 +532,7 @@ function CraterHeightfieldScene() {
         colliders={false}
         name="CraterTerrain"
         friction={1}
-        restitution={0.05}
+        restitution={0.01}
         density={1}
       >
         <HeightfieldCollider
@@ -443,7 +587,7 @@ function FallingMeteors({
   spawnDepth: number
   spawnHeight?: number
   numMeteors?: number
-  onImpact: (impact: MeteorImpact) => void
+  onImpact: (impact: MeteorImpact) => MeteorImpactResponse | void
 }) {
   const bodyRefs = useRef<Map<number, RapierRigidBody | null>>(new Map())
   const processingIdsRef = useRef<Set<number>>(new Set())
@@ -472,11 +616,11 @@ function FallingMeteors({
 
   const randomMeteorTraits = useCallback((): MeteorTraits => {
     const radius = THREE.MathUtils.lerp(0.18, 0.65, Math.random() ** 0.6)
-    const density = THREE.MathUtils.lerp(650, 2300, Math.random())
+    const density = THREE.MathUtils.lerp(900, 3200, Math.random() ** 0.7)
     const volume = (4 / 3) * Math.PI * radius * radius * radius
     const mass = density * volume
 
-    const entrySpeed = THREE.MathUtils.lerp(10, 32, Math.random() ** 0.4)
+    const entrySpeed = THREE.MathUtils.lerp(12, 36, Math.random() ** 0.5)
     const angleFromVertical = Math.pow(Math.random(), 1.8) * (Math.PI / 2 * 0.9)
     const azimuth = Math.random() * Math.PI * 2
     const horizontalSpeed = Math.sin(angleFromVertical) * entrySpeed
@@ -556,6 +700,8 @@ function FallingMeteors({
           )
           rb.setAngvel({ x: traits.spin.x, y: traits.spin.y, z: traits.spin.z }, true)
           rb.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true)
+          rb.setLinearDamping(BASE_LINEAR_DAMPING)
+          rb.setAngularDamping(BASE_ANGULAR_DAMPING)
           rb.enableCcd(true)
         } catch {}
         setTimeout(() => {
@@ -591,7 +737,32 @@ function FallingMeteors({
     const position = new THREE.Vector3(translation.x, translation.y, translation.z)
     const velocity = new THREE.Vector3(linvel.x, linvel.y, linvel.z)
 
-    onImpact({ position, radius: meteor.radius, mass: meteor.mass, velocity })
+    const response = onImpact({ position, radius: meteor.radius, mass: meteor.mass, velocity })
+    if (response && rb) {
+      if (response.postImpactVelocity) {
+        const next = response.postImpactVelocity
+        rb.setLinvel({ x: next.x, y: next.y, z: next.z }, true)
+      }
+      if (response.angularVelocityScale !== undefined) {
+        const angvel = rb.angvel()
+        if (angvel) {
+          rb.setAngvel(
+            {
+              x: angvel.x * response.angularVelocityScale,
+              y: angvel.y * response.angularVelocityScale,
+              z: angvel.z * response.angularVelocityScale,
+            },
+            true,
+          )
+        }
+      }
+      if (response.linearDamping !== undefined) {
+        rb.setLinearDamping(response.linearDamping)
+      }
+      if (response.angularDamping !== undefined) {
+        rb.setAngularDamping(response.angularDamping)
+      }
+    }
 
     recycleBody(id, IMPACT_RESPAWN_DELAY)
   }, [groundName, onImpact, recycleBody])
@@ -628,6 +799,8 @@ function FallingMeteors({
                 )
                 rb.setAngvel({ x: m.spin.x, y: m.spin.y, z: m.spin.z }, true)
                 rb.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true)
+                rb.setLinearDamping(BASE_LINEAR_DAMPING)
+                rb.setAngularDamping(BASE_ANGULAR_DAMPING)
                 rb.enableCcd(true)
               } catch {}
             }
@@ -635,7 +808,9 @@ function FallingMeteors({
           onCollisionEnter={(event) => handleCollisionEnter(m.id, event)}
           name={`Meteor-${m.id}`}
           friction={1}
-          restitution={0.05}
+          restitution={0.01}
+          linearDamping={BASE_LINEAR_DAMPING}
+          angularDamping={BASE_ANGULAR_DAMPING}
         >
           <BallCollider args={[m.radius]} />
           <mesh castShadow>
