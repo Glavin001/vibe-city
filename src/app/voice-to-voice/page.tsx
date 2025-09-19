@@ -32,6 +32,9 @@ export default function Page() {
     // lastFinalText not used directly; handled via onSegment → pushText
     vadListening,
     vadUserSpeaking,
+    whisperStatus,
+    whisperIsReady,
+    whisperIsRecording,
     settleRemainingMs,
     waitingForWhisper,
     waitingRemainingMs,
@@ -40,16 +43,16 @@ export default function Page() {
     stop: segmentsStop,
     toggle: segmentsToggle,
     load: segmentsLoad,
+    chunkCount,
+    debugForceFlush,
   } = useVoiceSegments({
     whisper: { language: "en", autoStart: true, dataRequestInterval: 250 },
     vad: { model: "v5", startOnLoad: false, userSpeakingThreshold: vadThreshold, baseAssetPath: "/vad/", onnxWASMBasePath: "/vad/" },
     settleMs: 300,
-    autoLoad: true,
-    /*
+    autoLoad: false,
     onLiveUpdate: (text) => {
         console.log("[useVoiceSegments] onLiveUpdate", text);
     },
-    */
     onSegment: (text) => {
         console.log("[useVoiceSegments] onSegment", text);
         pushText(text, true);
@@ -265,10 +268,17 @@ export default function Page() {
                     Waiting for Whisper… {typeof waitingRemainingMs === 'number' ? Math.ceil(waitingRemainingMs / 100) / 10 : 0}s
                   </span>
                 )}
+                <span className="inline-flex items-center gap-1">
+                  <span className="inline-block w-2 h-2 rounded-full bg-gray-400" />
+                  chunks: {chunkCount} · ready: {String(whisperIsReady)} · rec: {String(whisperIsRecording)}
+                </span>
               </div>
               <div>
                 <div className="text-xs text-gray-600 mb-1">Live transcript</div>
                 <div className="min-h-[48px] border rounded p-2">{liveText || <span className="text-gray-400">Speak…</span>}</div>
+              </div>
+              <div className="flex gap-2 text-xs">
+                <button type="button" className="px-2 py-1 border rounded" onClick={debugForceFlush}>Force Flush</button>
               </div>
             </div>
 
@@ -312,6 +322,32 @@ export default function Page() {
             <input id="speed-number" type="number" min={0.5} max={2} step={0.05} value={speed} onChange={(e) => setSpeed(Number(e.target.value))} disabled={!workerReady} className="w-24 rounded-lg border px-2 py-1" />
             <span className="text-sm text-gray-600">{speed.toFixed(2)}x</span>
             {workerError && <div className="text-sm text-red-600">{workerError}</div>}
+          </div>
+        </div>
+
+        {/* Status details (debug) */}
+        <div className="border rounded-xl p-4 space-y-2">
+          <h2 className="text-lg font-semibold">Status details</h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+            <div className="space-y-1">
+              <div><span className="font-medium">Segmenter status</span>: {vsStatus}</div>
+              <div><span className="font-medium">VAD listening</span>: {String(vadListening)}</div>
+              <div><span className="font-medium">VAD speaking</span>: {String(vadUserSpeaking)}</div>
+              <div><span className="font-medium">Whisper model status</span>: {whisperStatus}</div>
+              <div><span className="font-medium">Whisper model ready</span>: {String(whisperIsReady)}</div>
+              <div><span className="font-medium">Whisper mic recording</span>: {String(whisperIsRecording)}</div>
+            </div>
+            <div className="space-y-1">
+              <div><span className="font-medium">Settle remaining</span>: {typeof settleRemainingMs === 'number' ? `${Math.ceil(settleRemainingMs / 100) / 10}s` : '—'}</div>
+              <div><span className="font-medium">Waiting for Whisper</span>: {waitingForWhisper ? `${Math.ceil((waitingRemainingMs || 0) / 100) / 10}s` : 'no'}</div>
+              <div><span className="font-medium">Recorder chunks</span>: {chunkCount}</div>
+              <div><span className="font-medium">Live text length</span>: {liveText?.length ?? 0}</div>
+              <div><span className="font-medium">Queue size</span>: {uiChunks.length}</div>
+              <div><span className="font-medium">Player</span>: track={activeAudioIndex} prog={Math.round((progressRatio || 0) * 100)}%</div>
+            </div>
+          </div>
+          <div className="pt-2">
+            <button type="button" className="px-2 py-1 border rounded text-xs" onClick={debugForceFlush}>Force Flush Segment</button>
           </div>
         </div>
 

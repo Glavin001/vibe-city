@@ -1,4 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { useActorRef, useSelector } from '@xstate/react';
+import { createSpeechRecognitionMachine, useSpeechRecognitionStatus, type SpeechRecognitionStatus } from '../machines/speechRecognition.machine';
+import { inspect } from '@/machines/inspector';
 
 // All model loading and inference are performed inside a Web Worker.
 
@@ -32,7 +35,7 @@ export interface SpeechRecognitionOptions {
   onError?: (error: string) => void;
 }
 
-export type SpeechRecognitionStatus = 'idle' | 'loading' | 'ready' | 'start' | 'update' | 'complete' | 'error';
+export type { SpeechRecognitionStatus };
 
 export interface SpeechRecognitionResult {
   /**
@@ -98,327 +101,82 @@ export function useSpeechRecognition({
   onTpsChange,
   onError,
 }: SpeechRecognitionOptions = {}): SpeechRecognitionResult {
-  const [status, setStatus] = useState<SpeechRecognitionStatus>('idle');
-  const [text, setText] = useState('');
-  const [tps, setTps] = useState<number | null>(null);
-  const [progressItems, setProgressItems] = useState<
-    Array<{
-      file: string;
-      progress: number;
-      total: number;
-    }>
-  >([]);
-  const [loadingMessage, setLoadingMessage] = useState('');
-  const [error, setError] = useState<string | null>(null);
-  const [, setWorkerInitialized] = useState(false);
-
-  // Model work is handled inside a Web Worker
-  const workerRef = useRef<Worker | null>(null);
-  const statusCallbackCalledRef = useRef<Record<string, boolean>>({});
-  const isGeneratingRef = useRef(false);
-  // Store the current callbacks in refs to avoid recreating the worker message handler
-  const onErrorRef = useRef(onError);
-  const onStatusChangeRef = useRef(onStatusChange);
-  const onTextChangeRef = useRef(onTextChange);
-  const onTextUpdateRef = useRef(onTextUpdate);
-  const onTpsChangeRef = useRef(onTpsChange);
-
-  // Update the refs when callbacks change
-  useEffect(() => {
-    onErrorRef.current = onError;
-  }, [onError]);
-
-  useEffect(() => {
-    onStatusChangeRef.current = onStatusChange;
-  }, [onStatusChange]);
-
-  useEffect(() => {
-    onTextChangeRef.current = onTextChange;
-  }, [onTextChange]);
-
-  useEffect(() => {
-    onTextUpdateRef.current = onTextUpdate;
-  }, [onTextUpdate]);
-
-  useEffect(() => {
-    onTpsChangeRef.current = onTpsChange;
-  }, [onTpsChange]);
-
-  // Handle worker messages
-  const handleWorkerMessage = useCallback(
-    (e: MessageEvent) => {
-      // console.log('Received message from worker:', e.data);
-
-      const { status: messageStatus, error: messageError } = e.data;
-
-      if (messageError) {
-        console.error('Error from worker:', messageError);
-        setError(messageError);
-        if (onErrorRef.current) onErrorRef.current(messageError);
-        setStatus('error');
-        return;
+  const [logic] = useState(() => createSpeechRecognitionMachine(), []);
+  const actor = useActorRef(logic, { input: { language }, inspect: inspect });
+  /*
+  const status = useSelector(actor, (s): SpeechRecognitionStatus => {
+    console.log("[useSpeechRecognition] status", s);
+    switch (s.value) {
+      case 'boot':
+      case 'loading':
+        return 'loading';
+      case 'ready':
+        return 'ready';
+      case 'complete':
+        return 'complete';
+      case 'generating':
+        return 'start';
+      default: {
+        throw new Error(`[useSpeechRecognition] unexpected status: ${s.value}`);
       }
+    }
+  });
+  */
+  const status = useSpeechRecognitionStatus(actor);
+  const text = useSelector(actor, (s) => s.context.text as string);
+  const tps = useSelector(actor, (s) => s.context.tps as number | null);
+  const progressItems = useSelector(actor, (s) => s.context.progressItems as SpeechRecognitionResult['progressItems']);
+  const loadingMessage = useSelector(actor, (s) => s.context.loadingMessage as string);
+  const error = useSelector(actor, (s) => s.context.error as string | null);
 
-      switch (messageStatus) {
-        case 'loading': {
-          setStatus('loading');
-          if (onStatusChangeRef.current) {
-            setTimeout(() => {
-              (onStatusChangeRef.current as (status: SpeechRecognitionStatus) => void)('loading');
-            }, 0);
-          }
-          break;
-        }
-        case 'ready': {
-          setStatus('ready');
-          if (onStatusChangeRef.current) {
-            setTimeout(() => {
-              (onStatusChangeRef.current as (status: SpeechRecognitionStatus) => void)('ready');
-            }, 0);
-          }
-          break;
-        }
-        case 'initiate':
-          console.log('Initiating file download:', e.data.file);
-          setProgressItems((prev) => [...prev, e.data]);
-          break;
-
-        case 'progress':
-          console.log(`Progress for ${e.data.file}: ${e.data.progress}/${e.data.total}`);
-          setProgressItems((prev) =>
-            prev.map((item) => {
-              if (item.file === e.data.file) {
-                return { ...item, ...e.data };
-              }
-              return item;
-            }),
-          );
-          break;
-
-        case 'done':
-          console.log(`File download complete: ${e.data.file}`);
-          setProgressItems((prev) => prev.filter((item) => item.file !== e.data.file));
-          break;
-
-        case 'start':
-          // console.log('Starting speech recognition');
-          // Reset the status callback tracking for the new status
-          statusCallbackCalledRef.current = {};
-          isGeneratingRef.current = true;
-          setStatus('start');
-
-          // Call status change callback if provided
-          if (onStatusChangeRef.current) {
-            setTimeout(() => {
-              // Type assertion to handle the possibly undefined callback
-              (onStatusChangeRef.current as (status: SpeechRecognitionStatus) => void)('start');
-            }, 0);
-          }
-          break;
-
-        case 'update':
-          setStatus('update');
-
-          // Call status change callback if provided
-          if (onStatusChangeRef.current) {
-            setTimeout(() => {
-              // Type assertion to handle the possibly undefined callback
-              (onStatusChangeRef.current as (status: SpeechRecognitionStatus) => void)('update');
-            }, 0);
-          }
-
-          // For updates, we show the incremental tokens as they come in
-          if (e.data.output) {
-            // console.log(`Token updated: "${e.data.output}"`);
-            setText(e.data.output);
-
-            // Call only the text update callback for incremental updates
-            if (onTextUpdateRef.current) onTextUpdateRef.current(e.data.output);
-          }
-
-          if (e.data.tps !== undefined) {
-            // console.log(`TPS updated: ${e.data.tps}`);
-            setTps(e.data.tps);
-            if (onTpsChangeRef.current) onTpsChangeRef.current(e.data.tps);
-          }
-          break;
-
-        case 'complete':
-          // console.log('Speech recognition complete');
-          // Reset the status callback tracking for the new status
-          statusCallbackCalledRef.current = {};
-          isGeneratingRef.current = false;
-          setStatus('complete');
-
-          // Call status change callback if provided
-          if (onStatusChangeRef.current) {
-            setTimeout(() => {
-              // Type assertion to handle the possibly undefined callback
-              (onStatusChangeRef.current as (status: SpeechRecognitionStatus) => void)('complete');
-            }, 0);
-          }
-
-          // For complete, we use the final output from the worker
-          if (e.data.output) {
-            // console.log(`Final text: "${e.data.output}"`);
-            setText(e.data.output);
-
-            // Call only the text change callback for the final complete text
-            if (onTextChangeRef.current) onTextChangeRef.current(e.data.output);
-          }
-          break;
-
-        default:
-          console.log('Unknown message status:', messageStatus);
-          break;
-      }
-    },
-    [], // No dependencies to avoid re-creating this function
-  );
-
-  // Create the worker only once when the hook is initialized
-  const createWorker = useCallback(() => {
-    if (typeof window === 'undefined') return false;
-    if (workerRef.current) return true;
-    try {
-      const worker = new Worker(new URL('../workers/speech-recognition.worker.ts', import.meta.url), {
-        type: 'module',
-      });
-      // Attach message handler immediately so events from worker are not missed
-      worker.addEventListener('message', handleWorkerMessage as (e: MessageEvent) => void);
-      workerRef.current = worker;
-      setWorkerInitialized(true);
-      // console.log('Speech recognition worker created successfully');
-      return true;
-    } catch (err) {
-      console.error('Error creating worker:', err);
-      const errorMessage = err instanceof Error ? err.message : String(err);
-      setError(errorMessage);
-      if (onErrorRef.current) onErrorRef.current(errorMessage);
-      setStatus('error');
-      if (onStatusChangeRef.current) {
-        setTimeout(() => {
-          (onStatusChangeRef.current as (status: SpeechRecognitionStatus) => void)('error');
-        }, 0);
-      }
+  // Load and generate wrappers
+  const loadModel = () => {
+    console.log("[useSpeechRecognition] loadModel", status);
+    actor.send({ type: 'LOAD' } as const);
+  };
+  const generateText = (audio: Float32Array): boolean => {
+    console.log("[useSpeechRecognition] generateText", status);
+    if (!(status === 'ready' || status === 'complete')) {
+      console.warn("[useSpeechRecognition] generateText not ready", status);
       return false;
     }
-  }, [handleWorkerMessage]);
+
+    const canGenerate = actor.getSnapshot().can({ type: 'GENERATE', audio, language });
+    if (!canGenerate) {
+      console.warn("[useSpeechRecognition] GENERATE transition not enabled in current state", actor.getSnapshot().value);
+      return false;
+    }
+
+    actor.send({ type: 'GENERATE', audio, language } as const);
+    return true;
+  };
+
+  // Bridge callbacks (no state writes inside to avoid loops)
+  useEffect(() => {
+    if (onStatusChange) onStatusChange(status);
+  }, [status, onStatusChange]);
 
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-    console.log('Initializing speech recognition worker...');
-    createWorker();
-    return () => {
-      if (workerRef.current) {
-        console.log('Terminating speech recognition worker...');
-        workerRef.current.terminate();
-        workerRef.current = null;
-      }
-    };
-  }, [createWorker]);
+    if (status === 'update' && onTextUpdate) onTextUpdate(text);
+  }, [status, text, onTextUpdate]);
 
+  useEffect(() => {
+    if (status === 'complete' && onTextChange) onTextChange(text);
+  }, [status, text, onTextChange]);
 
-  // Message handler attached during worker creation
+  useEffect(() => {
+    if (tps !== null && onTpsChange) onTpsChange(tps);
+  }, [tps, onTpsChange]);
 
-  // Progress is emitted directly from the worker
-
-  // Load the model
-  const loadModel = useCallback(async () => {
-    if (!workerRef.current) {
-      const ok = createWorker();
-      if (!ok || !workerRef.current) {
-        console.error('Whisper worker not initialized');
-        const errorMessage = 'Whisper worker not initialized';
-        setError(errorMessage);
-        if (onErrorRef.current) onErrorRef.current(errorMessage);
-        return;
-      }
-    }
-
-    console.log('Request worker to load model...');
-
-    // Reset state
-    setText('');
-    setTps(null);
-    setProgressItems([]);
-    setLoadingMessage('Loading model...');
-    setError(null);
-    statusCallbackCalledRef.current = {};
-    isGeneratingRef.current = false;
-
-    // Update status
-    setStatus('loading');
-    if (onStatusChangeRef.current) {
-      setTimeout(() => {
-        // Type assertion to handle the possibly undefined callback
-        (onStatusChangeRef.current as (status: SpeechRecognitionStatus) => void)('loading');
-      }, 0);
-    }
-
-    // Ask worker to load model; it will emit loading/progress/ready events
-    workerRef.current.postMessage({ type: 'load' });
-  }, [createWorker]);
-
-  // Generate text from audio
-  const generateText = useCallback(
-    (audio: Float32Array): boolean => {
-      if (!workerRef.current) {
-        const ok = createWorker();
-        if (!ok || !workerRef.current) {
-          console.error('Whisper worker not initialized');
-          const errorMessage = 'Whisper worker not initialized';
-          setError(errorMessage);
-          if (onErrorRef.current) onErrorRef.current(errorMessage);
-          return false;
-        }
-      }
-
-      if (status !== 'ready' && status !== 'complete') {
-        console.warn('Model not ready, current status:', status);
-        return false;
-      }
-
-      if (isGeneratingRef.current) {
-        // console.warn('Already generating text, ignoring new request');
-        return false;
-      }
-
-      // Main thread no longer requires tokenizer/processor/model; all handled in worker
-
-      // console.log(`Generating text from audio (${audio.length} samples), language: ${language}`);
-
-      try {
-        // Send data to worker for processing, remove non-transferable model objects
-        workerRef.current.postMessage({
-          type: 'generate',
-          data: { audio, language },
-        });
-        return true;
-      } catch (err) {
-        console.error('Error generating text:', err);
-        const errorMessage = err instanceof Error ? err.message : String(err);
-        setError(errorMessage);
-        if (onErrorRef.current) onErrorRef.current(errorMessage);
-        setStatus('error');
-        if (onStatusChangeRef.current) {
-          setTimeout(() => {
-            // Type assertion to handle the possibly undefined callback
-            (onStatusChangeRef.current as (status: SpeechRecognitionStatus) => void)('error');
-          }, 0);
-        }
-        return false;
-      }
-    },
-    [status, language, createWorker], // Depend on status, language, and worker creation
-  );
+  useEffect(() => {
+    if (error && onError) onError(error);
+  }, [error, onError]);
 
   return {
     status,
     text,
     tps,
     isLoading: status === 'loading',
-    // isReady: ['ready', 'start', 'update', 'complete'].includes(status),
     isReady: !['idle', 'loading', 'error'].includes(status),
     isProcessing: ['start', 'update'].includes(status),
     progressItems,

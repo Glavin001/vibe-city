@@ -24,8 +24,12 @@ export interface VoiceSegmentsOptions {
   settleMs?: number;
   /** Optional maximum time to wait for Whisper 'complete' after settle elapses (ms). Default: 1500ms */
   whisperWaitMs?: number;
-  /** Auto-load Whisper model on mount. Default: true */
-  autoLoad?: boolean;
+  /**
+   * Auto-load Whisper model on mount.
+   * Default: true
+   * @deprecated Causes Speech Recognition machine to get stuck in 'loading' state
+   * */
+  // autoLoad?: boolean;
 
   /** Live preview callback (token updates) */
   onLiveUpdate?: (text: string) => void;
@@ -51,6 +55,8 @@ export interface VoiceSegmentsResult {
   whisperStatus: SpeechRecognitionStatus;
   vadListening: boolean;
   vadUserSpeaking: boolean;
+  whisperIsReady: boolean;
+  whisperIsRecording: boolean;
 
   // Flush/settle indicators
   settleRemainingMs: number | null;
@@ -65,14 +71,18 @@ export interface VoiceSegmentsResult {
   stop: () => void; // stop listening (VAD)
   toggle: () => void; // toggle listening (VAD)
   load: () => void; // load Whisper model
+  // Debug info
+  chunkCount: number;
+  debugForceFlush: () => void;
 }
 
 export function useVoiceSegments(options: VoiceSegmentsOptions = {}): VoiceSegmentsResult {
   // console.log("[useVoiceSegments] useVoiceSegments");
 
   const settleMs = options.settleMs ?? 300;
-  const whisperWaitMs = options.whisperWaitMs ?? 1500;
-  const autoLoad = options.autoLoad !== false;
+  const whisperWaitMs = 60_000; // options.whisperWaitMs ?? 1500;
+  // const autoLoad = options.autoLoad !== false;
+  const autoLoad = false; // FIXME: causes Speech Recognition machine to get stuck in 'loading' state
 
   // Errors (scoped)
   const [whisperError, setWhisperError] = useState<string | null>(null);
@@ -149,6 +159,68 @@ export function useVoiceSegments(options: VoiceSegmentsOptions = {}): VoiceSegme
   }, [clearSettleTimer, clearWaitingTimer]);
 
   // Whisper integration
+
+  // Extract whisper options into variables
+  const whisperLanguage = options.whisper?.language ?? 'en';
+  const whisperAutoStart = options.whisper?.autoStart ?? true;
+  const whisperDataRequestInterval = options.whisper?.dataRequestInterval ?? 250;
+
+  // Memoize event handlers as callbacks
+  const handleWhisperTextChange = useCallback((t: string) => {
+    // console.log("[useVoiceSegments] onTextChange", t);
+    // console.log("[useVoiceSegments] onTextUpdate", t);
+    const txt = t ?? '';
+    liveTextRef.current = txt;
+    setLiveText(txt);
+    // Preserve the longest version seen this segment
+    if (txt.length > (bestLiveTextRef.current?.length ?? 0)) {
+      bestLiveTextRef.current = txt;
+    }
+    if (options.onLiveUpdate) options.onLiveUpdate(txt);
+  }, [options]);
+
+  // Finalization helper
+  const finalizeAndFlush = useCallback((_reason: 'settle' | 'whisper-complete' | 'timeout', textOverride?: string) => {
+    // Clear timers/state
+    clearSettleTimer();
+    clearWaitingTimer();
+    settleDeadlineRef.current = null;
+    waitingDeadlineRef.current = null;
+    setSettleRemainingMs(null);
+    setWaitingRemainingMs(null);
+    waitingForWhisperRef.current = false;
+    setWaitingForWhisper(false);
+
+    const candidate = (textOverride ?? liveTextRef.current ?? '').trim();
+    const best = (bestLiveTextRef.current ?? '').trim();
+    const text = best.length >= candidate.length ? best : candidate;
+    if (text.length > 0) {
+      setLastFinalText(text);
+      if (options.onSegment) options.onSegment(text);
+    }
+    liveTextRef.current = '';
+    bestLiveTextRef.current = '';
+    setLiveText('');
+    // Advance the logical boundary to the end of the committed text so no chunks are re-used
+    try {
+      // markSegmentBoundary();
+    } catch {}
+  }, [clearSettleTimer, clearWaitingTimer, options]);
+
+  const handleWhisperStatusChange = useCallback((s: string) => {
+    // console.log("[useVoiceSegments] onStatusChange", s);
+    if (s === 'complete' && waitingForWhisperRef.current) {
+      // Flush immediately on Whisper completion if we were waiting
+      finalizeAndFlush('whisper-complete', liveTextRef.current || '');
+    }
+  }, [finalizeAndFlush]);
+
+  const handleWhisperError = useCallback((e: string) => {
+    console.log("[useVoiceSegments] onError", e);
+    setWhisperError(e);
+    if (options.onWhisperError) options.onWhisperError(e);
+  }, [options]);
+
   const {
     status: whisperStatus,
     isReady: whisperIsReady,
@@ -161,33 +233,12 @@ export function useVoiceSegments(options: VoiceSegmentsOptions = {}): VoiceSegme
     markSegmentBoundary,
     getChunkCount,
   } = useWhisper({
-    language: options.whisper?.language ?? 'en',
-    autoStart: options.whisper?.autoStart ?? true,
-    dataRequestInterval: options.whisper?.dataRequestInterval ?? 250,
-    onTextChange: (t) => {
-      // console.log("[useVoiceSegments] onTextChange", t);
-      // console.log("[useVoiceSegments] onTextUpdate", t);
-      const txt = t ?? '';
-      liveTextRef.current = txt;
-      setLiveText(txt);
-      // Preserve the longest version seen this segment
-      if (txt.length > (bestLiveTextRef.current?.length ?? 0)) {
-        bestLiveTextRef.current = txt;
-      }
-      if (options.onLiveUpdate) options.onLiveUpdate(txt);
-    },
-    onStatusChange: (s) => {
-      // console.log("[useVoiceSegments] onStatusChange", s);
-      if (s === 'complete' && waitingForWhisperRef.current) {
-        // Flush immediately on Whisper completion if we were waiting
-        finalizeAndFlush('whisper-complete', liveTextRef.current || '');
-      }
-    },
-    onError: (e) => {
-      console.log("[useVoiceSegments] onError", e);
-      setWhisperError(e);
-      if (options.onWhisperError) options.onWhisperError(e);
-    },
+    language: whisperLanguage,
+    autoStart: whisperAutoStart,
+    dataRequestInterval: whisperDataRequestInterval,
+    onTextChange: handleWhisperTextChange,
+    onStatusChange: handleWhisperStatusChange,
+    onError: handleWhisperError,
   });
 
   useEffect(() => {
@@ -284,33 +335,14 @@ export function useVoiceSegments(options: VoiceSegmentsOptions = {}): VoiceSegme
     }
   }, [vad.listening, whisperIsReady, whisperIsRecording, whisperStartRecording, whisperStopRecording]);
 
-  // Finalization helper
-  const finalizeAndFlush = useCallback((_reason: 'settle' | 'whisper-complete' | 'timeout', textOverride?: string) => {
-    // Clear timers/state
-    clearSettleTimer();
-    clearWaitingTimer();
-    settleDeadlineRef.current = null;
-    waitingDeadlineRef.current = null;
-    setSettleRemainingMs(null);
-    setWaitingRemainingMs(null);
-    waitingForWhisperRef.current = false;
-    setWaitingForWhisper(false);
-
-    const candidate = (textOverride ?? liveTextRef.current ?? '').trim();
-    const best = (bestLiveTextRef.current ?? '').trim();
-    const text = best.length >= candidate.length ? best : candidate;
-    if (text.length > 0) {
-      setLastFinalText(text);
-      if (options.onSegment) options.onSegment(text);
-    }
-    liveTextRef.current = '';
-    bestLiveTextRef.current = '';
-    setLiveText('');
-    // Advance the logical boundary to the end of the committed text so no chunks are re-used
-    try {
-      markSegmentBoundary();
-    } catch {}
-  }, [clearSettleTimer, clearWaitingTimer, options, markSegmentBoundary]);
+  // Debug: force immediate finalize and flush
+  const debugForceFlush = useCallback(() => {
+    waitingForWhisperRef.current = true;
+    setWaitingForWhisper(true);
+    finalizeCurrentRecording()
+      .then((txt) => finalizeAndFlush('whisper-complete', (txt || liveTextRef.current || '').trim()))
+      .catch(() => finalizeAndFlush('timeout', (liveTextRef.current || '').trim()));
+  }, [finalizeCurrentRecording, finalizeAndFlush]);
 
   // Combined status
   const combinedStatus: VoiceSegmentsResult['status'] = useMemo(() => {
@@ -343,6 +375,8 @@ export function useVoiceSegments(options: VoiceSegmentsOptions = {}): VoiceSegme
     whisperStatus,
     vadListening: vad.listening,
     vadUserSpeaking: vad.userSpeaking,
+    whisperIsReady,
+    whisperIsRecording,
     settleRemainingMs,
     waitingForWhisper,
     waitingRemainingMs,
@@ -351,6 +385,8 @@ export function useVoiceSegments(options: VoiceSegmentsOptions = {}): VoiceSegme
     stop,
     toggle,
     load,
+    chunkCount: getChunkCount(),
+    debugForceFlush,
   };
 }
 

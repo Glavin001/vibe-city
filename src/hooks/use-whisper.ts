@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useActorRef, useSelector } from '@xstate/react';
+import { createWhisperLocalMachine } from '../machines/whisper.machine';
 import { useAudioRecorder } from './use-audio-recorder';
 import { useSpeechRecognition } from './use-speech-recognition';
 import type { SpeechRecognitionStatus } from './use-speech-recognition';
@@ -138,17 +140,17 @@ export function useWhisper({
   const [error, setError] = useState<string | null>(null);
   const autoStartedRef = useRef(false);
   const audioContextRef = useRef<AudioContext | null>(null);
-  const [isProcessing, setIsProcessing] = useState(false);
-  // Number of chunks that were last decoded; used to avoid redundant decodes.
-  const lastDecodedChunkCountRef = useRef<number>(0);
-  // WebM header chunk captured at the beginning of a recording window, needed for decoding partial segments.
-  const headerChunkRef = useRef<Blob | null>(null);
-  // Finalization state: when true, periodic processing pauses and we resolve when next 'complete' arrives
-  const finalizingRef = useRef<boolean>(false);
+  // Local orchestration via XState
+  const whisperLogic = useMemo(() => createWhisperLocalMachine(), []);
+  const whisperActor = useActorRef(whisperLogic);
+  const isProcessing = useSelector(whisperActor, (s) => s.context.isProcessing);
+  const finalizing = useSelector(whisperActor, (s) => s.context.finalizing);
+  const segmentStartIndex = useSelector(whisperActor, (s) => s.context.segmentStartIndex);
+  const lastDecodedChunkCount = useSelector(whisperActor, (s) => s.context.lastDecodedChunkCount);
+  const headerChunk = useSelector(whisperActor, (s) => s.context.headerChunk);
+  // Finalization promise control (kept as refs)
   const finalizeResolverRef = useRef<((text: string) => void) | null>(null);
   const finalizeRejectRef = useRef<((reason?: unknown) => void) | null>(null);
-  // Logical segment boundary inside current recording window
-  const segmentStartIndexRef = useRef<number>(0);
 
   // Initialize the audio recorder
   const {
@@ -204,14 +206,17 @@ export function useWhisper({
         } finally {
           finalizeResolverRef.current = null;
           finalizeRejectRef.current = null;
-          finalizingRef.current = false;
+          whisperActor.send({ type: 'SET_FINALIZING', value: false });
         }
       }
       if (onTextChange) {
         onTextChange(finalText);
       }
     },
-    // onTextUpdate,
+    onTextUpdate: (live) => {
+      // Bridge incremental updates to the consumer's onTextChange for live transcript
+      if (onTextChange) onTextChange(live);
+    },
     onError: (err) => {
       setError(err);
       onError?.(err);
@@ -222,20 +227,37 @@ export function useWhisper({
   useEffect(() => {
     // Only process if we have new chunks, are recording, not already processing, and the model is ready
     // Additionally, avoid calling generate while recognition is mid-flight (status 'start'/'update')
+    // Debug gates
+    console.debug('[Whisper] gate', {
+      finalizing,
+      chunks: chunks.length,
+      lastDecodedChunkCount,
+      isRecording,
+      isProcessing,
+      isReady,
+      status,
+    });
     if (
-      finalizingRef.current ||
-      chunks.length <= lastDecodedChunkCountRef.current ||
+      finalizing ||
+      chunks.length <= lastDecodedChunkCount ||
       !isRecording ||
       isProcessing ||
       !isReady ||
       (status !== 'ready' && status !== 'complete')
     ) {
+      // Explain which gate blocked
+      if (finalizing) console.debug('[Whisper] skip: finalizing');
+      else if (chunks.length <= lastDecodedChunkCount) console.debug('[Whisper] skip: no new chunks');
+      else if (!isRecording) console.debug('[Whisper] skip: not recording');
+      else if (isProcessing) console.debug('[Whisper] skip: already processing');
+      else if (!isReady) console.debug('[Whisper] skip: model not ready');
+      else console.debug('[Whisper] skip: status not ready/complete', status);
       return;
     }
 
     const processAudio = async () => {
       try {
-        setIsProcessing(true);
+        whisperActor.send({ type: 'SET_PROCESSING', value: true });
         // console.log('Starting audio processing...');
 
         // Create audio context if it doesn't exist
@@ -245,17 +267,31 @@ export function useWhisper({
         }
 
         // Ensure we captured the header (initialization) chunk at the start of this recording window
-        if (!headerChunkRef.current && chunks.length > 0) {
-          headerChunkRef.current = chunks[0];
+        if (!headerChunk && chunks.length > 0) {
+          whisperActor.send({ type: 'SET_HEADER_CHUNK', blob: chunks[0] });
+          console.debug('[Whisper] captured header');
         }
 
         // Build a small window of recent chunks, always prepending the header chunk for decodability
-        // Keep the window size modest to limit decode cost
-        const MAX_RECENT_CHUNKS = 12; // slightly longer window to avoid losing early tokens in live view
-        const startRecent = Math.max(segmentStartIndexRef.current + 1, chunks.length - MAX_RECENT_CHUNKS);
-        const toDecode: Blob[] = [];
-        if (headerChunkRef.current) toDecode.push(headerChunkRef.current);
-        toDecode.push(...chunks.slice(startRecent));
+        // Guard: need header and at least 2 recent chunks to form a decodable WebM segment
+        if (!headerChunk) {
+          console.debug('[Whisper] header missing; waiting');
+          return;
+        }
+        const MAX_RECENT_CHUNKS = 12; // ~window
+        const startRecent = Math.max(segmentStartIndex + 1, chunks.length - MAX_RECENT_CHUNKS);
+        const recent = chunks.slice(startRecent);
+        if (recent.length < 2) {
+          console.debug('[Whisper] too few recent chunks', { startRecent, recent: recent.length });
+          return; // wait for more data
+        }
+        const toDecode: Blob[] = [headerChunk, ...recent];
+        // Ensure minimum blob size to reduce decode failures on partial clusters
+        let totalBytes = toDecode.reduce((acc, b) => acc + (b?.size || 0), 0);
+        if (totalBytes < 16 * 1024) {
+          console.debug('[Whisper] window too small', { totalBytes });
+          return;
+        }
 
         const blob = new Blob(toDecode, { type: 'audio/webm' });
         // console.log('Created blob (header + recent) size:', blob.size, 'chunksUsed:', toDecode.length);
@@ -264,12 +300,19 @@ export function useWhisper({
         const arrayBuffer = await blob.arrayBuffer();
         // console.log('Converted blob to arrayBuffer, size:', arrayBuffer.byteLength);
 
-        // Decode the audio data
-        const audioData = await audioContextRef.current.decodeAudioData(arrayBuffer);
+        // Decode the audio data (may fail for incomplete WebM; skip on failure without surfacing error)
+        let audioData: AudioBuffer;
+        try {
+          audioData = await audioContextRef.current.decodeAudioData(arrayBuffer);
+        } catch (e) {
+          console.debug('[Whisper] decode failed; will retry next tick');
+          return; // try again on next tick with more data
+        }
         // console.log('Decoded audio data, duration:', audioData.duration, 'seconds');
 
         // Get the audio samples
         let audio = audioData.getChannelData(0);
+        console.debug('[Whisper] decoded samples', { length: audio.length });
         // console.log('Got audio samples, length:', audio.length);
 
         // Trim to max length if needed (safety cap)
@@ -280,21 +323,20 @@ export function useWhisper({
 
         // Generate text from the audio (only when recognition is idle/ready)
         // console.log('Sending audio to speech recognition...');
-        generateText(audio);
+        const ok = generateText(audio);
+        console.debug('[Whisper] generateText sent', { ok });
+        if (ok) {
+          whisperActor.send({ type: 'SET_LAST_DECODED_COUNT', count: chunks.length });
+        }
       } catch (err) {
-        console.error('Error processing audio:', err);
-        const errorMessage = err instanceof Error ? err.message : String(err);
-        setError(errorMessage);
-        onError?.(errorMessage);
+        // Swallow sporadic decode errors; let the next data window retry.
       } finally {
-        // Remember how many chunks we've considered to avoid immediate re-decode of the same window
-        lastDecodedChunkCountRef.current = chunks.length;
-        setIsProcessing(false);
+        whisperActor.send({ type: 'SET_PROCESSING', value: false });
       }
     };
 
     processAudio();
-  }, [chunks, isRecording, isProcessing, isReady, status, generateText, onError]);
+  }, [chunks, isRecording, isProcessing, isReady, status, generateText, onError, finalizing, lastDecodedChunkCount, segmentStartIndex, headerChunk, whisperActor]);
 
   // Safe reset function that handles the autoStart flag
   const safeResetRecording = useCallback(() => {
@@ -306,9 +348,8 @@ export function useWhisper({
     // Reset the audio recorder
     audioResetRecording();
     // Reset decoding state so we start fresh on next recording window
-    lastDecodedChunkCountRef.current = 0;
-    headerChunkRef.current = null;
-    finalizingRef.current = false;
+    whisperActor.send({ type: 'RESET_SEGMENT' });
+    whisperActor.send({ type: 'SET_FINALIZING', value: false });
     finalizeResolverRef.current = null;
     finalizeRejectRef.current = null;
 
@@ -322,7 +363,7 @@ export function useWhisper({
         startRecording();
       }, 100);
     }
-  }, [isRecording, stopRecording, audioResetRecording, autoStart, isReady, startRecording]);
+  }, [isRecording, stopRecording, audioResetRecording, autoStart, isReady, startRecording, whisperActor]);
 
   // Finalize by decoding full recording window and returning final transcript
   const finalizeCurrentRecording = useCallback(async (): Promise<string | null> => {
@@ -334,17 +375,17 @@ export function useWhisper({
         audioContextRef.current = new AudioContext({ sampleRate: WHISPER_SAMPLING_RATE });
       }
 
-      finalizingRef.current = true;
-      setIsProcessing(true);
+      whisperActor.send({ type: 'SET_FINALIZING', value: true });
+      whisperActor.send({ type: 'SET_PROCESSING', value: true });
 
       // Build full blob for CURRENT SEGMENT ONLY: header + chunks since segmentStartIndex
       const parts: Blob[] = [];
-      if (headerChunkRef.current) {
-        parts.push(headerChunkRef.current);
-        const start = Math.max(segmentStartIndexRef.current + 1, 1);
+      if (headerChunk) {
+        parts.push(headerChunk);
+        const start = Math.max(segmentStartIndex + 1, 1);
         parts.push(...chunks.slice(start));
       } else {
-        const start = Math.max(segmentStartIndexRef.current, 0);
+        const start = Math.max(segmentStartIndex, 0);
         parts.push(...chunks.slice(start));
       }
       const fullBlob = new Blob(parts, { type: 'audio/webm' });
@@ -362,7 +403,7 @@ export function useWhisper({
 
       const ok = generateText(audio);
       if (!ok) {
-        finalizingRef.current = false;
+        whisperActor.send({ type: 'SET_FINALIZING', value: false });
         finalizeResolverRef.current = null;
         finalizeRejectRef.current = null;
         return (text ?? '') || null;
@@ -377,19 +418,18 @@ export function useWhisper({
       if (finalizeRejectRef.current) finalizeRejectRef.current(errorMessage);
       return (text ?? '') || null;
     } finally {
-      setIsProcessing(false);
+      whisperActor.send({ type: 'SET_PROCESSING', value: false });
     }
-  }, [isReady, chunks, generateText, onError, text]);
+  }, [isReady, chunks, generateText, onError, text, headerChunk, segmentStartIndex, whisperActor]);
 
   const markSegmentBoundary = useCallback((endChunkIndex?: number) => {
     const nextStart = typeof endChunkIndex === 'number' ? Math.max(0, Math.min(endChunkIndex, chunks.length)) : chunks.length;
-    segmentStartIndexRef.current = nextStart;
-    // Allow live processor to pick up from the boundary on next chunk
-    lastDecodedChunkCountRef.current = nextStart;
-    if (!headerChunkRef.current && chunks.length > 0) {
-      headerChunkRef.current = chunks[0];
+    whisperActor.send({ type: 'SET_SEGMENT_START', index: nextStart });
+    whisperActor.send({ type: 'SET_LAST_DECODED_COUNT', count: nextStart });
+    if (!headerChunk && chunks.length > 0) {
+      whisperActor.send({ type: 'SET_HEADER_CHUNK', blob: chunks[0] });
     }
-  }, [chunks]);
+  }, [chunks, whisperActor, headerChunk]);
 
   const getChunkCount = useCallback(() => chunks.length, [chunks]);
 
