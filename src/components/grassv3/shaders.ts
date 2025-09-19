@@ -1,5 +1,3 @@
-import { type Shader } from "three";
-
 export const GRASS_VERTEX_SHADER = /* glsl */ `
 #define PHONG
 varying vec3 vViewPosition;
@@ -421,4 +419,8 @@ void main() {
 }
 `;
 
-export type GrassShader = Shader;
+export type GrassShader = {
+  vertexShader: string;
+  fragmentShader: string;
+  uniforms: Record<string, { value: unknown }>;
+};
