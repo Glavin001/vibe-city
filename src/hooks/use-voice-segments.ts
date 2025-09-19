@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ReactRealTimeVADOptions, useMicVAD } from '@ricky0123/vad-react';
+import type { ReactRealTimeVADOptions } from '@ricky0123/vad-react';
+import { useMicVAD } from '@ricky0123/vad-react';
 import { useWhisper, type WhisperOptions } from './use-whisper';
 import type { SpeechRecognitionStatus } from './use-speech-recognition';
 
@@ -21,6 +22,8 @@ export interface VoiceSegmentsOptions {
 
   /** Delay after VAD end before finalizing a segment (ms). Default: 300ms */
   settleMs?: number;
+  /** Optional maximum time to wait for Whisper 'complete' after settle elapses (ms). Default: 1500ms */
+  whisperWaitMs?: number;
   /** Auto-load Whisper model on mount. Default: true */
   autoLoad?: boolean;
 
@@ -49,6 +52,11 @@ export interface VoiceSegmentsResult {
   vadListening: boolean;
   vadUserSpeaking: boolean;
 
+  // Flush/settle indicators
+  settleRemainingMs: number | null;
+  waitingForWhisper: boolean;
+  waitingRemainingMs: number | null;
+
   // Errors
   errors: { whisper: string | null; vad: string | null };
 
@@ -63,6 +71,7 @@ export function useVoiceSegments(options: VoiceSegmentsOptions = {}): VoiceSegme
   // console.log("[useVoiceSegments] useVoiceSegments");
 
   const settleMs = options.settleMs ?? 300;
+  const whisperWaitMs = options.whisperWaitMs ?? 1500;
   const autoLoad = options.autoLoad !== false;
 
   // Errors (scoped)
@@ -73,6 +82,8 @@ export function useVoiceSegments(options: VoiceSegmentsOptions = {}): VoiceSegme
   const [liveText, setLiveText] = useState<string>('');
   const liveTextRef = useRef<string>('');
   const [lastFinalText, setLastFinalText] = useState<string | null>(null);
+  // Track the longest transcript observed during the current speaking segment to avoid losing early words
+  const bestLiveTextRef = useRef<string>('');
 
   // Settle timer for end-of-speech finalization
   const settleTimerRef = useRef<number | null>(null);
@@ -83,6 +94,60 @@ export function useVoiceSegments(options: VoiceSegmentsOptions = {}): VoiceSegme
     }
   }, []);
 
+  // Waiting timer for Whisper completion after settle
+  const waitingTimerRef = useRef<number | null>(null);
+  const clearWaitingTimer = useCallback(() => {
+    if (waitingTimerRef.current) {
+      window.clearTimeout(waitingTimerRef.current);
+      waitingTimerRef.current = null;
+    }
+  }, []);
+
+  // Deadlines and countdowns for UI
+  const settleDeadlineRef = useRef<number | null>(null);
+  const waitingDeadlineRef = useRef<number | null>(null);
+  const [settleRemainingMs, setSettleRemainingMs] = useState<number | null>(null);
+  const [waitingRemainingMs, setWaitingRemainingMs] = useState<number | null>(null);
+  const waitingForWhisperRef = useRef<boolean>(false);
+  const [waitingForWhisper, setWaitingForWhisper] = useState<boolean>(false);
+
+  // Internal ticker to update countdowns while active
+  const tickerRef = useRef<number | null>(null);
+  const ensureTicker = useCallback(() => {
+    if (tickerRef.current) return;
+    tickerRef.current = window.setInterval(() => {
+      const now = Date.now();
+      if (settleDeadlineRef.current) {
+        const rem = Math.max(0, settleDeadlineRef.current - now);
+        setSettleRemainingMs(rem);
+      } else {
+        setSettleRemainingMs(null);
+      }
+      if (waitingDeadlineRef.current) {
+        const remW = Math.max(0, waitingDeadlineRef.current - now);
+        setWaitingRemainingMs(remW);
+      } else {
+        setWaitingRemainingMs(null);
+      }
+      if (!settleDeadlineRef.current && !waitingDeadlineRef.current && tickerRef.current) {
+        window.clearInterval(tickerRef.current);
+        tickerRef.current = null;
+      }
+    }, 50);
+  }, []);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      clearSettleTimer();
+      clearWaitingTimer();
+      if (tickerRef.current) {
+        window.clearInterval(tickerRef.current);
+        tickerRef.current = null;
+      }
+    };
+  }, [clearSettleTimer, clearWaitingTimer]);
+
   // Whisper integration
   const {
     status: whisperStatus,
@@ -90,23 +155,33 @@ export function useVoiceSegments(options: VoiceSegmentsOptions = {}): VoiceSegme
     isRecording: whisperIsRecording,
     startRecording: whisperStartRecording,
     stopRecording: whisperStopRecording,
-    resetRecording: whisperResetRecording,
     loadModel: whisperLoadModel,
     error: whisperErr,
+    finalizeCurrentRecording,
+    markSegmentBoundary,
+    getChunkCount,
   } = useWhisper({
     language: options.whisper?.language ?? 'en',
     autoStart: options.whisper?.autoStart ?? true,
     dataRequestInterval: options.whisper?.dataRequestInterval ?? 250,
     onTextChange: (t) => {
-      console.log("[useVoiceSegments] onTextChange", t);
+      // console.log("[useVoiceSegments] onTextChange", t);
       // console.log("[useVoiceSegments] onTextUpdate", t);
       const txt = t ?? '';
       liveTextRef.current = txt;
       setLiveText(txt);
+      // Preserve the longest version seen this segment
+      if (txt.length > (bestLiveTextRef.current?.length ?? 0)) {
+        bestLiveTextRef.current = txt;
+      }
       if (options.onLiveUpdate) options.onLiveUpdate(txt);
     },
     onStatusChange: (s) => {
-      console.log("[useVoiceSegments] onStatusChange", s);
+      // console.log("[useVoiceSegments] onStatusChange", s);
+      if (s === 'complete' && waitingForWhisperRef.current) {
+        // Flush immediately on Whisper completion if we were waiting
+        finalizeAndFlush('whisper-complete', liveTextRef.current || '');
+      }
     },
     onError: (e) => {
       console.log("[useVoiceSegments] onError", e);
@@ -140,16 +215,34 @@ export function useVoiceSegments(options: VoiceSegmentsOptions = {}): VoiceSegme
       console.log("[useVoiceSegments] onSpeechEnd");
       // Start settle window; finalize after delay
       clearSettleTimer();
+      settleDeadlineRef.current = Date.now() + settleMs;
+      ensureTicker();
       settleTimerRef.current = window.setTimeout(() => {
-        const text = (liveTextRef.current || '').trim();
-        if (text.length > 0) {
-          setLastFinalText(text);
-          if (options.onSegment) options.onSegment(text);
+        // After settle, prefer Whisper 'complete'. If not yet complete, wait up to whisperWaitMs.
+        if (whisperStatus === 'complete') {
+          // Already have final text
+          finalizeAndFlush('settle', liveTextRef.current || '');
+          return;
         }
-        liveTextRef.current = '';
-        setLiveText('');
-        // Reset Whisper recorder so next speech doesn't revise prior segment
-        whisperResetRecording();
+
+        // Otherwise, ask Whisper to finalize using the full recording window
+        waitingForWhisperRef.current = true;
+        setWaitingForWhisper(true);
+        waitingDeadlineRef.current = Date.now() + whisperWaitMs;
+        ensureTicker();
+        clearWaitingTimer();
+        finalizeCurrentRecording()
+          .then((finalText) => {
+            finalizeAndFlush('whisper-complete', finalText || liveTextRef.current || '');
+          })
+          .catch(() => {
+            // Allow fallback timer to handle it
+          });
+
+        waitingTimerRef.current = window.setTimeout(() => {
+          // Fallback: flush whatever we have (may be empty)
+          finalizeAndFlush('timeout', liveTextRef.current || '');
+        }, whisperWaitMs) as unknown as number;
       }, settleMs) as unknown as number;
     },
   });
@@ -172,8 +265,14 @@ export function useVoiceSegments(options: VoiceSegmentsOptions = {}): VoiceSegme
       if (txt.length > 0 && options.onInterruption) options.onInterruption();
       // Cancel pending settle if any
       clearSettleTimer();
+      // Reset best-live accumulator at start of a new speaking segment
+      bestLiveTextRef.current = '';
+      // Establish a fresh logical segment boundary at start of speech so we never lose early chunks in long runs
+      try {
+        markSegmentBoundary(getChunkCount());
+      } catch {}
     }
-  }, [vad.userSpeaking, options, clearSettleTimer]);
+  }, [vad.userSpeaking, options, clearSettleTimer, markSegmentBoundary, getChunkCount]);
 
   // Keep Whisper recorder aligned to VAD listening state
   useEffect(() => {
@@ -184,6 +283,34 @@ export function useVoiceSegments(options: VoiceSegmentsOptions = {}): VoiceSegme
       whisperStopRecording();
     }
   }, [vad.listening, whisperIsReady, whisperIsRecording, whisperStartRecording, whisperStopRecording]);
+
+  // Finalization helper
+  const finalizeAndFlush = useCallback((_reason: 'settle' | 'whisper-complete' | 'timeout', textOverride?: string) => {
+    // Clear timers/state
+    clearSettleTimer();
+    clearWaitingTimer();
+    settleDeadlineRef.current = null;
+    waitingDeadlineRef.current = null;
+    setSettleRemainingMs(null);
+    setWaitingRemainingMs(null);
+    waitingForWhisperRef.current = false;
+    setWaitingForWhisper(false);
+
+    const candidate = (textOverride ?? liveTextRef.current ?? '').trim();
+    const best = (bestLiveTextRef.current ?? '').trim();
+    const text = best.length >= candidate.length ? best : candidate;
+    if (text.length > 0) {
+      setLastFinalText(text);
+      if (options.onSegment) options.onSegment(text);
+    }
+    liveTextRef.current = '';
+    bestLiveTextRef.current = '';
+    setLiveText('');
+    // Advance the logical boundary to the end of the committed text so no chunks are re-used
+    try {
+      markSegmentBoundary();
+    } catch {}
+  }, [clearSettleTimer, clearWaitingTimer, options, markSegmentBoundary]);
 
   // Combined status
   const combinedStatus: VoiceSegmentsResult['status'] = useMemo(() => {
@@ -216,6 +343,9 @@ export function useVoiceSegments(options: VoiceSegmentsOptions = {}): VoiceSegme
     whisperStatus,
     vadListening: vad.listening,
     vadUserSpeaking: vad.userSpeaking,
+    settleRemainingMs,
+    waitingForWhisper,
+    waitingRemainingMs,
     errors: { whisper: whisperError, vad: vadError },
     start,
     stop,

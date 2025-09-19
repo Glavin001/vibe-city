@@ -32,6 +32,9 @@ export default function Page() {
     // lastFinalText not used directly; handled via onSegment → pushText
     vadListening,
     vadUserSpeaking,
+    settleRemainingMs,
+    waitingForWhisper,
+    waitingRemainingMs,
     errors: { whisper: whisperError, vad: vadScopedError },
     start: segmentsStart,
     stop: segmentsStop,
@@ -42,9 +45,11 @@ export default function Page() {
     vad: { model: "v5", startOnLoad: false, userSpeakingThreshold: vadThreshold, baseAssetPath: "/vad/", onnxWASMBasePath: "/vad/" },
     settleMs: 300,
     autoLoad: true,
+    /*
     onLiveUpdate: (text) => {
         console.log("[useVoiceSegments] onLiveUpdate", text);
     },
+    */
     onSegment: (text) => {
         console.log("[useVoiceSegments] onSegment", text);
         pushText(text, true);
@@ -246,6 +251,21 @@ export default function Page() {
               </div>
               {whisperError && <div className="text-sm text-red-600">Whisper: {whisperError}</div>}
               {vadScopedError && <div className="text-sm text-red-600">VAD: {vadScopedError}</div>}
+              {/* Live indicators for settle/waiting states */}
+              <div className="flex items-center gap-3 text-xs text-gray-600">
+                {vsStatus === "settling" && (
+                  <span className="inline-flex items-center gap-1">
+                    <span className="inline-block w-2 h-2 rounded-full bg-amber-500" />
+                    Settling… {typeof settleRemainingMs === 'number' ? Math.ceil(settleRemainingMs / 100) / 10 : 0}s
+                  </span>
+                )}
+                {waitingForWhisper && (
+                  <span className="inline-flex items-center gap-1">
+                    <span className="inline-block w-2 h-2 rounded-full bg-indigo-500" />
+                    Waiting for Whisper… {typeof waitingRemainingMs === 'number' ? Math.ceil(waitingRemainingMs / 100) / 10 : 0}s
+                  </span>
+                )}
+              </div>
               <div>
                 <div className="text-xs text-gray-600 mb-1">Live transcript</div>
                 <div className="min-h-[48px] border rounded p-2">{liveText || <span className="text-gray-400">Speak…</span>}</div>

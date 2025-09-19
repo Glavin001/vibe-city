@@ -304,7 +304,7 @@ export function useTtsQueue({
     setProgressRatio(0);
   }, []);
 
-  return useMemo(() => ({
+  return useMemo((): UseTtsQueueResult => ({
     audioARef,
     audioBRef,
     activeAudioIndex,

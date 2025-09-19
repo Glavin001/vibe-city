@@ -464,6 +464,7 @@ function buildSystemPromptV2(persona: Persona): string {
     regulation,
     rels,
     priors,
+    'Only respond with text which will be spoken aloud. Do not include any markdown or formatting.',
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -614,12 +615,16 @@ function ChatPanel({ apiKey, system }: { apiKey: string; system: string }) {
   const [voiceEnabled, setVoiceEnabled] = useState(false);
   const [vadThreshold, setVadThreshold] = useState<number>(0.6);
   const onFinalSegment = useCallback((text: string) => {
+    console.log('onFinalSegment', text);
     const t = (text || "").trim();
     if (!voiceEnabled || t.length === 0) return;
+
     sendMessage({ text: t });
     // After segment finalizes, resume TTS autoplay
+    
     setTtsResumeKey((k) => k + 1);
   }, [voiceEnabled, sendMessage]);
+
   const {
     status: vsStatus,
     liveText,
@@ -635,11 +640,15 @@ function ChatPanel({ apiKey, system }: { apiKey: string; system: string }) {
     vad: { model: "v5", startOnLoad: false, userSpeakingThreshold: vadThreshold, baseAssetPath: "/vad/", onnxWASMBasePath: "/vad/" },
     settleMs: 300,
     autoLoad: voiceEnabled,
+    /*
     onLiveUpdate: (text) => {
       // no-op; shown in UI below
+      console.log('onLiveUpdate', text);
     },
+    */
     onSegment: onFinalSegment,
     onInterruption: () => {
+      console.log('onInterruption');
       // Signal TTS section to pause
       setTtsInterruptKey((k) => k + 1);
     },
@@ -720,7 +729,7 @@ function ChatPanel({ apiKey, system }: { apiKey: string; system: string }) {
                 m.role === "user" ? "bg-blue-900/30" : "bg-gray-800"
               }`}>
                 {m.parts.map((part, i) => {
-                  console.log('Chat part', part);
+                  // console.log('Chat part', part);
                   if (part.type === "step-start") {
                     return null;
                   }

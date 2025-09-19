@@ -77,8 +77,10 @@ export interface SpeechRecognitionResult {
   loadModel: () => void;
   /**
    * Generate text from audio
+   * 
+   * @returns true if the audio was processed successfully, false otherwise
    */
-  generateText: (audio: Float32Array) => void;
+  generateText: (audio: Float32Array) => boolean;
   /**
    * Any error that occurred
    */
@@ -145,7 +147,7 @@ export function useSpeechRecognition({
   // Handle worker messages
   const handleWorkerMessage = useCallback(
     (e: MessageEvent) => {
-      console.log('Received message from worker:', e.data);
+      // console.log('Received message from worker:', e.data);
 
       const { status: messageStatus, error: messageError } = e.data;
 
@@ -199,7 +201,7 @@ export function useSpeechRecognition({
           break;
 
         case 'start':
-          console.log('Starting speech recognition');
+          // console.log('Starting speech recognition');
           // Reset the status callback tracking for the new status
           statusCallbackCalledRef.current = {};
           isGeneratingRef.current = true;
@@ -227,7 +229,7 @@ export function useSpeechRecognition({
 
           // For updates, we show the incremental tokens as they come in
           if (e.data.output) {
-            console.log(`Token updated: "${e.data.output}"`);
+            // console.log(`Token updated: "${e.data.output}"`);
             setText(e.data.output);
 
             // Call only the text update callback for incremental updates
@@ -235,14 +237,14 @@ export function useSpeechRecognition({
           }
 
           if (e.data.tps !== undefined) {
-            console.log(`TPS updated: ${e.data.tps}`);
+            // console.log(`TPS updated: ${e.data.tps}`);
             setTps(e.data.tps);
             if (onTpsChangeRef.current) onTpsChangeRef.current(e.data.tps);
           }
           break;
 
         case 'complete':
-          console.log('Speech recognition complete');
+          // console.log('Speech recognition complete');
           // Reset the status callback tracking for the new status
           statusCallbackCalledRef.current = {};
           isGeneratingRef.current = false;
@@ -258,7 +260,7 @@ export function useSpeechRecognition({
 
           // For complete, we use the final output from the worker
           if (e.data.output) {
-            console.log(`Final text: "${e.data.output}"`);
+            // console.log(`Final text: "${e.data.output}"`);
             setText(e.data.output);
 
             // Call only the text change callback for the final complete text
@@ -286,7 +288,7 @@ export function useSpeechRecognition({
       worker.addEventListener('message', handleWorkerMessage as (e: MessageEvent) => void);
       workerRef.current = worker;
       setWorkerInitialized(true);
-      console.log('Speech recognition worker created successfully');
+      // console.log('Speech recognition worker created successfully');
       return true;
     } catch (err) {
       console.error('Error creating worker:', err);
@@ -360,7 +362,7 @@ export function useSpeechRecognition({
 
   // Generate text from audio
   const generateText = useCallback(
-    (audio: Float32Array) => {
+    (audio: Float32Array): boolean => {
       if (!workerRef.current) {
         const ok = createWorker();
         if (!ok || !workerRef.current) {
@@ -368,23 +370,23 @@ export function useSpeechRecognition({
           const errorMessage = 'Whisper worker not initialized';
           setError(errorMessage);
           if (onErrorRef.current) onErrorRef.current(errorMessage);
-          return;
+          return false;
         }
       }
 
       if (status !== 'ready' && status !== 'complete') {
         console.warn('Model not ready, current status:', status);
-        return;
+        return false;
       }
 
       if (isGeneratingRef.current) {
-        console.warn('Already generating text, ignoring new request');
-        return;
+        // console.warn('Already generating text, ignoring new request');
+        return false;
       }
 
       // Main thread no longer requires tokenizer/processor/model; all handled in worker
 
-      console.log(`Generating text from audio (${audio.length} samples), language: ${language}`);
+      // console.log(`Generating text from audio (${audio.length} samples), language: ${language}`);
 
       try {
         // Send data to worker for processing, remove non-transferable model objects
@@ -392,6 +394,7 @@ export function useSpeechRecognition({
           type: 'generate',
           data: { audio, language },
         });
+        return true;
       } catch (err) {
         console.error('Error generating text:', err);
         const errorMessage = err instanceof Error ? err.message : String(err);
@@ -404,6 +407,7 @@ export function useSpeechRecognition({
             (onStatusChangeRef.current as (status: SpeechRecognitionStatus) => void)('error');
           }, 0);
         }
+        return false;
       }
     },
     [status, language, createWorker], // Depend on status, language, and worker creation
