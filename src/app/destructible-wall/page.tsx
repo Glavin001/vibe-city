@@ -12,6 +12,7 @@ import {
 } from "@react-three/rapier";
 import type { CollisionEnterPayload, ContactForcePayload, RapierRigidBody } from "@react-three/rapier";
 import { fracture, FractureOptions } from "@dgreenheck/three-pinata";
+import { Shockwave, SHOCKWAVE_PRESETS } from "@/components/Shockwave";
 
 const IDENTITY_QUATERNION = { w: 1, x: 0, y: 0, z: 0 } as const;
 // Physical densities in kg/m^3 (Rapier uses SI units when gravity is ~9.81)
@@ -400,15 +401,13 @@ function useJointGlue(
       const forceDir = event.maxForceDirection;
       const dirVec = new THREE.Vector3(forceDir.x, forceDir.y, forceDir.z).normalize();
       const contactNormal = new THREE.Vector3(contact.normal[0], contact.normal[1], contact.normal[2]);
-      const hitPoint = new THREE.Vector3(contact.point[0], contact.point[1], contact.point[2]);
 
       let broke = 0;
       for (const jointId of Array.from(joints.values())) {
         if (broke >= MAX_BREAKS_PER_STEP) break;
         const rec = jointRecordsRef.current.get(jointId);
         if (!rec || rec.broken) continue;
-        const aw = new THREE.Vector3(rec.anchorWorld[0], rec.anchorWorld[1], rec.anchorWorld[2]);
-        const dist = aw.distanceTo(hitPoint);
+        // const aw = new THREE.Vector3(rec.anchorWorld[0], rec.anchorWorld[1], rec.anchorWorld[2]);
         // if (dist > BREAK_RADIUS) continue;
 
         const jointN = new THREE.Vector3(rec.normal[0], rec.normal[1], rec.normal[2]);
@@ -431,7 +430,7 @@ function useJointGlue(
    * Maximum distance (in world units) from a joint's anchor to a collision/force point
    * for the joint to be considered affected and eligible for damage or breaking.
    */
-  const BREAK_RADIUS = 0.45;
+  // const BREAK_RADIUS = 0.45;
 
   /**
    * Maximum number of joints that can be broken in a single simulation step
@@ -480,8 +479,7 @@ function useJointGlue(
         if (broke >= MAX_BREAKS_PER_STEP) break;
         const rec = jointRecordsRef.current.get(jointId);
         if (!rec || rec.broken) continue;
-        const aw = new THREE.Vector3(rec.anchorWorld[0], rec.anchorWorld[1], rec.anchorWorld[2]);
-        const dist = aw.distanceTo(hitPoint);
+        // const aw = new THREE.Vector3(rec.anchorWorld[0], rec.anchorWorld[1], rec.anchorWorld[2]);
         // if (dist > BREAK_RADIUS) continue;
 
         const jointN = new THREE.Vector3(rec.normal[0], rec.normal[1], rec.normal[2]);
@@ -874,14 +872,22 @@ function Projectile({ target }: ProjectileProps) {
   );
 }
 
+// Configurable ground size variables
+const GROUND_SIZE = 200; // visual size (width and depth)
+const GROUND_THICKNESS = 0.1; // collider thickness
+const GROUND_HALF_SIZE = GROUND_SIZE / 2;
+
 function Ground() {
   return (
-    <RigidBody type="fixed" colliders={false} position={[0, 0, 0]}>
+    <RigidBody type="fixed" colliders={false} position={[0, 0, 0]} friction={0.9}>
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} receiveShadow>
-        <planeGeometry args={[50, 50]} />
+        <planeGeometry args={[GROUND_SIZE, GROUND_SIZE]} />
         <meshStandardMaterial color="#3d3d3d" />
       </mesh>
-      <CuboidCollider args={[25, 0.05, 25]} position={[0, -0.05, 0]} />
+      <CuboidCollider
+        args={[GROUND_HALF_SIZE, GROUND_THICKNESS / 2, GROUND_HALF_SIZE]}
+        position={[0, -GROUND_THICKNESS / 2, 0]}
+      />
     </RigidBody>
   );
 }
@@ -891,18 +897,112 @@ type SceneProps = {
   seed: number;
   jointsEnabled?: boolean;
   projectileEnabled?: boolean;
+  shockwaveEnabled?: boolean;
   debugEnabled?: boolean;
   paused?: boolean;
   wireframe?: boolean;
   sleep?: boolean;
 };
 
-function Scene({ structure, seed, jointsEnabled = true, projectileEnabled = true, debugEnabled = false, paused = false, wireframe = false, sleep = true }: SceneProps) {
+function Scene({ structure, seed, jointsEnabled = true, projectileEnabled = true, shockwaveEnabled = false, debugEnabled = false, paused = false, wireframe = false, sleep = true }: SceneProps) {
   const projectileTarget = useMemo(() => {
     if (structure.walls.length === 0) return null;
     const index = Math.floor(Math.random() * structure.walls.length);
     return structure.walls[index];
   }, [structure]);
+
+  // Compute structure bounds and expand them for shockwave placement
+  const expandedBounds = useMemo(() => {
+    if (!structure || structure.walls.length === 0) {
+      return {
+        center: new THREE.Vector3(0, 1, 0),
+        half: new THREE.Vector3(4, 2, 4),
+      };
+    }
+    let minX = Infinity, minY = Infinity, minZ = Infinity;
+    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+    for (const w of structure.walls) {
+      const cx = w.center[0], cy = w.center[1], cz = w.center[2];
+      const hx = w.size[0] * 0.5, hy = w.size[1] * 0.5, hz = w.size[2] * 0.5;
+      minX = Math.min(minX, cx - hx);
+      maxX = Math.max(maxX, cx + hx);
+      minY = Math.min(minY, Math.max(0, cy - hy));
+      maxY = Math.max(maxY, cy + hy);
+      minZ = Math.min(minZ, cz - hz);
+      maxZ = Math.max(maxZ, cz + hz);
+    }
+    const center = new THREE.Vector3(
+      (minX + maxX) * 0.5,
+      (minY + maxY) * 0.5,
+      (minZ + maxZ) * 0.5,
+    );
+    const half = new THREE.Vector3(
+      (maxX - minX) * 0.5,
+      (maxY - minY) * 0.5,
+      (maxZ - minZ) * 0.5,
+    );
+    // Expand to about twice the size
+    half.multiplyScalar(2);
+    // Ensure some minimum range
+    half.x = Math.max(half.x, 2);
+    half.y = Math.max(half.y, 1.2);
+    half.z = Math.max(half.z, 2);
+    return { center, half };
+  }, [structure]);
+
+  const [blastAt, setBlastAt] = useState<{ x: number; y: number; z: number } | null>(null);
+  const nextTimerRef = useRef<number | null>(null);
+
+  const pickRandomBlast = useCallback(() => {
+    const c = expandedBounds.center;
+    const h = expandedBounds.half;
+    const rx = c.x + (Math.random() * 2 - 1) * h.x;
+    const ry = Math.max(0.12, c.y + (Math.random() * 2 - 1) * h.y);
+    const rz = c.z + (Math.random() * 2 - 1) * h.z;
+    return { x: rx, y: ry, z: rz } as const;
+  }, [expandedBounds]);
+
+  useEffect(() => {
+    // Clear any pending timer on deps change
+    if (nextTimerRef.current) {
+      clearTimeout(nextTimerRef.current);
+      nextTimerRef.current = null;
+    }
+    if (!shockwaveEnabled) {
+      setBlastAt(null);
+      return;
+    }
+    // Schedule first blast shortly after enabling
+    const delay = 600 + Math.random() * 1400;
+    // const delay = 0;
+    nextTimerRef.current = window.setTimeout(() => {
+      setBlastAt(pickRandomBlast());
+    }, delay) as unknown as number;
+    return () => {
+      if (nextTimerRef.current) {
+        clearTimeout(nextTimerRef.current);
+        nextTimerRef.current = null;
+      }
+    };
+  }, [shockwaveEnabled, pickRandomBlast]);
+
+  /*
+  useEffect(() => {
+    if (!shockwaveEnabled) return;
+    if (blastAt !== null) return;
+    // When a blast finishes (blastAt cleared), queue the next one
+    const delay = 900 + Math.random() * 1800;
+    nextTimerRef.current = window.setTimeout(() => {
+      setBlastAt(pickRandomBlast());
+    }, delay) as unknown as number;
+    return () => {
+      if (nextTimerRef.current) {
+        clearTimeout(nextTimerRef.current);
+        nextTimerRef.current = null;
+      }
+    };
+  }, [blastAt, shockwaveEnabled, pickRandomBlast]);
+  */
 
   return (
     <Canvas shadows camera={{ position: [7, 5, 9], fov: 45 }}>
@@ -923,9 +1023,26 @@ function Scene({ structure, seed, jointsEnabled = true, projectileEnabled = true
           <DestructibleWall key={`${wall.id}-${seed}`} spec={wall} jointsEnabled={jointsEnabled} debugEnabled={debugEnabled} wireframe={wireframe} sleep={sleep} />
         ))}
         {projectileEnabled && projectileTarget ? <Projectile key={`${projectileTarget.id}-${seed}`} target={projectileTarget} /> : null}
+        {shockwaveEnabled && blastAt ? (
+          <Shockwave
+            // key={`${shockwaveEnabled}-${blastAt.x}-${blastAt.y}-${blastAt.z}`}
+            // {...SHOCKWAVE_PRESETS.GasBlast}
+            // maxDistance={5}
+            origin={blastAt}
+            onDone={() => setBlastAt(null)}
+            speed={1}
+            P0={1.00}
+            r0={18.0}
+            tauPos={0.035}
+            tauNeg={0.06}
+            afterflowScale={1.1}
+            maxDistance={15}
+            occlusion={false}
+          />
+        ) : null}
       </Physics>
       <gridHelper args={[40, 40, "#444", "#2d2d2d"]} position={[0, 0.01, 0]} />
-      <StatsGl className="absolute top-60 left-2" />
+      <StatsGl className="absolute top-80 left-2" />
     </Canvas>
   );
 }
@@ -935,6 +1052,7 @@ export default function Page() {
   const [iteration, setIteration] = useState(0);
   const [jointsEnabled, setJointsEnabled] = useState(false); // FIXME: Still not working well
   const [projectileEnabled, setProjectileEnabled] = useState(true);
+  const [shockwaveEnabled, setShockwaveEnabled] = useState(false);
   const [debugEnabled, setDebugEnabled] = useState(false);
   const [paused, setPaused] = useState(false);
   const [wireframe, setWireframe] = useState(false);
@@ -1024,6 +1142,19 @@ export default function Page() {
         <label style={{ display: "flex", alignItems: "center", gap: 8, color: "#d1d5db", fontSize: 14 }}>
           <input
             type="checkbox"
+            checked={shockwaveEnabled}
+            onChange={(event) => setShockwaveEnabled(event.target.checked)}
+            style={{
+              accentColor: "#4da2ff",
+              width: 16,
+              height: 16,
+            }}
+          />
+          Enable shockwaves
+        </label>
+        <label style={{ display: "flex", alignItems: "center", gap: 8, color: "#d1d5db", fontSize: 14 }}>
+          <input
+            type="checkbox"
             checked={debugEnabled}
             onChange={(event) => setDebugEnabled(event.target.checked)}
             style={{
@@ -1079,7 +1210,7 @@ export default function Page() {
             : "Fragments exist as separate pieces without constraints - they will scatter immediately when hit."}
         </p>
       </div>
-      {structure ? <Scene key={`${structure.id}-${iteration}-${jointsEnabled}`} structure={structure} seed={iteration} jointsEnabled={jointsEnabled} projectileEnabled={projectileEnabled} debugEnabled={debugEnabled} paused={paused} wireframe={wireframe} sleep={sleep} /> : null}
+      {structure ? <Scene key={`${structure.id}-${iteration}-${jointsEnabled}`} structure={structure} seed={iteration} jointsEnabled={jointsEnabled} projectileEnabled={projectileEnabled} shockwaveEnabled={shockwaveEnabled} debugEnabled={debugEnabled} paused={paused} wireframe={wireframe} sleep={sleep} /> : null}
     </div>
   );
 }
