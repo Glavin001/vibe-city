@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useActorRef, useSelector } from '@xstate/react';
-import { createWhisperLocalMachine } from '../machines/whisper.machine';
+import { whisperLocalMachine } from '../machines/whisper.machine';
 import { useAudioRecorder } from './use-audio-recorder';
 import { useSpeechRecognition } from './use-speech-recognition';
 import type { SpeechRecognitionStatus } from './use-speech-recognition';
@@ -145,8 +145,7 @@ export function useWhisper({
   const autoStartedRef = useRef(false);
   const audioContextRef = useRef<AudioContext | null>(null);
   // Local orchestration via XState
-  const whisperLogic = useMemo(() => createWhisperLocalMachine(), []);
-  const whisperActor = useActorRef(whisperLogic);
+  const whisperActor = useActorRef(whisperLocalMachine, {});
   const isProcessing = useSelector(whisperActor, (s) => s.context.isProcessing);
   const finalizing = useSelector(whisperActor, (s) => s.context.finalizing);
   const segmentStartIndex = useSelector(whisperActor, (s) => s.context.segmentStartIndex);

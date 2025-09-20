@@ -39,7 +39,7 @@ export type AudioRecorderState =
   | { value: 'recording'; context: AudioRecorderContext }
   | { value: 'error'; context: AudioRecorderContext };
 
-export function createAudioRecorderMachine() {
+function createAudioRecorderMachine() {
   return createMachine({
     types: {
       context: {} as AudioRecorderContext,
@@ -248,4 +248,4 @@ export function createAudioRecorderMachine() {
   });
 }
 
-
+export const audioRecorderMachine = createAudioRecorderMachine();

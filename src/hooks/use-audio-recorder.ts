@@ -1,6 +1,6 @@
 import { useEffect, useMemo } from 'react';
 import { useActorRef, useSelector } from '@xstate/react';
-import { createAudioRecorderMachine } from '../machines/audioRecorder.machine';
+import { audioRecorderMachine } from '../machines/audioRecorder.machine';
 
 interface UseAudioRecorderOptions {
   sampleRate?: number;
@@ -32,8 +32,7 @@ export function useAudioRecorder({
   onError,
   dataRequestInterval = 250,
 }: UseAudioRecorderOptions = {}): UseAudioRecorderReturn {
-  const logic = useMemo(() => createAudioRecorderMachine(), []);
-  const actor = useActorRef(logic, {
+  const actor = useActorRef(audioRecorderMachine, {
     input: { sampleRate, mimeType, dataRequestInterval },
   });
   const stream = useSelector(actor, (s) => (s.context as { stream: MediaStream | null }).stream);

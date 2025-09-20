@@ -16,7 +16,7 @@ export type WhisperLocalEvent =
   | { type: 'SET_HEADER_CHUNK'; blob: Blob | null }
   | { type: 'RESET_SEGMENT' };
 
-export function createWhisperLocalMachine() {
+function createWhisperLocalMachine() {
   return createMachine({
     types: {
       context: {} as WhisperLocalContext,
@@ -46,4 +46,4 @@ export function createWhisperLocalMachine() {
   });
 }
 
-
+export const whisperLocalMachine = createWhisperLocalMachine();
