@@ -5,6 +5,11 @@ export type SpeechRecognitionStatus = 'idle' | 'loading' | 'ready' | 'start' | '
 
 export interface SpeechRecognitionInput {
   language?: string;
+  onStatusChange?: (status: SpeechRecognitionStatus) => void;
+  onTextChange?: (text: string) => void;
+  onTextUpdate?: (text: string) => void;
+  onTpsChange?: (tps: number) => void;
+  onError?: (error: string) => void;
 }
 
 export interface ProgressItem {
@@ -15,7 +20,7 @@ export interface ProgressItem {
 
 export interface SpeechRecognitionContext {
   worker: Worker | null;
-  // status: SpeechRecognitionStatus;
+  status: SpeechRecognitionStatus;
   text: string;
   tps: number | null;
   progressItems: ProgressItem[];
@@ -23,6 +28,11 @@ export interface SpeechRecognitionContext {
   error: string | null;
   language: string;
   loadRequested: boolean;
+  onStatusChange?: (status: SpeechRecognitionStatus) => void;
+  onTextChange?: (text: string) => void;
+  onTextUpdate?: (text: string) => void;
+  onTpsChange?: (tps: number) => void;
+  onError?: (error: string) => void;
 }
 
 export type SpeechRecognitionEvent =
@@ -42,17 +52,18 @@ export type SpeechRecognitionEvent =
   | { type: 'WORKER_COMPLETE'; output?: string }
   | { type: 'WORKER_ERROR'; error: string };
 
-export function createSpeechRecognitionMachine() {
+function createSpeechRecognitionMachine() {
+  console.log("[speechRecognition.machine] createSpeechRecognitionMachine");
   return createMachine({
+    id: 'speech-recognition',
     types: {
       context: {} as SpeechRecognitionContext,
       events: {} as SpeechRecognitionEvent,
       input: {} as SpeechRecognitionInput,
     },
-    id: 'speech-recognition',
     context: ({ input }) => ({
       worker: null,
-      // status: 'idle',
+      status: 'idle',
       text: '',
       tps: null,
       progressItems: [],
@@ -60,6 +71,11 @@ export function createSpeechRecognitionMachine() {
       error: null,
       language: input.language ?? 'en',
       loadRequested: false,
+      onStatusChange: input.onStatusChange,
+      onTextChange: input.onTextChange,
+      onTextUpdate: input.onTextUpdate,
+      onTpsChange: input.onTpsChange,
+      onError: input.onError,
     }),
     initial: 'boot',
     states: {
@@ -73,19 +89,11 @@ export function createSpeechRecognitionMachine() {
       },
       loading: {
         on: {
-          WORKER_LOADING: { actions: [
-            // 'setStatusLoading', 
-            'emitParentLoading'
-            ]
-          },
+          WORKER_LOADING: { actions: ['setStatusLoading', 'emitParentLoading', 'notifyLoading'] },
           WORKER_INITIATE: { actions: 'progressInitiate' },
           WORKER_PROGRESS: { actions: 'progressUpdate' },
           WORKER_DONE: { actions: 'progressDone' },
-          WORKER_READY: { target: 'ready', actions: [
-            // 'setStatusReady', 
-            'emitParentReady'
-            ]
-          },
+          WORKER_READY: { target: 'ready', actions: ['setStatusReady', 'emitParentReady', 'notifyReady'] },
           WORKER_ERROR: { target: 'error', actions: ['setError', 'emitParentError'] },
           WORKER_ATTACHED: { actions: ['attachWorker', 'postLoadIfRequested'] },
         },
@@ -99,12 +107,10 @@ export function createSpeechRecognitionMachine() {
       },
       generating: {
         on: {
-          WORKER_START: {
-            // actions: 'setStatusStart'
-          },
-          WORKER_UPDATE: { actions: ['handleUpdate', 'emitParentUpdate'] },
-          WORKER_COMPLETE: { target: 'ready', actions: ['handleComplete', 'emitParentComplete'] },
-          WORKER_ERROR: { target: 'error', actions: ['setError', 'emitParentError'] },
+          WORKER_START: { actions: ['setStatusStart', 'notifyStart'] },
+          WORKER_UPDATE: { actions: ['handleUpdate', 'emitParentUpdate', 'notifyUpdate'] },
+          WORKER_COMPLETE: { target: 'ready', actions: ['handleComplete', 'emitParentComplete', 'notifyComplete'] },
+          WORKER_ERROR: { target: 'error', actions: ['setError', 'emitParentError', 'notifyError'] },
         },
       },
       error: {
@@ -122,6 +128,7 @@ export function createSpeechRecognitionMachine() {
         if (typeof window === 'undefined') return;
         if (context.worker) return;
         try {
+          console.log("[speechRecognition.machine] ensureWorker new worker");
           const worker = new Worker(new URL('../workers/speech-recognition.worker.ts', import.meta.url), { type: 'module' });
           worker.addEventListener('message', (e: MessageEvent) => {
             const data = e.data || {};
@@ -135,7 +142,7 @@ export function createSpeechRecognitionMachine() {
               case 'loading': self.send({ type: 'WORKER_LOADING' }); break;
               case 'ready': self.send({ type: 'WORKER_READY' }); break;
               case 'initiate': self.send({ type: 'WORKER_INITIATE', item: data as ProgressItem }); break;
-              case 'progress': self.send({ type: 'WORKER_PROGRESS', item: data as ProgressItem }); break;
+              // case 'progress': self.send({ type: 'WORKER_PROGRESS', item: data as ProgressItem }); break;
               case 'done': self.send({ type: 'WORKER_DONE', file: (data as ProgressItem).file }); break;
               case 'start': self.send({ type: 'WORKER_START' }); break;
               case 'update': self.send({ type: 'WORKER_UPDATE', output: data.output, tps: data.tps }); break;
@@ -186,28 +193,28 @@ export function createSpeechRecognitionMachine() {
         const language = ev.language ?? context.language;
         context.worker.postMessage({ type: 'generate', data: { audio: ev.audio, language } });
       },
-      // setStatusLoading: assign(() => ({
-      //   status: 'loading' as SpeechRecognitionStatus,
-      //   loadingMessage: 'Loading model...',
-      //   error: null,
-      // })),
+      setStatusLoading: assign(() => ({
+        status: 'loading' as SpeechRecognitionStatus,
+        loadingMessage: 'Loading model...',
+        error: null,
+      })),
       emitParentLoading: ({ self }) => {
         // @ts-ignore
         const parent = (self as any).parent as import('xstate').AnyActorRef | undefined;
         parent?.send({ type: 'SPEECH.LOADING' });
       },
-      // setStatusReady: assign(() => ({
-      //   status: 'ready' as SpeechRecognitionStatus,
-      //   error: null,
-      // })),
+      setStatusReady: assign(() => ({
+        status: 'ready' as SpeechRecognitionStatus,
+        error: null,
+      })),
       emitParentReady: ({ self }) => {
         // @ts-ignore
         const parent = (self as any).parent as import('xstate').AnyActorRef | undefined;
         parent?.send({ type: 'SPEECH.READY' });
       },
-      // setStatusStart: assign(() => ({
-      //   status: 'start' as SpeechRecognitionStatus,
-      // })),
+      setStatusStart: assign(() => ({
+        status: 'start' as SpeechRecognitionStatus,
+      })),
       handleUpdate: assign(({ context, event }) => {
         const { output, tps } = event as { type: 'WORKER_UPDATE'; output?: string; tps?: number };
         return {
@@ -244,6 +251,26 @@ export function createSpeechRecognitionMachine() {
         const parent = (self as any).parent as import('xstate').AnyActorRef | undefined;
         parent?.send({ type: 'SPEECH.ERROR', error: (event as { type: 'WORKER_ERROR'; error: string }).error });
       },
+      // External notifications via input callbacks
+      notifyLoading: ({ context }) => { context.onStatusChange?.('loading'); },
+      notifyReady: ({ context }) => { context.onStatusChange?.('ready'); },
+      notifyStart: ({ context }) => { context.onStatusChange?.('start'); },
+      notifyUpdate: ({ context, event }) => {
+        const { output, tps } = event as { type: 'WORKER_UPDATE'; output?: string; tps?: number };
+        context.onStatusChange?.('update');
+        if (typeof tps === 'number') context.onTpsChange?.(tps);
+        if (typeof output === 'string') context.onTextUpdate?.(output);
+      },
+      notifyComplete: ({ context, event }) => {
+        const { output } = event as { type: 'WORKER_COMPLETE'; output?: string };
+        context.onStatusChange?.('complete');
+        if (typeof output === 'string') context.onTextChange?.(output);
+      },
+      notifyError: ({ context, event }) => {
+        const err = (event as { type: 'WORKER_ERROR'; error: string }).error;
+        context.onStatusChange?.('error');
+        context.onError?.(err);
+      },
       progressInitiate: assign(({ context, event }) => {
         const { item } = event as { type: 'WORKER_INITIATE'; item: ProgressItem };
         return { progressItems: [...context.progressItems, item] };
@@ -264,7 +291,9 @@ export function createSpeechRecognitionMachine() {
 
 export const useSpeechRecognitionStatus = (actor: Actor<ReturnType<typeof createSpeechRecognitionMachine>>) => {
   return useSelector(actor, (s): SpeechRecognitionStatus => {
-    console.log("[useSpeechRecognition] status", s);
+    const ctx = s.context as unknown as { status?: SpeechRecognitionStatus };
+    if (ctx?.status === 'update') return 'update';
+    if (ctx?.status === 'complete') return 'complete';
     switch (s.value) {
       case 'boot':
         return 'idle';
@@ -272,13 +301,15 @@ export const useSpeechRecognitionStatus = (actor: Actor<ReturnType<typeof create
         return 'loading';
       case 'ready':
         return 'ready';
-      case 'complete':
-        return 'complete';
       case 'generating':
         return 'start';
+      case 'error':
+        return 'error';
       default: {
-        throw new Error(`[useSpeechRecognition] unexpected status: ${s.value}`);
+        return 'idle';
       }
     }
   });
 }
+
+export const speechRecognitionMachine = createSpeechRecognitionMachine();

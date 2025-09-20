@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useState } from 'react';
 import { useActorRef, useSelector } from '@xstate/react';
-import { createSpeechRecognitionMachine, useSpeechRecognitionStatus, type SpeechRecognitionStatus } from '../machines/speechRecognition.machine';
+import { createSpeechRecognitionMachine, speechRecognitionMachine, useSpeechRecognitionStatus, type SpeechRecognitionStatus } from '../machines/speechRecognition.machine';
 import { inspect } from '@/machines/inspector';
 
 // All model loading and inference are performed inside a Web Worker.
@@ -101,8 +101,10 @@ export function useSpeechRecognition({
   onTpsChange,
   onError,
 }: SpeechRecognitionOptions = {}): SpeechRecognitionResult {
-  const [logic] = useState(() => createSpeechRecognitionMachine(), []);
-  const actor = useActorRef(logic, { input: { language }, inspect: inspect });
+  const actor = useActorRef(speechRecognitionMachine, {
+    input: { language, onStatusChange, onTextChange, onTextUpdate, onTpsChange, onError },
+    inspect: inspect,
+  });
   /*
   const status = useSelector(actor, (s): SpeechRecognitionStatus => {
     console.log("[useSpeechRecognition] status", s);
@@ -151,26 +153,7 @@ export function useSpeechRecognition({
     return true;
   };
 
-  // Bridge callbacks (no state writes inside to avoid loops)
-  useEffect(() => {
-    if (onStatusChange) onStatusChange(status);
-  }, [status, onStatusChange]);
-
-  useEffect(() => {
-    if (status === 'update' && onTextUpdate) onTextUpdate(text);
-  }, [status, text, onTextUpdate]);
-
-  useEffect(() => {
-    if (status === 'complete' && onTextChange) onTextChange(text);
-  }, [status, text, onTextChange]);
-
-  useEffect(() => {
-    if (tps !== null && onTpsChange) onTpsChange(tps);
-  }, [tps, onTpsChange]);
-
-  useEffect(() => {
-    if (error && onError) onError(error);
-  }, [error, onError]);
+  // No useEffects for callbacks; machine notifies via input actions
 
   return {
     status,

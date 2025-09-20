@@ -49,7 +49,7 @@ export default function Page() {
     whisper: { language: "en", autoStart: true, dataRequestInterval: 250 },
     vad: { model: "v5", startOnLoad: false, userSpeakingThreshold: vadThreshold, baseAssetPath: "/vad/", onnxWASMBasePath: "/vad/" },
     settleMs: 300,
-    autoLoad: false,
+    // autoLoad: false,
     onLiveUpdate: (text) => {
         console.log("[useVoiceSegments] onLiveUpdate", text);
     },

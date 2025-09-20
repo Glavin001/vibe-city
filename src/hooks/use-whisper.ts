@@ -119,6 +119,10 @@ export interface WhisperResult {
    * Get the current number of MediaRecorder chunks captured so far
    */
   getChunkCount: () => number;
+  /**
+   * Finalize a partial window up to the provided chunk index (exclusive), returning final transcript
+   */
+  finalizeUpTo: (endChunkIndex: number) => Promise<string | null>;
 }
 
 const WHISPER_SAMPLING_RATE = 16000;
@@ -246,12 +250,19 @@ export function useWhisper({
       (status !== 'ready' && status !== 'complete')
     ) {
       // Explain which gate blocked
-      if (finalizing) console.debug('[Whisper] skip: finalizing');
-      else if (chunks.length <= lastDecodedChunkCount) console.debug('[Whisper] skip: no new chunks');
-      else if (!isRecording) console.debug('[Whisper] skip: not recording');
-      else if (isProcessing) console.debug('[Whisper] skip: already processing');
-      else if (!isReady) console.debug('[Whisper] skip: model not ready');
-      else console.debug('[Whisper] skip: status not ready/complete', status);
+      if (finalizing) {
+        console.debug('[Whisper] skip: finalizing');
+      } else if (chunks.length <= lastDecodedChunkCount) {
+        // console.debug('[Whisper] skip: no new chunks'); // Happens often
+      } else if (!isRecording) {
+        console.debug('[Whisper] skip: not recording');
+      } else if (isProcessing) {
+        console.debug('[Whisper] skip: already processing');
+      } else if (!isReady) {
+        console.debug('[Whisper] skip: model not ready');
+      } else {
+        console.debug('[Whisper] skip: status not ready/complete', status);
+      }
       return;
     }
 
@@ -279,7 +290,8 @@ export function useWhisper({
           return;
         }
         const MAX_RECENT_CHUNKS = 12; // ~window
-        const startRecent = Math.max(segmentStartIndex + 1, chunks.length - MAX_RECENT_CHUNKS);
+        const segStartForWindow = headerChunk && segmentStartIndex === 0 ? 1 : segmentStartIndex;
+        const startRecent = Math.max(segStartForWindow, chunks.length - MAX_RECENT_CHUNKS);
         const recent = chunks.slice(startRecent);
         if (recent.length < 2) {
           console.debug('[Whisper] too few recent chunks', { startRecent, recent: recent.length });
@@ -287,7 +299,7 @@ export function useWhisper({
         }
         const toDecode: Blob[] = [headerChunk, ...recent];
         // Ensure minimum blob size to reduce decode failures on partial clusters
-        let totalBytes = toDecode.reduce((acc, b) => acc + (b?.size || 0), 0);
+        const totalBytes = toDecode.reduce((acc, b) => acc + (b?.size || 0), 0);
         if (totalBytes < 16 * 1024) {
           console.debug('[Whisper] window too small', { totalBytes });
           return;
@@ -304,7 +316,7 @@ export function useWhisper({
         let audioData: AudioBuffer;
         try {
           audioData = await audioContextRef.current.decodeAudioData(arrayBuffer);
-        } catch (e) {
+        } catch (_) {
           console.debug('[Whisper] decode failed; will retry next tick');
           return; // try again on next tick with more data
         }
@@ -328,7 +340,7 @@ export function useWhisper({
         if (ok) {
           whisperActor.send({ type: 'SET_LAST_DECODED_COUNT', count: chunks.length });
         }
-      } catch (err) {
+      } catch (_) {
         // Swallow sporadic decode errors; let the next data window retry.
       } finally {
         whisperActor.send({ type: 'SET_PROCESSING', value: false });
@@ -336,7 +348,7 @@ export function useWhisper({
     };
 
     processAudio();
-  }, [chunks, isRecording, isProcessing, isReady, status, generateText, onError, finalizing, lastDecodedChunkCount, segmentStartIndex, headerChunk, whisperActor]);
+  }, [chunks, isRecording, isProcessing, isReady, status, generateText, finalizing, lastDecodedChunkCount, segmentStartIndex, headerChunk, whisperActor]);
 
   // Safe reset function that handles the autoStart flag
   const safeResetRecording = useCallback(() => {
@@ -378,11 +390,11 @@ export function useWhisper({
       whisperActor.send({ type: 'SET_FINALIZING', value: true });
       whisperActor.send({ type: 'SET_PROCESSING', value: true });
 
-      // Build full blob for CURRENT SEGMENT ONLY: header + chunks since segmentStartIndex
+      // Build full blob for CURRENT SEGMENT ONLY: header + chunks since segmentStartIndex (off-by-one safe)
       const parts: Blob[] = [];
       if (headerChunk) {
         parts.push(headerChunk);
-        const start = Math.max(segmentStartIndex + 1, 1);
+        const start = segmentStartIndex === 0 ? 1 : segmentStartIndex;
         parts.push(...chunks.slice(start));
       } else {
         const start = Math.max(segmentStartIndex, 0);
@@ -420,7 +432,63 @@ export function useWhisper({
     } finally {
       whisperActor.send({ type: 'SET_PROCESSING', value: false });
     }
-  }, [isReady, chunks, generateText, onError, text, headerChunk, segmentStartIndex, whisperActor]);
+  }, [isReady, chunks, generateText, text, headerChunk, segmentStartIndex, whisperActor, onError]);
+
+  // Finalize up to (but not including) a specific chunk index
+  const finalizeUpTo = useCallback(async (endChunkIndex: number): Promise<string | null> => {
+    try {
+      if (!isReady) return null;
+      const safeEnd = Math.max(0, Math.min(endChunkIndex, chunks.length));
+      const safeStart = segmentStartIndex === 0 ? 1 : Math.max(0, Math.min(segmentStartIndex, safeEnd));
+      if (safeEnd <= safeStart) return (text ?? '') || null;
+
+      if (!audioContextRef.current) {
+        audioContextRef.current = new AudioContext({ sampleRate: WHISPER_SAMPLING_RATE });
+      }
+
+      whisperActor.send({ type: 'SET_FINALIZING', value: true });
+      whisperActor.send({ type: 'SET_PROCESSING', value: true });
+
+      const parts: Blob[] = [];
+      if (headerChunk) {
+        parts.push(headerChunk);
+        parts.push(...chunks.slice(safeStart, safeEnd));
+      } else {
+        parts.push(...chunks.slice(safeStart, safeEnd));
+      }
+      const fullBlob = new Blob(parts, { type: 'audio/webm' });
+      const arrayBuffer = await fullBlob.arrayBuffer();
+      const audioData = await audioContextRef.current.decodeAudioData(arrayBuffer);
+      let audio = audioData.getChannelData(0);
+      if (audio.length > MAX_SAMPLES) {
+        audio = audio.slice(-MAX_SAMPLES);
+      }
+
+      const resultPromise = new Promise<string>((resolve, reject) => {
+        finalizeResolverRef.current = resolve;
+        finalizeRejectRef.current = reject;
+      });
+
+      const ok = generateText(audio);
+      if (!ok) {
+        whisperActor.send({ type: 'SET_FINALIZING', value: false });
+        finalizeResolverRef.current = null;
+        finalizeRejectRef.current = null;
+        return (text ?? '') || null;
+      }
+
+      const finalText = await resultPromise;
+      return finalText ?? ((text ?? '') || null);
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      setError(errorMessage);
+      onError?.(errorMessage);
+      if (finalizeRejectRef.current) finalizeRejectRef.current(errorMessage);
+      return (text ?? '') || null;
+    } finally {
+      whisperActor.send({ type: 'SET_PROCESSING', value: false });
+    }
+  }, [isReady, chunks, generateText, text, headerChunk, segmentStartIndex, whisperActor, onError]);
 
   const markSegmentBoundary = useCallback((endChunkIndex?: number) => {
     const nextStart = typeof endChunkIndex === 'number' ? Math.max(0, Math.min(endChunkIndex, chunks.length)) : chunks.length;
@@ -460,5 +528,6 @@ export function useWhisper({
     finalizeCurrentRecording,
     markSegmentBoundary,
     getChunkCount,
+    finalizeUpTo,
   };
 }
