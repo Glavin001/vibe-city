@@ -85,6 +85,12 @@ const demoCategories: DemoCategory[] = [
         title: "Destructible Wall",
         description: "Breakable wall system with realistic destruction. Uses physics constraints and fracture patterns."
       }
+      ,{
+        href: "/shockwave-demo",
+        icon: "💣",
+        title: "Shockwave Demo",
+        description: "Interactive explosive shockwave with presets (TNT/C4/etc.) and simple scenes."
+      }
     ]
   },
   {

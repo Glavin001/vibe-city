@@ -5,121 +5,148 @@ import type * as THREE from "three";
 // Minimal vector helpers (avoid creating garbage each frame)
 const tmp = { x: 0, y: 0, z: 0 };
 
+const TNT_ENERGY_J_PER_KG = 4.184e6;
+
+type BurstType = "freeAir" | "surface";
+
+type ExplosionSpec =
+  | { type: "tnt"; tntKg: number; burst?: BurstType }
+  | { type: "he"; massKg: number; equivalency?: number; burst?: BurstType }
+  | { type: "energy"; joules: number; burst?: BurstType };
+
 type ShockwaveProps = {
-  /**
-   * The 3D coordinates where the shockwave originates (explosion center).
-   * Example: { x: 0, y: 1, z: 0 }
-   */
+  /** Origin of the blast */
   origin: { x: number; y: number; z: number };
-
-  /**
-   * The speed at which the shockwave front travels outward, in meters per second (m/s).
-   * Typical outdoor explosions have speeds between 300 and 700 m/s.
-   * Higher values make the shockwave expand faster.
-   */
-  speed?: number;
-
-  /**
-   * The thickness of the shockwave's active shell, in meters (ΔR).
-   * This determines how "wide" the shockwave front is as it moves.
-   * A larger value makes the shockwave affect more objects at once.
-   * If not set, a suitable value is chosen automatically to ensure the shockwave does not skip over objects.
-   */
+  /** What exploded; we derive peak overpressure and durations from this */
+  explosion: ExplosionSpec;
+  /** Front propagation speed (visual/arrival timing), m/s */
+  frontSpeed?: number;
+  /** Shell thickness (auto if omitted) */
   thickness?: number;
-
-  /**
-   * The maximum pressure (overpressure) at the center of the explosion, in Pascals.
-   * This controls how strong the shockwave is at its origin.
-   * Higher values result in a more powerful shockwave.
-   * You can adjust this to make the effect more or less dramatic.
-   */
-  P0?: number;
-
-  /**
-   * The reference distance, in meters, used to determine how quickly the shockwave's strength decreases as it moves away from the origin.
-   * Larger values make the shockwave's effects reach farther.
-   */
-  r0?: number;
-
-  /**
-   * The duration, in seconds, of the shockwave's initial (positive) pressure phase.
-   * This is how long the main "push" of the shockwave lasts at each point it passes.
-   * Typical values are around 0.04 seconds.
-   */
-  tauPos?: number;
-
-  /**
-   * The duration, in seconds, of the shockwave's negative (afterflow) phase.
-   * After the main push, the air can briefly flow back toward the center; this controls how long that effect lasts.
-   * Typical values are around 0.06 seconds.
-   */
-  tauNeg?: number;
-
-  /**
-   * The strength of the negative (afterflow) phase, as a fraction of the peak pressure (0 to 1).
-   * A value of 0 means no afterflow; 1 means the afterflow is as strong as the initial push.
-   * This controls how much "suction" follows the main shockwave.
-   */
+  /** Negative-phase suction scale (0..1) */
   afterflowScale?: number;
-
-  /**
-   * The maximum distance, in meters, that the shockwave will travel before stopping.
-   * Once the shockwave front exceeds this distance from the origin, it will no longer affect objects.
-   * Use this to limit the area of effect.
-   */
+  /** Optional explicit cutoff distance */
   maxDistance?: number;
-
-  /**
-   * If true, the shockwave's strength is reduced for objects that are blocked by obstacles (using a raycast to check for occlusion).
-   * This makes the shockwave more realistic by preventing it from passing through walls or other barriers.
-   */
+  /** Simple occlusion via ray test */
   occlusion?: boolean;
-
-  /**
-   * Optional callback function that is called when the shockwave has finished and is no longer active.
-   * You can use this to trigger other effects or clean up resources.
-   */
+  /** Pressure->force conversion factor (approximates exposed area), N/Pa */
+  forceScale?: number;
+  /** Called when finished */
   onDone?: () => void;
 };
 
 type ShockwavePreset = Omit<ShockwaveProps, "origin" | "onDone">;
 
 export const SHOCKWAVE_PRESETS = {
-  GasBlast: {
-    // origin: { x: 0, y: 1, z: 0 },
-    speed: 380,             // m/s
-    // thickness: 2,           // m  (bump to >= speed*dt)
-    P0: 25_000,             // Pa ≈ 3.6 psi at r = r0
-    r0: 6,                  // m
-    tauPos: 0.03,           // s
-    tauNeg: 0.05,           // s
+  Small: {
+    explosion: { type: "tnt", tntKg: 0.01, burst: "surface" },
+    frontSpeed: 420,
+    afterflowScale: 0.3,
+    forceScale: 0.01,
+  },
+  Grenade_M67: {
+    explosion: { type: "he", massKg: 0.18, equivalency: 1.25, burst: "surface" },
+    frontSpeed: 420,
+    afterflowScale: 0.3,
+    forceScale: 0.01,
+  },
+  TNT_5kg_Surface: {
+    explosion: { type: "tnt", tntKg: 5, burst: "surface" },
+    frontSpeed: 450,
     afterflowScale: 0.35,
-    maxDistance: 120        // m (effects fade to negligible)
+    forceScale: 0.02,
   },
-  BuildingDestroyer: {
-    // origin: { x: 0, y: 1, z: 0 },
-    speed: 550,             // m/s
-    // thickness: 3,           // m
-    P0: 250_000,            // Pa ≈ 36 psi at r = r0 (collapse-capable near-field)
-    r0: 8,                  // m
-    tauPos: 0.04,           // s
-    tauNeg: 0.06,           // s
+  C4_2kg_Surface: {
+    explosion: { type: "he", massKg: 2, equivalency: 1.34, burst: "surface" },
+    frontSpeed: 450,
     afterflowScale: 0.4,
-    maxDistance: 180        // m
+    forceScale: 0.018,
   },
-  IndustrialLarge: {
-    // origin: { x: 0, y: 1, z: 0 },
-    speed: 650,             // m/s
-    // thickness: 5,           // m
-    P0: 300_000,            // Pa ≈ 44 psi at r = r0
-    r0: 20,                 // m
-    tauPos: 0.06,           // s
-    tauNeg: 0.09,           // s
-    afterflowScale: 0.5,
-    maxDistance: 400        // m
-  }
+  CarBomb_100kg_Surface: {
+    explosion: { type: "tnt", tntKg: 100, burst: "surface" },
+    frontSpeed: 480,
+    afterflowScale: 0.35,
+    forceScale: 0.06,
+  },
+  Rocket_HE_3kg_Free: {
+    explosion: { type: "he", massKg: 3, equivalency: 1.1, burst: "freeAir" },
+    frontSpeed: 520,
+    afterflowScale: 0.35,
+    forceScale: 0.018,
+  },
+  Meteor_1GJ_Airburst: {
+    explosion: { type: "energy", joules: 1e9, burst: "freeAir" },
+    frontSpeed: 340,
+    afterflowScale: 0.3,
+    forceScale: 0.08,
+  },
 } satisfies Record<string, ShockwavePreset>;
 // export type ShockwavePresetName = keyof typeof SHOCKWAVE_PRESETS;
+
+// Lightweight Kingery–Bulmash style table (free-air). Values are approximate.
+// Columns: Z (m/kg^{1/3}), P_peak (kPa), tPlus_per_cuberoot (ms per kg^{1/3})
+const KB_TABLE_FREE_AIR: ReadonlyArray<{ Z: number; PkPa: number; tPlusMsPerCuberoot: number }> = [
+  { Z: 0.20, PkPa: 800, tPlusMsPerCuberoot: 2.0 },
+  { Z: 0.30, PkPa: 450, tPlusMsPerCuberoot: 3.0 },
+  { Z: 0.50, PkPa: 170, tPlusMsPerCuberoot: 5.0 },
+  { Z: 0.70, PkPa: 110, tPlusMsPerCuberoot: 6.5 },
+  { Z: 1.00, PkPa: 70, tPlusMsPerCuberoot: 8.0 },
+  { Z: 1.50, PkPa: 35, tPlusMsPerCuberoot: 12.0 },
+  { Z: 2.00, PkPa: 22, tPlusMsPerCuberoot: 16.0 },
+  { Z: 3.00, PkPa: 12, tPlusMsPerCuberoot: 25.0 },
+  { Z: 5.00, PkPa: 6, tPlusMsPerCuberoot: 40.0 },
+  { Z: 10.00, PkPa: 2, tPlusMsPerCuberoot: 80.0 },
+];
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function logInterp(x: number, x0: number, y0: number, x1: number, y1: number): number {
+  const lx = Math.log(x);
+  const lx0 = Math.log(x0);
+  const lx1 = Math.log(x1);
+  const ly0 = Math.log(y0);
+  const ly1 = Math.log(y1);
+  const t = clamp((lx - lx0) / (lx1 - lx0), 0, 1);
+  const ly = ly0 + t * (ly1 - ly0);
+  return Math.exp(ly);
+}
+
+function kbLookupFreeAir(Z: number): { pPeakPa: number; tPlusSPerCuberoot: number } {
+  const table = KB_TABLE_FREE_AIR;
+  const Zc = clamp(Z, table[0].Z, table[table.length - 1].Z);
+  let i = 0;
+  for (; i < table.length - 1; i += 1) {
+    if (Zc <= table[i + 1].Z) break;
+  }
+  const a = table[i];
+  const b = table[Math.min(i + 1, table.length - 1)];
+  const PkPa = logInterp(Zc, a.Z, a.PkPa, b.Z, b.PkPa);
+  const tMsPerCuberoot = logInterp(Zc, a.Z, a.tPlusMsPerCuberoot, b.Z, b.tPlusMsPerCuberoot);
+  return { pPeakPa: PkPa * 1000, tPlusSPerCuberoot: tMsPerCuberoot * 1e-3 };
+}
+
+function reflectionFactorSurface(Z: number): number {
+  if (Z <= 1) return 2.0;
+  if (Z >= 10) return 1.0;
+  const t = (Z - 1) / 9;
+  return 2.0 - t * 1.0;
+}
+
+function tntEquivalentKg(spec: ExplosionSpec): { Wkg: number; burst: BurstType } {
+  const burst = spec.burst ?? "surface";
+  switch (spec.type) {
+    case "tnt":
+      return { Wkg: Math.max(1e-6, spec.tntKg), burst };
+    case "he": {
+      const eq = spec.equivalency ?? 1.0;
+      return { Wkg: Math.max(1e-6, spec.massKg * eq), burst };
+    }
+    case "energy":
+      return { Wkg: Math.max(1e-6, spec.joules / TNT_ENERGY_J_PER_KG), burst };
+  }
+}
 
 /** Friedlander pulse p(τ) = p_s (1 - τ/τ+) e^{-τ/τ+}, 0<=τ<=τ+  */
 function friedlander(peak: number, tau: number, tauPos: number) {
@@ -130,15 +157,13 @@ function friedlander(peak: number, tau: number, tauPos: number) {
 
 export function Shockwave({
   origin,
-  speed = 420,
+  explosion,
+  frontSpeed = 420,
   thickness,               // will be auto-chosen below if omitted
-  P0 = 5000,
-  r0 = 1.0,
-  tauPos = 0.04,
-  tauNeg = 0.06,
-  afterflowScale = 0.25,
-  maxDistance = 200,
+  afterflowScale = 0.35,
+  maxDistance,
   occlusion = false,
+  forceScale = 0.05,
   onDone,
 }: ShockwaveProps) {
 
@@ -157,10 +182,17 @@ export function Shockwave({
 
   // If caller didn’t pick a thickness, choose one that guarantees
   // the shell moves less than its own thickness per step.
-  const dR = useMemo(() => thickness ?? Math.max(0.5, speed * dt * 1.5), [thickness, speed, dt]);
+  const dR = useMemo(() => thickness ?? Math.max(0.5, frontSpeed * dt * 1.5), [thickness, frontSpeed, dt]);
 
-  // Per-body arrival time (seconds since explosion start), keyed by handle
-  const arrival = useRef(new Map<number, number>());
+  const { Wkg, burst } = useMemo(() => tntEquivalentKg(explosion), [explosion]);
+  const derivedMaxDistance = useMemo(() => {
+    // Stop when free-air peak overpressure decays below ~0.5 kPa
+    const Zstop = 20;
+    return Zstop * Math.cbrt(Wkg);
+  }, [Wkg]);
+
+  // Per-body record
+  const arrival = useRef(new Map<number, { tArr: number; pPeakPa: number; tPlus: number; tMinus: number }>());
   // Time since start (sim-time), and whether we’re finished
   const t = useRef(0);
   const done = useRef(false);
@@ -174,7 +206,7 @@ export function Shockwave({
     if (done.current) return;
 
     t.current += dt;
-    const R = speed * t.current;
+    const R = frontSpeed * t.current;
     const Rmin = Math.max(0, R - dR * 0.5);
     const Rmax = R + dR * 0.5;
 
@@ -205,27 +237,29 @@ export function Shockwave({
       const d = Math.hypot(dx, dy, dz);
       if (d < 1e-6) return; // co-located; skip to avoid NaNs
 
-      // If this body just entered the thin shell, mark its arrival time
+      // If this body just entered the thin shell, mark and derive per-body params
       if (!arrival.current.has(rb.handle) && d >= Rmin && d <= Rmax) {
-        arrival.current.set(rb.handle, t.current);
+        const Z = d / Math.cbrt(Wkg);
+        const { pPeakPa: p0, tPlusSPerCuberoot } = kbLookupFreeAir(Z);
+        const refl = burst === "surface" ? reflectionFactorSurface(Z) : 1.0;
+        const pPeakPa = p0 * refl;
+        const tPlus = tPlusSPerCuberoot * Math.cbrt(Wkg);
+        const tMinus = tPlus * 1.5;
+        arrival.current.set(rb.handle, { tArr: t.current, pPeakPa, tPlus, tMinus });
       }
 
       // If we’ve recorded an arrival, compute time-since-arrival and apply forces
-      const tArr = arrival.current.get(rb.handle);
-      if (tArr === undefined) return;
+      const rec = arrival.current.get(rb.handle);
+      if (!rec) return;
 
-      const tau = t.current - tArr;
-      // Distance falloff ~ inverse-square (tweak/clamp as desired)
-      const pPeak = P0 * (r0 / (d + 0.5)) ** 2;
+      const tau = t.current - rec.tArr;
 
       let pNow = 0;
-      if (tau <= tauPos) {
-        pNow = friedlander(pPeak, tau, tauPos); // positive phase
-      } else if (tau <= tauPos + tauNeg) {
-        // simple linear tail-off for the afterflow (“blast wind”)
-        // negative phase (suction) opposes the positive phase
-        const s = (tau - tauPos) / tauNeg;
-        pNow = -afterflowScale * pPeak * Math.max(0, 1 - s);
+      if (tau <= rec.tPlus) {
+        pNow = friedlander(rec.pPeakPa, tau, rec.tPlus); // positive phase
+      } else if (tau <= rec.tPlus + rec.tMinus) {
+        const s = (tau - rec.tPlus) / rec.tMinus;
+        pNow = -afterflowScale * rec.pPeakPa * Math.max(0, 1 - s);
       } else {
         // finished affecting this body
         arrival.current.delete(rb.handle);
@@ -249,8 +283,8 @@ export function Shockwave({
       }
 
       // Force direction (radial)
-      const pushMagnitude = pNow * occ;
-      const minPushMagnitude = 1;
+      const pushMagnitude = pNow * occ * forceScale;
+      const minPushMagnitude = 0.25;
       if (Math.abs(pushMagnitude) <= minPushMagnitude) {
         return;
       }
@@ -269,10 +303,11 @@ export function Shockwave({
     });
 
     // Stop the component when the front has traveled far enough
-    if (R > maxDistance && arrival.current.size === 0) {
+    const cutoff = maxDistance ?? derivedMaxDistance;
+    if (R > cutoff && arrival.current.size === 0) {
       console.log("Shockwave done");
       done.current = true;
-      onDone?.();
+      // onDone?.();
     }
   });
 

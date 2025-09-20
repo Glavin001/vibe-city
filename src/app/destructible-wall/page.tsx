@@ -1025,19 +1025,12 @@ function Scene({ structure, seed, jointsEnabled = true, projectileEnabled = true
         {projectileEnabled && projectileTarget ? <Projectile key={`${projectileTarget.id}-${seed}`} target={projectileTarget} /> : null}
         {shockwaveEnabled && blastAt ? (
           <Shockwave
-            // key={`${shockwaveEnabled}-${blastAt.x}-${blastAt.y}-${blastAt.z}`}
-            // {...SHOCKWAVE_PRESETS.GasBlast}
-            // maxDistance={5}
             origin={blastAt}
-            onDone={() => setBlastAt(null)}
-            speed={1}
-            P0={1.00}
-            r0={18.0}
-            tauPos={0.035}
-            tauNeg={0.06}
-            afterflowScale={1.1}
-            maxDistance={15}
+            explosion={SHOCKWAVE_PRESETS.Grenade_M67.explosion}
+            frontSpeed={SHOCKWAVE_PRESETS.Grenade_M67.frontSpeed}
+            afterflowScale={SHOCKWAVE_PRESETS.Grenade_M67.afterflowScale}
             occlusion={false}
+            onDone={() => setBlastAt(null)}
           />
         ) : null}
       </Physics>
