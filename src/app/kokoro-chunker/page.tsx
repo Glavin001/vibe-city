@@ -1,257 +1,114 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Chunk } from "../../lib/sentence-stream-chunker/sentence-stream-chunker";
-import { useSentenceChunker } from "../../hooks/use-sentence-chunker";
-import { useKokoroTtsGenerator } from "../../hooks/use-kokoro-tts-generator";
-import { useTtsQueue } from "../../hooks/use-tts-queue";
-
-// (Shared types and worker hook used instead of local types)
-
-type UiChunk = {
-  id: number; // local id (monotonic)
-  chunkIdx: number; // from chunker
-  sentenceIdx: number;
-  pieceIdx: number;
-  text: string;
-  isSentenceFinal: boolean;
-  isStreamFinal: boolean;
-  startOffset: number;
-  endOffset: number;
-  status: "pending" | "generating" | "ready" | "playing" | "paused" | "played" | "error" | "skipped";
-  audioUrl?: string;
-  requestId?: number;
-};
+import { useMachine } from "@xstate/react";
+import { useEffect, useRef } from "react";
+import { kokoroChunkerMachine, type UiChunk } from "../../machines/kokoroChunker.machine";
+import { inspect } from "@/machines/inspector";
 
 const defaultSoftPunct = String(/[,;:—–\-]/).slice(1, -1);
 
 export default function Page() {
-  // Text input and streaming simulator
-  const [inputText, setInputText] = useState<string>(
-    "Paste or type a long paragraph here. Then use 'Push' to simulate streaming input, chunk it, and hear sequential TTS playback."
-  );
-  const [cursor, setCursor] = useState<number>(0); // where we've streamed up to
-  const [autoStream, setAutoStream] = useState<boolean>(false);
-  const [pushSize, setPushSize] = useState<number>(96);
-  const autoTimerRef = useRef<number | null>(null);
+  const audioRef = useRef<HTMLAudioElement>(null);
 
-  // Chunker options
-  const [locale, setLocale] = useState<string>("en");
-  const [charEnabled, setCharEnabled] = useState<boolean>(true);
-  const [charLimit, setCharLimit] = useState<number>(120);
-  const [wordEnabled, setWordEnabled] = useState<boolean>(true);
-  const [wordLimit, setWordLimit] = useState<number>(10);
-  const [softPunctSrc, setSoftPunctSrc] = useState<string>(defaultSoftPunct);
-
-  const softPunct: RegExp = useMemo(() => {
-    try {
-      return new RegExp(softPunctSrc);
-    } catch {
-      return /[,;:—–\-]/;
+  const [state, send] = useMachine(kokoroChunkerMachine, {
+    inspect,
+    input: {
+      onAudioPlay: (audioUrl: string, chunkId: number) => {
+        if (audioRef.current) {
+          audioRef.current.src = audioUrl;
+          audioRef.current.play().catch((error) => {
+            console.error('Audio play failed:', error);
+            // Send AUDIO_ENDED as fallback
+            send({ type: 'AUDIO_ENDED', chunkId });
+          });
+        }
+      },
+      onAudioPause: () => {
+        if (audioRef.current) {
+          audioRef.current.pause();
+        }
+      },
+      onAudioStop: () => {
+        if (audioRef.current) {
+          audioRef.current.pause();
+          audioRef.current.currentTime = 0;
+        }
+      },
     }
-  }, [softPunctSrc]);
-
-  const { push: chunkPush, flush: chunkFlush, reset: chunkReset } = useSentenceChunker({
-    locale,
-    charLimit: charEnabled ? charLimit : Number.POSITIVE_INFINITY,
-    wordLimit: wordEnabled ? wordLimit : Number.POSITIVE_INFINITY,
-    softPunct,
   });
 
-  // TTS worker (shared)
   const {
+    inputText,
+    cursor,
+    autoStream,
+    pushSize,
+    chunkerOptions,
+    uiChunks,
     voices,
-    selectedVoice,
-    setSelectedVoice,
-    speed,
-    setSpeed,
     device,
-    error: workerError,
-    ready: workerReady,
-    generate,
-  } = useKokoroTtsGenerator();
-
-  // Playback
-  const [autoplay, setAutoplay] = useState<boolean>(true);
-  const [playhead, setPlayhead] = useState<number>(0); // index in uiChunks
-  const [isUserPaused, setIsUserPaused] = useState<boolean>(false);
-
-  // Chunk state
-  const nextIdRef = useRef<number>(1);
-  const [uiChunks, setUiChunks] = useState<UiChunk[]>([]);
-  const requestToChunkId = useRef<Map<number, number>>(new Map());
-  const genBusyRef = useRef<boolean>(false);
-
-  // Keep a ref to the latest queueNextGeneration to avoid re-subscribing worker handlers
-  const queueNextGenerationRef = useRef<() => void>(() => {});
-
-  // Ensure we always have a valid selected voice once voices are available
-  useEffect(() => {
-    const ids = Object.keys(voices);
-    if (!workerReady || ids.length === 0) return;
-    if (!selectedVoice || !voices[selectedVoice]) {
-      setSelectedVoice(ids[0]);
-    }
-  }, [voices, selectedVoice, workerReady, setSelectedVoice]);
-
-  // (defined after queueNextGeneration to avoid use-before-define lint)
-
-  // Generation control
-  const sendGenerate = useCallback((chunk: UiChunk) => {
-    if (!workerReady) return false;
-    const voiceId = selectedVoice && voices[selectedVoice] ? selectedVoice : Object.keys(voices)[0];
-    if (!voiceId) {
-      console.error("No voice available. Please wait for voices to load.");
-      return false;
-    }
-    const requestId = Math.floor(performance.now() + Math.random());
-    requestToChunkId.current.set(requestId, chunk.id);
-    setUiChunks((prev) => prev.map((c) => (c.id === chunk.id ? { ...c, status: "generating", requestId } : c)));
-    generate({ text: chunk.text, voice: voiceId, speed })
-      .then(({ url }) => {
-        setUiChunks((prev) => prev.map((c) => (c.id === chunk.id ? { ...c, status: "ready", audioUrl: url } : c)));
-        genBusyRef.current = false;
-        queueNextGenerationRef.current();
-      })
-      .catch((err) => {
-        console.error(err.message);
-        setUiChunks((prev) => prev.map((c) => (c.id === chunk.id && c.status === "generating" ? { ...c, status: "error" } : c)));
-        genBusyRef.current = false;
-        queueNextGenerationRef.current();
-      });
-    return true;
-  }, [generate, selectedVoice, speed, workerReady, voices]);
-
-  const queueNextGeneration = useCallback(() => {
-    if (genBusyRef.current) return;
-    const next = uiChunks.find((c) => c.status === "pending");
-    if (!next) return;
-    genBusyRef.current = true;
-    sendGenerate(next);
-  }, [sendGenerate, uiChunks]);
-
-  // Whenever chunks change, ensure generation is running
-  useEffect(() => {
-    queueNextGeneration();
-  }, [queueNextGeneration]);
-
-  // Keep the latest generator enqueuer accessible to worker handlers
-  useEffect(() => {
-    queueNextGenerationRef.current = queueNextGeneration;
-  }, [queueNextGeneration]);
-
-  // Low-latency queued playback (dual audio, preload & swap)
-  const [crossfadeMs, setCrossfadeMs] = useState<number>(800);
-  const { audioARef, audioBRef, activeAudioIndex, play, pause, stop, skip, clearAudioSources } = useTtsQueue({
-    items: useMemo(() => uiChunks.map((c) => ({ audioUrl: c.audioUrl, status: c.status })), [uiChunks]),
+    selectedVoice,
+    speed,
     playhead,
-    setPlayhead,
     autoplay,
-    setAutoplay,
-    isUserPaused,
-    setIsUserPaused,
-    onStatusChange: (idx, status) => {
-      setUiChunks((prev) => prev.map((c, i) => (i === idx ? { ...c, status } : c)));
-    },
-    onError: (m) => console.error(m),
     crossfadeMs,
-  });
+    error,
+    loadingMessage,
+  } = state.context;
 
-  // Map chunk to UI model
-  const toUiChunk = useCallback((c: Chunk): UiChunk => {
-    const id = nextIdRef.current++;
-    return {
-      id,
-      chunkIdx: c.idx,
-      sentenceIdx: c.sentenceIdx,
-      pieceIdx: c.pieceIdx,
-      text: c.text,
-      isSentenceFinal: c.isSentenceFinal,
-      isStreamFinal: c.isStreamFinal,
-      startOffset: c.startOffset,
-      endOffset: c.endOffset,
-      status: "pending",
-    };
-  }, []);
-
-  // Stream push helpers
-  const pushText = useCallback((s: string, eos: boolean = false) => {
-    const newChunks = chunkPush(s, eos);
-    if (newChunks.length > 0) {
-      setUiChunks((prev) => [
-        ...prev,
-        ...newChunks.map(toUiChunk)
-      ]);
-    }
-  }, [chunkPush, toUiChunk]);
-
-  const onPushChunk = useCallback(() => {
-    const end = Math.min(inputText.length, cursor + Math.max(1, pushSize));
-    const part = inputText.slice(cursor, end);
-    const eos = end >= inputText.length;
-    setCursor(end);
-    if (part) pushText(part, eos);
-  }, [cursor, inputText, pushSize, pushText]);
-
-  const onFlush = useCallback(() => {
-    // Mark end-of-stream for whatever remains in the chunker buffer
-    const flushed = chunkFlush();
-    if (flushed.length > 0) {
-      setUiChunks((prev) => ([...prev, ...flushed.map(toUiChunk)]));
-    } else {
-      // If nothing flushed, mark last as stream-final by design of chunker
-      // Nothing to do here since flush handles flagging last emitted chunk when needed
-    }
-  }, [chunkFlush, toUiChunk]);
-
-  // Auto-streamer loop
-  useEffect(() => {
-    if (!autoStream) {
-      if (autoTimerRef.current) {
-        window.clearInterval(autoTimerRef.current);
-        autoTimerRef.current = null;
-      }
-      return;
-    }
-    if (autoTimerRef.current) return;
-    autoTimerRef.current = window.setInterval(() => {
-      if (cursor >= inputText.length) {
-        onFlush();
-        setAutoStream(false);
-        return;
-      }
-      onPushChunk();
-    }, 300) as unknown as number;
-    return () => {
-      if (autoTimerRef.current) {
-        window.clearInterval(autoTimerRef.current);
-        autoTimerRef.current = null;
-      }
-    };
-  }, [autoStream, cursor, inputText.length, onFlush, onPushChunk]);
-
-  // Controls
-  const onPlay = () => { play(); };
-
-  const onPause = () => { pause(); };
-
-  const onStop = () => { stop(); };
-
-  const onSkip = () => { skip(); };
-
-  const onResetAll = () => {
-    // Reset everything
-    onStop();
-    setUiChunks([]);
-    setPlayhead(0);
-    setCursor(0);
-    requestToChunkId.current.clear();
-    genBusyRef.current = false;
-    chunkReset();
-    clearAudioSources();
-  };
-
+  const isBoot = state.matches("boot");
+  const isReady = state.matches("ready");
+  const isAutoStreaming = state.matches("ready.autoStreaming");
   const remainingChars = Math.max(0, inputText.length - cursor);
+
+  useEffect(() => {
+    console.log('UI Chunks updated:', uiChunks.map(c => ({ id: c.id, status: c.status })));
+  }, [uiChunks]);
+
+  // Set up audio event listeners
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    const handleEnded = () => {
+      // Find the current chunk being played
+      const currentChunk = uiChunks[playhead];
+      if (currentChunk) {
+        send({ type: 'AUDIO_ENDED', chunkId: currentChunk.id });
+      }
+    };
+
+    const handlePlay = () => {
+      // Find the current chunk being played
+      const currentChunk = uiChunks[playhead];
+      if (currentChunk) {
+        // Check if this is a resume (was paused) or a new start
+        const isResume = currentChunk.status === 'paused';
+        send({
+          type: isResume ? 'AUDIO_RESUMED' : 'AUDIO_STARTED',
+          chunkId: currentChunk.id
+        });
+      }
+    };
+
+    const handlePause = () => {
+      // Only send pause if it wasn't programmatic and not ended
+      const currentChunk = uiChunks[playhead];
+      if (currentChunk && !audio.ended) {
+        send({ type: 'AUDIO_PAUSED', chunkId: currentChunk.id });
+      }
+    };
+
+    audio.addEventListener('ended', handleEnded);
+    audio.addEventListener('play', handlePlay);
+    audio.addEventListener('pause', handlePause);
+
+    return () => {
+      audio.removeEventListener('ended', handleEnded);
+      audio.removeEventListener('play', handlePlay);
+      audio.removeEventListener('pause', handlePause);
+    };
+  }, [uiChunks, playhead, send]);
+
 
   return (
     <div className="min-h-[calc(100vh-64px)] py-8 px-4 flex flex-col items-center">
@@ -261,9 +118,9 @@ export default function Page() {
           <p className="text-gray-500">
             Stream text → sentence chunking → sequential TTS. {device ? `Device: ${device}` : "Booting..."}
           </p>
-          {!workerReady && (
+          {isBoot && (
             <div className="inline-block mt-2 text-sm text-gray-600 bg-gray-100 border rounded px-3 py-1">
-              Loading TTS model and voices… Controls are disabled until ready.
+              {error ?? loadingMessage}
             </div>
           )}
         </div>
@@ -273,7 +130,7 @@ export default function Page() {
             <h2 className="text-lg font-semibold">Input & Streaming</h2>
             <textarea
               value={inputText}
-              onChange={(e) => setInputText(e.target.value)}
+              onChange={(e) => send({ type: 'UI.SET_TEXT', text: e.target.value })}
               className="w-full min-h-[180px] rounded-lg border px-3 py-2"
               placeholder="Type or paste text..."
             />
@@ -286,16 +143,16 @@ export default function Page() {
                 min={8}
                 max={2000}
                 step={8}
-                onChange={(e) => setPushSize(Math.max(1, Number(e.target.value) || 1))}
+                onChange={(e) => send({ type: 'UI.SET_PUSH_SIZE', pushSize: Math.max(1, Number(e.target.value) || 1) })}
                 className="w-24 rounded-lg border px-2 py-1"
-                disabled={!workerReady}
+                disabled={!isReady}
               />
-              <button type="button" onClick={onPushChunk} className="rounded-lg px-3 py-2 bg-blue-600 text-white disabled:opacity-50" disabled={!workerReady}>Push</button>
-              <button type="button" onClick={() => setAutoStream((v) => !v)} className="rounded-lg px-3 py-2 bg-indigo-600 text-white disabled:opacity-50" disabled={!workerReady}>
-                {autoStream ? "Stop auto" : "Auto stream"}
+              <button type="button" onClick={() => send({ type: 'UI.PUSH_CHUNK' })} className="rounded-lg px-3 py-2 bg-blue-600 text-white disabled:opacity-50" disabled={!isReady}>Push</button>
+              <button type="button" onClick={() => send({ type: isAutoStreaming ? 'UI.STOP_AUTO_STREAM' : 'UI.START_AUTO_STREAM' })} className="rounded-lg px-3 py-2 bg-indigo-600 text-white disabled:opacity-50" disabled={!isReady}>
+                {isAutoStreaming ? "Stop auto" : "Auto stream"}
               </button>
-              <button type="button" onClick={onFlush} className="rounded-lg px-3 py-2 bg-emerald-600 text-white disabled:opacity-50" disabled={!workerReady}>Flush</button>
-              <button type="button" onClick={onResetAll} className="rounded-lg px-3 py-2 bg-gray-600 text-white disabled:opacity-50" disabled={!workerReady}>Reset</button>
+              <button type="button" onClick={() => send({ type: 'UI.FLUSH_CHUNKS' })} className="rounded-lg px-3 py-2 bg-emerald-600 text-white disabled:opacity-50" disabled={!isReady}>Flush</button>
+              <button type="button" onClick={() => send({ type: 'UI.RESET_ALL' })} className="rounded-lg px-3 py-2 bg-gray-600 text-white disabled:opacity-50" disabled={!isReady}>Reset</button>
               <div className="text-sm text-gray-500 ml-auto">Remaining: {remainingChars}</div>
             </div>
           </div>
@@ -305,28 +162,28 @@ export default function Page() {
             <div className="grid grid-cols-1 gap-3">
               <label className="flex items-center gap-2">
                 <span className="w-28 text-sm text-gray-600">Locale</span>
-                <input value={locale} onChange={(e) => setLocale(e.target.value)} className="flex-1 rounded-lg border px-2 py-1" disabled={!workerReady} />
+                <input value={chunkerOptions.locale} onChange={(e) => send({ type: 'UI.SET_CHUNKER_LOCALE', locale: e.target.value })} className="flex-1 rounded-lg border px-2 py-1" disabled={!isReady} />
               </label>
               <label className="flex items-center gap-2">
-                <input type="checkbox" checked={charEnabled} onChange={(e) => setCharEnabled(e.target.checked)} disabled={!workerReady} />
+                <input type="checkbox" checked={chunkerOptions.charEnabled} onChange={(e) => send({ type: 'UI.SET_CHUNKER_CHAR_ENABLED', enabled: e.target.checked })} disabled={!isReady} />
                 <span className="w-28 text-sm text-gray-600">charLimit</span>
-                <input type="number" value={charLimit} min={16} max={2000} step={16} onChange={(e) => setCharLimit(Math.max(1, Number(e.target.value) || 1))} className="flex-1 rounded-lg border px-2 py-1" disabled={!workerReady || !charEnabled} />
+                <input type="number" value={chunkerOptions.charLimit} min={16} max={2000} step={16} onChange={(e) => send({ type: 'UI.SET_CHUNKER_CHAR_LIMIT', limit: Math.max(1, Number(e.target.value) || 1) })} className="flex-1 rounded-lg border px-2 py-1" disabled={!isReady || !chunkerOptions.charEnabled} />
               </label>
               <label className="flex items-center gap-2">
-                <input type="checkbox" checked={wordEnabled} onChange={(e) => setWordEnabled(e.target.checked)} disabled={!workerReady} />
+                <input type="checkbox" checked={chunkerOptions.wordEnabled} onChange={(e) => send({ type: 'UI.SET_CHUNKER_WORD_ENABLED', enabled: e.target.checked })} disabled={!isReady} />
                 <span className="w-28 text-sm text-gray-600">wordLimit</span>
-                <input type="number" value={wordLimit} min={1} max={100} step={1} onChange={(e) => setWordLimit(Math.max(1, Number(e.target.value) || 1))} className="flex-1 rounded-lg border px-2 py-1" disabled={!workerReady || !wordEnabled} />
+                <input type="number" value={chunkerOptions.wordLimit} min={1} max={100} step={1} onChange={(e) => send({ type: 'UI.SET_CHUNKER_WORD_LIMIT', limit: Math.max(1, Number(e.target.value) || 1) })} className="flex-1 rounded-lg border px-2 py-1" disabled={!isReady || !chunkerOptions.wordEnabled} />
               </label>
               <label className="flex items-center gap-2">
                 <span className="w-28 text-sm text-gray-600">softPunct</span>
-                <input value={softPunctSrc} onChange={(e) => setSoftPunctSrc(e.target.value)} className="flex-1 rounded-lg border px-2 py-1" disabled={!workerReady} />
+                <input value={chunkerOptions.softPunctSrc} onChange={(e) => send({ type: 'UI.SET_CHUNKER_SOFT_PUNCT', softPunctSrc: e.target.value })} className="flex-1 rounded-lg border px-2 py-1" disabled={!isReady} />
               </label>
             </div>
 
             <div className="space-y-2 pt-2">
               <div className="flex items-center gap-3">
                 <label className="text-sm text-gray-600" htmlFor="voice-select">Voice</label>
-                <select id="voice-select" value={selectedVoice} onChange={(e) => setSelectedVoice(e.target.value)} disabled={!workerReady || Object.keys(voices).length === 0} className="flex-1 rounded-lg border px-3 py-2">
+                <select id="voice-select" value={selectedVoice} onChange={(e) => send({ type: 'UI.SET_VOICE', voice: e.target.value })} disabled={!isReady || Object.keys(voices).length === 0} className="flex-1 rounded-lg border px-3 py-2">
                   {Object.entries(voices).map(([id, v]) => (
                     <option key={id} value={id}>{v.name} ({v.language === "en-us" ? "American" : "British"} {v.gender})</option>
                   ))}
@@ -341,9 +198,9 @@ export default function Page() {
                   max={2}
                   step={0.05}
                   value={speed}
-                  onChange={(e) => setSpeed(Number(e.target.value))}
+                  onChange={(e) => send({ type: 'UI.SET_SPEED', speed: Number(e.target.value) })}
                   className="flex-1"
-                  disabled={!workerReady}
+                  disabled={!isReady}
                 />
                 <input
                   id="speed-number"
@@ -353,13 +210,15 @@ export default function Page() {
                   max={2}
                   step={0.05}
                   value={speed}
-                  onChange={(e) => setSpeed(Number(e.target.value))}
+                  onChange={(e) => send({ type: 'UI.SET_SPEED', speed: Number(e.target.value) })}
                   className="w-24 rounded-lg border px-2 py-1"
-                  disabled={!workerReady}
+                  disabled={!isReady}
                 />
                 <span className="text-sm text-gray-600">{speed.toFixed(2)}x</span>
               </div>
-              {workerError && <div className="text-sm text-red-600">{workerError}</div>}
+              {error && !isBoot && (
+                <div className="text-sm text-red-600">{error}</div>
+              )}
             </div>
           </div>
         </div>
@@ -367,25 +226,23 @@ export default function Page() {
         <div className="border rounded-xl p-4 space-y-3">
           <div className="flex items-center gap-3">
             <h2 className="text-lg font-semibold">Player</h2>
-            <button type="button" onClick={onPlay} className="rounded-lg px-3 py-2 bg-blue-600 text-white">Play</button>
-            <button type="button" onClick={onPause} className="rounded-lg px-3 py-2 bg-gray-600 text-white">Pause</button>
-            <button type="button" onClick={onStop} className="rounded-lg px-3 py-2 bg-gray-700 text-white">Stop</button>
-            <button type="button" onClick={onSkip} className="rounded-lg px-3 py-2 bg-amber-600 text-white">Skip</button>
+            <button type="button" onClick={() => send({ type: 'UI.PLAY' })} className="rounded-lg px-3 py-2 bg-blue-600 text-white">Play</button>
+            <button type="button" onClick={() => send({ type: 'UI.PAUSE' })} className="rounded-lg px-3 py-2 bg-gray-600 text-white">Pause</button>
+            <button type="button" onClick={() => send({ type: 'UI.STOP' })} className="rounded-lg px-3 py-2 bg-gray-700 text-white">Stop</button>
+            <button type="button" onClick={() => send({ type: 'UI.SKIP' })} className="rounded-lg px-3 py-2 bg-amber-600 text-white">Skip</button>
             <label className="ml-auto flex items-center gap-2 text-sm text-gray-600">
-              <input type="checkbox" checked={autoplay} onChange={(e) => setAutoplay(e.target.checked)} /> Autoplay
+              <input type="checkbox" checked={autoplay} onChange={(e) => send({ type: 'UI.SET_AUTOPLAY', autoplay: e.target.checked })} /> Autoplay
             </label>
             <div className="flex items-center gap-2 ml-4">
               <label className="text-sm text-gray-600" htmlFor="crossfade-range">Crossover</label>
-              <input id="crossfade-range" type="range" min={0} max={3000} step={10} value={crossfadeMs} onChange={(e) => setCrossfadeMs(Number(e.target.value))} />
+              <input id="crossfade-range" type="range" min={0} max={3000} step={10} value={crossfadeMs} onChange={(e) => send({ type: 'UI.SET_CROSSFADE', crossfadeMs: Number(e.target.value) })} />
               <span className="text-sm text-gray-600">{crossfadeMs}ms</span>
             </div>
           </div>
           <div className="relative">
-            <audio ref={audioARef} className={`w-full ${activeAudioIndex === 0 ? "" : "hidden"}`} controls preload="auto">
-              <track kind="captions" label="TTS audio A" />
-            </audio>
-            <audio ref={audioBRef} className={`w-full ${activeAudioIndex === 1 ? "" : "hidden"}`} controls preload="auto">
-              <track kind="captions" label="TTS audio B" />
+            <audio ref={audioRef} controls preload="auto" className="w-full">
+              <track kind="captions" label="Generated TTS audio" />
+              Your browser does not support the audio element.
             </audio>
           </div>
         </div>
@@ -431,5 +288,3 @@ function StatusBadge({ status }: { status: UiChunk["status"] }) {
     "bg-red-200 text-red-800";
   return <span className={`inline-block rounded px-2 py-0.5 text-xs ${color}`}>{status}</span>;
 }
-
-

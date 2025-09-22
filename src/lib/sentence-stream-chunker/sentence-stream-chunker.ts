@@ -62,7 +62,7 @@ export class SentenceStreamChunker {
             locale: opts.locale ?? 'en',
             charLimit: opts.charLimit ?? 280,
             wordLimit: opts.wordLimit ?? Number.POSITIVE_INFINITY,
-            softPunct: opts.softPunct ?? /[,;:—–\-]/,
+            softPunct: opts.softPunct ?? /[,;:—–\-\.{3}…]/,
         };
 
         if (typeof Intl !== 'undefined' && (Intl as any).Segmenter) {
@@ -142,8 +142,8 @@ export class SentenceStreamChunker {
             }
         } else {
             // Fast regex fallback when Intl.Segmenter is unavailable.
-            // Matches up to ., !, ?, … (optionally followed by quotes/brackets), then whitespace or EoB.
-            const re = /([\s\S]*?)([.?!…]+(?:["'”’)\]]*)?)(?=\s+|$)/g;
+            // Matches up to ., !, ?, …, or ... (optionally followed by quotes/brackets), then whitespace or EoB.
+            const re = /([\s\S]*?)((?:\.{3}|[.?!…])(?:["'”’)\]]*)?)(?=\s+|$)/g;
             let m: RegExpExecArray | null;
             let lastEnd = 0;
 
@@ -192,8 +192,8 @@ export class SentenceStreamChunker {
     // -------------------- internals --------------------
 
     private endsWithSentencePunct(str: string): boolean {
-        // Ends with ., !, ?, … possibly followed by quotes/closing brackets, then optional spaces.
-        return /([.?!…]+(?:["'”’)\]]+)?)\s*$/.test(str);
+        // Ends with ., !, ?, …, or ... possibly followed by quotes/closing brackets, then optional spaces.
+        return /((?:\.{3}|[.?!…])(?:["'”’)\]]*)?)\s*$/.test(str);
     }
 
     /**
