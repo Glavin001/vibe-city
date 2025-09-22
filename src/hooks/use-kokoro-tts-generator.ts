@@ -1,41 +1,60 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { KokoroWorkerClient } from "../lib/tts/kokoro-worker-client";
-import type { VoiceInfo } from "./tts-types";
+import { useMachine } from "@xstate/react";
+import { useCallback, useRef } from "react";
+import { kokoroTtsMachine } from "../machines/kokoroTts.machine";
+import { inspect } from "@/machines/inspector";
 
 type GenerateArgs = { text: string; voice: string; speed: number };
 
 export function useKokoroTtsGenerator() {
-  const workerClientRef = useRef<KokoroWorkerClient | null>(null);
-  const [voices, setVoices] = useState<Record<string, VoiceInfo>>({});
-  const [selectedVoice, setSelectedVoice] = useState<string>("af_heart");
-  const [speed, setSpeed] = useState<number>(1.3);
-  const [device, setDevice] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [ready, setReady] = useState<boolean>(false);
+  const generationIdRef = useRef<number>(1);
+  const [state, send] = useMachine(kokoroTtsMachine, {
+    inspect,
+    input: {
+      onUtteranceGenerated: undefined,
+    },
+  });
 
-  useEffect(() => {
-    if (workerClientRef.current) return;
-    const client = new KokoroWorkerClient();
-    workerClientRef.current = client;
-    client.init((v, d) => {
-      setVoices(v);
-      setDevice(d);
-      setReady(true);
-      if (v && Object.keys(v).length > 0) setSelectedVoice(Object.keys(v)[0]);
-    }, (err) => {
-      setError(err.message);
-    });
-    return () => {
-      client.dispose();
-      workerClientRef.current = null;
-    };
-  }, []);
+  const {
+    voices,
+    selectedSpeaker: selectedVoice,
+    speed,
+    device,
+    error,
+    loadingMessage,
+  } = state.context;
+
+  const isBoot = state.matches("boot");
+  const isReady = state.matches("ready");
+  const isGenerating = state.matches("generating");
+
+  const setSelectedVoice = useCallback((voice: string) => {
+    send({ type: 'USER.SET_VOICE', voice });
+  }, [send]);
+
+  const setSpeed = useCallback((speed: number) => {
+    send({ type: 'USER.SET_SPEED', speed });
+  }, [send]);
 
   const generate = useCallback(async ({ text, voice, speed }: GenerateArgs) => {
-    const client = workerClientRef.current;
-    if (!client) throw new Error("Worker not ready");
-    return client.generate({ text, voice, speed });
-  }, []);
+    if (!isReady) {
+      throw new Error("TTS generator not ready");
+    }
+
+    const generationId = generationIdRef.current++;
+
+    return new Promise<{ url: string }>((resolve, reject) => {
+      // Use concurrent generation path that doesn't change states
+      send({
+        type: 'GEN.START',
+        generationId,
+        text,
+        voice,
+        speed,
+        resolve,
+        reject,
+      });
+    });
+  }, [isReady, send]);
 
   return {
     voices,
@@ -44,8 +63,9 @@ export function useKokoroTtsGenerator() {
     speed,
     setSpeed,
     device,
-    error,
-    ready,
+    error: isBoot ? loadingMessage : error,
+    ready: isReady,
+    isGenerating,
     generate,
   };
 }

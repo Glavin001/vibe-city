@@ -8,12 +8,15 @@ export interface KokoroTtsContext {
   client: KokoroWorkerClient | null;
   inputText: string;
   selectedSpeaker: string;
+  speed: number;
   voices: KokoroVoices;
   device: string | null;
   error: string | null;
   loadingMessage: string;
   synthesizedUtterances: SynthesizedUtterance[];
   genStartMs: number | null;
+  // Concurrent generation support
+  pendingGenerations?: Map<number, { resolve: (value: { url: string }) => void; reject: (error: Error) => void }>;
   onUtteranceGenerated?: (item: SynthesizedUtterance) => void;
 }
 
@@ -21,7 +24,12 @@ export type KokoroTtsEvent =
   | { type: 'INIT' }
   | { type: 'USER.SET_TEXT'; text: string }
   | { type: 'USER.SET_VOICE'; voice: string }
+  | { type: 'USER.SET_SPEED'; speed: number }
   | { type: 'USER.GENERATE' }
+  // Concurrent generation API (does not transition states)
+  | { type: 'GEN.START'; generationId: number; text: string; voice: string; speed?: number; resolve: (value: { url: string }) => void; reject: (error: Error) => void }
+  | { type: 'GEN.SUCCESS'; generationId: number; url: string; text: string; ms: number }
+  | { type: 'GEN.ERROR'; generationId: number; error: string }
   | { type: 'WORKER.READY'; voices: KokoroVoices; device: string }
   | { type: 'WORKER.ERROR'; error: string }
   | { type: 'GENERATE.DONE'; url: string; text: string; ms: number }
@@ -46,12 +54,14 @@ function createKokoroTtsMachine() {
       client: null,
       inputText: "Life is like a box of chocolates. You never know what you're gonna get.",
       selectedSpeaker: 'af_heart',
+      speed: 1.3,
       voices: {},
       device: null,
       error: null,
       loadingMessage: 'Loading...',
       synthesizedUtterances: [],
       genStartMs: null,
+      pendingGenerations: new Map(),
       onUtteranceGenerated: input?.onUtteranceGenerated,
     }),
     initial: 'boot',
@@ -76,6 +86,11 @@ function createKokoroTtsMachine() {
             target: 'generating',
             actions: 'markGenStart',
           },
+          'USER.SET_SPEED': { actions: assign({ speed: ({ event }) => (event as { type: 'USER.SET_SPEED'; speed: number }).speed }) },
+          // Concurrent generation handlers (remain in ready)
+          'GEN.START': { actions: 'startConcurrentGeneration' },
+          'GEN.SUCCESS': { actions: 'handleConcurrentSuccess' },
+          'GEN.ERROR': { actions: 'handleConcurrentError' },
           'WORKER.ERROR': { actions: 'setError' },
         },
       },
@@ -118,6 +133,7 @@ function createKokoroTtsMachine() {
     on: {
       'USER.SET_TEXT': { actions: assign({ inputText: ({ event }) => (event as { type: 'USER.SET_TEXT'; text: string }).text }) },
       'USER.SET_VOICE': { actions: assign({ selectedSpeaker: ({ event }) => (event as { type: 'USER.SET_VOICE'; voice: string }).voice }) },
+      'USER.SET_SPEED': { actions: assign({ speed: ({ event }) => (event as { type: 'USER.SET_SPEED'; speed: number }).speed }) },
       TERMINATE: { actions: 'terminateClient' },
     },
   }, {
@@ -161,6 +177,48 @@ function createKokoroTtsMachine() {
         const item: SynthesizedUtterance = { text: output.text, src: output.url, ms: output.ms };
         context.onUtteranceGenerated?.(item);
       },
+      // Concurrent generation implementation (does not change states)
+      startConcurrentGeneration: assign(({ context, event, self }) => {
+        const e = event as unknown as { type: 'GEN.START'; generationId: number; text: string; voice: string; speed?: number; resolve: (value: { url: string }) => void; reject: (error: Error) => void };
+        if (!context.client || !context.client.isReady) {
+          e.reject(new Error('Kokoro worker not ready'));
+          return {};
+        }
+
+        // Store callbacks
+        context.pendingGenerations?.set(e.generationId, { resolve: e.resolve, reject: e.reject });
+
+        const start = typeof performance !== 'undefined' ? performance.now() : Date.now();
+        context.client.generate({ text: e.text, voice: e.voice, speed: e.speed ?? context.speed })
+          .then(({ url }) => {
+            const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+            const ms = Math.max(0, Math.round(now - start));
+            self.send({ type: 'GEN.SUCCESS', generationId: e.generationId, url, text: e.text, ms });
+          })
+          .catch((err) => {
+            self.send({ type: 'GEN.ERROR', generationId: e.generationId, error: (err instanceof Error ? err.message : String(err)) });
+          });
+
+        return { pendingGenerations: new Map(context.pendingGenerations) };
+      }),
+      handleConcurrentSuccess: assign(({ context, event }) => {
+        const e = event as unknown as { type: 'GEN.SUCCESS'; generationId: number; url: string; text: string; ms: number };
+        const pending = context.pendingGenerations?.get(e.generationId);
+        if (pending) {
+          pending.resolve({ url: e.url });
+          context.pendingGenerations?.delete(e.generationId);
+        }
+        return { pendingGenerations: new Map(context.pendingGenerations) };
+      }),
+      handleConcurrentError: assign(({ context, event }) => {
+        const e = event as unknown as { type: 'GEN.ERROR'; generationId: number; error: string };
+        const pending = context.pendingGenerations?.get(e.generationId);
+        if (pending) {
+          pending.reject(new Error(e.error));
+          context.pendingGenerations?.delete(e.generationId);
+        }
+        return { pendingGenerations: new Map(context.pendingGenerations) };
+      }),
     },
   });
 }

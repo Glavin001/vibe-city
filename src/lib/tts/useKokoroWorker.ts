@@ -3,6 +3,9 @@
 import { useEffect, useRef, useState } from "react";
 import { KokoroWorkerClient, type KokoroVoices } from "./kokoro-worker-client";
 
+/**
+ * @deprecated use useKokoroTtsGenerator instead
+ */
 export function useKokoroWorker() {
   const clientRef = useRef<KokoroWorkerClient | null>(null);
   const [ready, setReady] = useState<boolean>(false);
