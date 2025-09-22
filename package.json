@@ -10,6 +10,7 @@
     "format": "biome format --write",
     "//pretest": "npm run build:planner",
     "test": "vitest run",
+    "test:machines": "node scripts/run-machine-tests.mjs",
     "test:debug": "FLUIDHTN_DEBUG=1 npm run test",
     "build:planner": "bash ./scripts/build_fluidhtn_docker.sh",
     "build:planner:watch": "npm --prefix ../.. run fluidhtn:watch",

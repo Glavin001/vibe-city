@@ -30,6 +30,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Run unit tests
+        run: npm run test:machines
+
       - name: Build planner WASM (Docker)
         run: npm run build:planner
 
