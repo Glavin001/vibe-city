@@ -64,6 +64,12 @@ export default function Home() {
           🗣️ Kokoro TTS
         </a>
         <a
+          href="/inworld-tts"
+          className="rounded-lg bg-gray-800 hover:bg-gray-700 text-white font-medium text-center py-3 px-4 transition-colors"
+        >
+          🎭 Inworld TTS
+        </a>
+        <a
           href="/vad"
           className="rounded-lg bg-gray-800 hover:bg-gray-700 text-white font-medium text-center py-3 px-4 transition-colors"
         >
