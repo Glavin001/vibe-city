@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useActorRef, useSelector } from '@xstate/react';
-import { createSpeechRecognitionMachine, speechRecognitionMachine, useSpeechRecognitionStatus, type SpeechRecognitionStatus } from '../machines/speechRecognition.machine';
+import { speechRecognitionMachine, useSpeechRecognitionStatus, type SpeechRecognitionStatus } from '../machines/speechRecognition.machine';
 import { inspect } from '@/machines/inspector';
 
 // All model loading and inference are performed inside a Web Worker.
@@ -105,25 +105,6 @@ export function useSpeechRecognition({
     input: { language, onStatusChange, onTextChange, onTextUpdate, onTpsChange, onError },
     inspect: inspect,
   });
-  /*
-  const status = useSelector(actor, (s): SpeechRecognitionStatus => {
-    console.log("[useSpeechRecognition] status", s);
-    switch (s.value) {
-      case 'boot':
-      case 'loading':
-        return 'loading';
-      case 'ready':
-        return 'ready';
-      case 'complete':
-        return 'complete';
-      case 'generating':
-        return 'start';
-      default: {
-        throw new Error(`[useSpeechRecognition] unexpected status: ${s.value}`);
-      }
-    }
-  });
-  */
   const status = useSpeechRecognitionStatus(actor);
   const text = useSelector(actor, (s) => s.context.text as string);
   const tps = useSelector(actor, (s) => s.context.tps as number | null);
