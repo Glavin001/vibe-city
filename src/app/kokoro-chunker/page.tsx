@@ -1,38 +1,118 @@
 "use client";
 
 import { useMachine } from "@xstate/react";
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { kokoroChunkerMachine, type UiChunk } from "../../machines/kokoroChunker.machine";
 import { inspect } from "@/machines/inspector";
 
 const defaultSoftPunct = String(/[,;:—–\-]/).slice(1, -1);
 
 export default function Page() {
-  const audioRef = useRef<HTMLAudioElement>(null);
+  const audioARef = useRef<HTMLAudioElement>(null);
+  const audioBRef = useRef<HTMLAudioElement>(null);
+  const [progressRatio, setProgressRatio] = useState<number>(0);
+  const aChunkIdRef = useRef<number | null>(null);
+  const bChunkIdRef = useRef<number | null>(null);
+  const cancelCrossfadeRef = useRef<(() => void) | null>(null);
+  const isCrossfadingRef = useRef<boolean>(false);
+
+  const getByIndex = useCallback((index: 0 | 1) => (index === 0 ? audioARef.current : audioBRef.current), []);
+  const setElementChunkId = useCallback((el: HTMLAudioElement | null, chunkId: number | null) => {
+    if (!el) return;
+    if (el === audioARef.current) aChunkIdRef.current = chunkId;
+    if (el === audioBRef.current) bChunkIdRef.current = chunkId;
+  }, []);
 
   const [state, send] = useMachine(kokoroChunkerMachine, {
     inspect,
     input: {
-      onAudioPlay: (audioUrl: string, chunkId: number) => {
-        if (audioRef.current) {
-          audioRef.current.src = audioUrl;
-          audioRef.current.play().catch((error) => {
-            console.error('Audio play failed:', error);
-            // Send AUDIO_ENDED as fallback
-            send({ type: 'AUDIO_ENDED', chunkId });
-          });
-        }
+      onAudioPlay: (audioUrl: string, chunkId: number, preferredPlayerIndex?: 0 | 1) => {
+        console.log('onAudioPlay', audioUrl, chunkId, preferredPlayerIndex);
+        // Machine indicates which player index to use
+        const el = preferredPlayerIndex != null ? getByIndex(preferredPlayerIndex) : audioARef.current;
+        if (!el) return;
+        try { el.preload = "auto"; } catch {}
+        if (el.src !== audioUrl) el.src = audioUrl;
+        setElementChunkId(el, chunkId);
+        el.play().then(() => {
+          send({ type: 'AUDIO_STARTED', chunkId });
+        }).catch((error) => {
+          console.error('Audio play failed:', error);
+          send({ type: 'UI.SET_AUTOPLAY', autoplay: false });
+        });
       },
       onAudioPause: () => {
-        if (audioRef.current) {
-          audioRef.current.pause();
-        }
+        // Pause both if needed; machine will resume the correct one
+        const a = audioARef.current; const b = audioBRef.current;
+        if (a && !a.paused) a.pause();
+        if (b && !b.paused) b.pause();
       },
       onAudioStop: () => {
-        if (audioRef.current) {
-          audioRef.current.pause();
-          audioRef.current.currentTime = 0;
+        const a = audioARef.current;
+        const b = audioBRef.current;
+        if (a) { try { a.pause(); } catch {}; try { a.currentTime = 0; } catch {}; }
+        if (b) { try { b.pause(); } catch {}; try { b.currentTime = 0; } catch {}; }
+        if (cancelCrossfadeRef.current) { cancelCrossfadeRef.current(); cancelCrossfadeRef.current = null; }
+      },
+      onAudioPreload: (audioUrl: string, chunkId: number, preferredPlayerIndex?: 0 | 1) => {
+        console.log('onAudioPreload', audioUrl, chunkId, preferredPlayerIndex);
+        const idle = preferredPlayerIndex != null ? getByIndex(preferredPlayerIndex) : (audioARef.current && audioBRef.current ? audioBRef.current : audioARef.current);
+        if (!idle) return;
+        try { idle.preload = "auto"; } catch {}
+        if (idle.src !== audioUrl) {
+          idle.src = audioUrl;
+          try { if (idle.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) idle.load(); } catch {}
         }
+        setElementChunkId(idle, chunkId);
+      },
+      onCrossfadeStart: ({ currentChunkId, nextChunkId, durationMs, nextUrl, nextPlayerIndex }) => {
+        console.log('onCrossfadeStart', { currentChunkId, nextChunkId, durationMs, nextUrl, nextPlayerIndex });
+        const idle = getByIndex(nextPlayerIndex);
+        const active = getByIndex(nextPlayerIndex === 0 ? 1 : 0);
+        if (!active || !idle) return;
+        isCrossfadingRef.current = true;
+        if (idle.src !== nextUrl) {
+          idle.preload = 'auto';
+          idle.src = nextUrl;
+          try { if (idle.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) idle.load(); } catch {}
+        }
+        setElementChunkId(idle, nextChunkId);
+        try { idle.volume = 0; } catch {}
+        idle.play().then(() => {
+          send({ type: 'AUDIO_STARTED', chunkId: nextChunkId });
+        }).catch(() => {
+          send({ type: 'UI.SET_AUTOPLAY', autoplay: false });
+          return;
+        });
+        const startTs = performance.now();
+        const fadeMs = Math.max(1, durationMs);
+        const activeStartVol = Math.max(0, Math.min(1, active.volume));
+        const idleTargetVol = Math.max(0, Math.min(1, idle.volume || 1));
+        try { idle.volume = 0; } catch {}
+        let rafId = 0;
+        let stopped = false;
+        const step = (now: number) => {
+          if (stopped) return;
+          const t = Math.max(0, Math.min(1, (now - startTs) / fadeMs));
+          try { active.volume = (1 - t) * activeStartVol; } catch {}
+          try { idle.volume = t * idleTargetVol; } catch {}
+          if (t < 1) {
+            rafId = requestAnimationFrame(step);
+          }
+        };
+        rafId = requestAnimationFrame(step);
+        cancelCrossfadeRef.current = () => {
+          stopped = true;
+          if (rafId) cancelAnimationFrame(rafId);
+          try { active.volume = activeStartVol; } catch {}
+          try { idle.volume = idleTargetVol; } catch {}
+          isCrossfadingRef.current = false;
+        };
+      },
+      onCrossfadeCancel: () => {
+        console.log('onCrossfadeCancel');
+        if (cancelCrossfadeRef.current) { cancelCrossfadeRef.current(); cancelCrossfadeRef.current = null; }
+        isCrossfadingRef.current = false;
       },
     }
   });
@@ -51,6 +131,7 @@ export default function Page() {
     playhead,
     autoplay,
     crossfadeMs,
+    activePlayerIndex,
     error,
     loadingMessage,
   } = state.context;
@@ -64,51 +145,51 @@ export default function Page() {
     console.log('UI Chunks updated:', uiChunks.map(c => ({ id: c.id, status: c.status })));
   }, [uiChunks]);
 
-  // Set up audio event listeners
+  // Set up audio event listeners for both elements
   useEffect(() => {
-    const audio = audioRef.current;
-    if (!audio) return;
-
-    const handleEnded = () => {
-      // Find the current chunk being played
-      const currentChunk = uiChunks[playhead];
-      if (currentChunk) {
-        send({ type: 'AUDIO_ENDED', chunkId: currentChunk.id });
-      }
+    const wire = (el: HTMLAudioElement | null) => {
+      if (!el) return () => {};
+      const onEnded = () => {
+        console.log('onEnded', el);
+        const id = el === audioARef.current ? aChunkIdRef.current : bChunkIdRef.current;
+        if (id != null) send({ type: 'AUDIO_ENDED', chunkId: id });
+        setProgressRatio(0);
+        isCrossfadingRef.current = false;
+      };
+      const onPlay = () => {
+        console.log('onPlay', el);
+        const id = el === audioARef.current ? aChunkIdRef.current : bChunkIdRef.current;
+        if (id != null) send({ type: 'AUDIO_STARTED', chunkId: id });
+      };
+      const onPause = () => {
+        console.log('onPause', el);
+        if (el.ended) return;
+        const id = el === audioARef.current ? aChunkIdRef.current : bChunkIdRef.current;
+        if (id != null) send({ type: 'AUDIO_PAUSED', chunkId: id });
+      };
+      const onTimeUpdate = () => {
+        // console.log('onTimeUpdate', el);
+        const dur = el.duration || 0;
+        const cur = el.currentTime || 0;
+        const ratio = dur > 0 ? Math.max(0, Math.min(1, cur / dur)) : 0;
+        setProgressRatio(ratio);
+        send({ type: 'AUDIO_PROGRESS', currentTime: cur, duration: dur });
+      };
+      el.addEventListener('ended', onEnded);
+      el.addEventListener('play', onPlay);
+      el.addEventListener('pause', onPause);
+      el.addEventListener('timeupdate', onTimeUpdate);
+      return () => {
+        el.removeEventListener('ended', onEnded);
+        el.removeEventListener('play', onPlay);
+        el.removeEventListener('pause', onPause);
+        el.removeEventListener('timeupdate', onTimeUpdate);
+      };
     };
-
-    const handlePlay = () => {
-      // Find the current chunk being played
-      const currentChunk = uiChunks[playhead];
-      if (currentChunk) {
-        // Check if this is a resume (was paused) or a new start
-        const isResume = currentChunk.status === 'paused';
-        send({
-          type: isResume ? 'AUDIO_RESUMED' : 'AUDIO_STARTED',
-          chunkId: currentChunk.id
-        });
-      }
-    };
-
-    const handlePause = () => {
-      // Only send pause if it wasn't programmatic and not ended
-      const currentChunk = uiChunks[playhead];
-      if (currentChunk && !audio.ended) {
-        send({ type: 'AUDIO_PAUSED', chunkId: currentChunk.id });
-      }
-    };
-
-    audio.addEventListener('ended', handleEnded);
-    audio.addEventListener('play', handlePlay);
-    audio.addEventListener('pause', handlePause);
-
-    return () => {
-      audio.removeEventListener('ended', handleEnded);
-      audio.removeEventListener('play', handlePlay);
-      audio.removeEventListener('pause', handlePause);
-    };
-  }, [uiChunks, playhead, send]);
-
+    const offA = wire(audioARef.current);
+    const offB = wire(audioBRef.current);
+    return () => { offA && offA(); offB && offB(); };
+  }, [send]);
 
   return (
     <div className="min-h-[calc(100vh-64px)] py-8 px-4 flex flex-col items-center">
@@ -240,9 +321,14 @@ export default function Page() {
             </div>
           </div>
           <div className="relative">
-            <audio ref={audioRef} controls preload="auto" className="w-full">
-              <track kind="captions" label="Generated TTS audio" />
-              Your browser does not support the audio element.
+            <span className="mr-3">activePlayerIndex={activePlayerIndex}</span>
+            <span className="mr-3">A chunkId={aChunkIdRef.current ?? '—'}</span>
+            <audio ref={audioARef} className={`w-full`} controls preload="auto">
+              <track kind="captions" label="TTS audio A" />
+            </audio>
+            <span>B chunkId={bChunkIdRef.current ?? '—'}</span>
+            <audio ref={audioBRef} className={`w-full`} controls preload="auto">
+              <track kind="captions" label="TTS audio B" />
             </audio>
           </div>
         </div>

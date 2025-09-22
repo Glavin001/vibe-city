@@ -1,29 +1,15 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useActorRef, useSelector } from "@xstate/react";
 import { useVoiceSegments } from "../../hooks/use-voice-segments";
-import { useSentenceChunker } from "../../hooks/use-sentence-chunker";
-import { useKokoroTtsGenerator } from "../../hooks/use-kokoro-tts-generator";
-import { useTtsQueue } from "../../hooks/use-tts-queue";
 import { splitTextByWeightedRatio } from "../../lib/tts/progressSplit";
-
-type UiChunk = {
-  id: number;
-  chunkIdx: number;
-  sentenceIdx: number;
-  pieceIdx: number;
-  text: string;
-  isSentenceFinal: boolean;
-  isStreamFinal: boolean;
-  startOffset: number;
-  endOffset: number;
-  status: "pending" | "generating" | "ready" | "playing" | "paused" | "played" | "error" | "skipped";
-  audioUrl?: string;
-  requestId?: number;
-};
+import React from "react";
+import { kokoroChunkerMachine, type UiChunk } from "../../machines/kokoroChunker.machine";
+import { inspect } from "@/machines/inspector";
 
 export default function Page() {
-  // (Audio handled by useTtsQueue below)
+  // (Audio handled directly in this page)
   // Integrated voice segments (VAD + Whisper)
   const [vadThreshold, setVadThreshold] = useState<number>(0.6);
   const {
@@ -51,129 +37,241 @@ export default function Page() {
     settleMs: 300,
     // autoLoad: false,
     onLiveUpdate: (text) => {
-        console.log("[useVoiceSegments] onLiveUpdate", text);
+        // console.log("[useVoiceSegments] onLiveUpdate", text);
     },
     onSegment: (text) => {
         console.log("[useVoiceSegments] onSegment", text);
         pushText(text, true);
         // Resume autoplay after a completed segment
-        setAutoplay(true);
+        // if (!isBoot) {
+        chunkerActor.send({ type: 'UI.SET_AUTOPLAY', autoplay: true });
+        // }
         setIsUserPaused(false);
     },
     onInterruption: () => { // pause player on interruption
-      console.log("[useVoiceSegments] onInterruption");
-      pause();
-      setAutoplay(false);
+      console.log("[useVoiceSegments] onInterruption", interruptionsEnabled);
+      if (interruptionsEnabled) {
+        pause();
+        // if (!isBoot) {
+        chunkerActor.send({ type: 'UI.SET_AUTOPLAY', autoplay: false });
+        // }
+      }
     },
   });
 
-  // Chunker
-  const nextUiIdRef = useRef<number>(1);
-  const { push: chunkPush, reset: chunkReset } = useSentenceChunker({
-    locale: "en",
-    charLimit: 220,
-    wordLimit: Number.POSITIVE_INFINITY,
-    softPunct: /[,;:—–\-]/,
-  });
+  // Kokoro Chunker Machine (handles chunking + TTS)
+  // Ensure crossfade state is defined before machine input references it
+  const [crossfadeMs, setCrossfadeMs] = useState<number>(800);
+  const audioARef = React.useRef<HTMLAudioElement | null>(null);
+  const audioBRef = React.useRef<HTMLAudioElement | null>(null);
+  const [progressRatio, setProgressRatio] = useState<number>(0);
+  const aChunkIdRef = React.useRef<number | null>(null);
+  const bChunkIdRef = React.useRef<number | null>(null);
+  const cancelCrossfadeRef = React.useRef<(() => void) | null>(null);
 
-  const [uiChunks, setUiChunks] = useState<UiChunk[]>([]);
+  const getByIndex = useCallback((index: 0 | 1) => (index === 0 ? audioARef.current : audioBRef.current), []);
 
-  const toUiChunk = useCallback((c: import("../../lib/sentence-stream-chunker/sentence-stream-chunker").Chunk): UiChunk => {
-    const id = nextUiIdRef.current++;
-    return {
-      id,
-      chunkIdx: c.idx,
-      sentenceIdx: c.sentenceIdx,
-      pieceIdx: c.pieceIdx,
-      text: c.text,
-      isSentenceFinal: c.isSentenceFinal,
-      isStreamFinal: c.isStreamFinal,
-      startOffset: c.startOffset,
-      endOffset: c.endOffset,
-      status: "pending",
-    };
+  const setElementChunkId = useCallback((el: HTMLAudioElement | null, chunkId: number | null) => {
+    if (!el) return;
+    if (el === audioARef.current) aChunkIdRef.current = chunkId;
+    if (el === audioBRef.current) bChunkIdRef.current = chunkId;
   }, []);
 
-  const pushText = useCallback((s: string, eos: boolean = false) => {
-    const newChunks = chunkPush(s, eos);
-    if (newChunks.length > 0) {
-      setUiChunks((prev) => [...prev, ...newChunks.map(toUiChunk)]);
+  const chunkerActor = useActorRef(kokoroChunkerMachine, {
+    inspect,
+    input: {
+      crossfadeEnabled: crossfadeMs > 0,
+      crossfadeMs,
+      onUtteranceGenerated: (_chunk: UiChunk) => {
+        // TTS generation handled by machine - chunks are already in machine state
+        console.log('TTS generated', _chunk);
+      },
+      onAudioPlay: (audioUrl: string, chunkId: number, preferredPlayerIndex?: 0 | 1) => {
+        const el = preferredPlayerIndex != null ? getByIndex(preferredPlayerIndex) : audioARef.current;
+        if (!el) return;
+        try { el.preload = "auto"; } catch {}
+        if (el.src !== audioUrl) el.src = audioUrl;
+        setElementChunkId(el, chunkId);
+        el.play().then(() => {
+          chunkerActor.send({ type: 'AUDIO_STARTED', chunkId });
+        }).catch(() => {
+          chunkerActor.send({ type: 'UI.SET_AUTOPLAY', autoplay: false });
+        });
+      },
+      onAudioPause: () => {
+        const a = audioARef.current; const b = audioBRef.current;
+        if (a && !a.paused) a.pause();
+        if (b && !b.paused) b.pause();
+      },
+      onAudioStop: () => {
+        const a = audioARef.current; const b = audioBRef.current;
+        if (a) { try { a.pause(); } catch {}; try { a.currentTime = 0; } catch {}; }
+        if (b) { try { b.pause(); } catch {}; try { b.currentTime = 0; } catch {}; }
+        if (cancelCrossfadeRef.current) { cancelCrossfadeRef.current(); cancelCrossfadeRef.current = null; }
+      },
+      onAudioPreload: (audioUrl: string, chunkId: number, preferredPlayerIndex?: 0 | 1) => {
+        const idle = preferredPlayerIndex != null ? getByIndex(preferredPlayerIndex) : (audioARef.current && audioBRef.current ? audioBRef.current : audioARef.current);
+        if (!idle) return;
+        try { idle.preload = "auto"; } catch {}
+        if (idle.src !== audioUrl) {
+          idle.src = audioUrl;
+          try { if (idle.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) idle.load(); } catch {}
+        }
+        setElementChunkId(idle, chunkId);
+      },
+      onCrossfadeStart: ({ currentChunkId, nextChunkId, durationMs, nextUrl, nextPlayerIndex }) => {
+        const idle = getByIndex(nextPlayerIndex);
+        const active = getByIndex(nextPlayerIndex === 0 ? 1 : 0);
+        if (!active || !idle) return;
+        // Ensure idle is prepared
+        if (idle.src !== nextUrl) {
+          idle.preload = 'auto';
+          idle.src = nextUrl;
+          try { if (idle.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) idle.load(); } catch {}
+        }
+        setElementChunkId(idle, nextChunkId);
+        try { idle.volume = 0; } catch {}
+        idle.play().then(() => {
+          chunkerActor.send({ type: 'AUDIO_STARTED', chunkId: nextChunkId });
+        }).catch(() => {
+          chunkerActor.send({ type: 'UI.SET_AUTOPLAY', autoplay: false });
+          return;
+        });
+        const startTs = performance.now();
+        const fadeMs = Math.max(1, durationMs);
+        const activeStartVol = Math.max(0, Math.min(1, active.volume));
+        const idleTargetVol = Math.max(0, Math.min(1, idle.volume || 1));
+        try { idle.volume = 0; } catch {}
+        let rafId = 0;
+        let stopped = false;
+        const step = (now: number) => {
+          if (stopped) return;
+          const t = Math.max(0, Math.min(1, (now - startTs) / fadeMs));
+          try { active.volume = (1 - t) * activeStartVol; } catch {}
+          try { idle.volume = t * idleTargetVol; } catch {}
+          if (t < 1) {
+            rafId = requestAnimationFrame(step);
+          }
+        };
+        rafId = requestAnimationFrame(step);
+        cancelCrossfadeRef.current = () => {
+          stopped = true;
+          if (rafId) cancelAnimationFrame(rafId);
+          try { active.volume = activeStartVol; } catch {}
+          try { idle.volume = idleTargetVol; } catch {}
+        };
+      },
+      onCrossfadeCancel: () => {
+        if (cancelCrossfadeRef.current) { cancelCrossfadeRef.current(); cancelCrossfadeRef.current = null; }
+      },
     }
-  }, [chunkPush, toUiChunk]);
+  });
+  
 
-  // Kokoro TTS worker (shared)
-  const {
-    voices,
-    selectedVoice,
-    setSelectedVoice,
-    speed,
-    setSpeed,
-    device,
-    error: workerError,
-    ready: workerReady,
-    generate,
-  } = useKokoroTtsGenerator();
+  // Configure chunker options
+  useEffect(() => {
+    chunkerActor.send({ type: 'UI.SET_CHUNKER_LOCALE', locale: 'en' });
+    chunkerActor.send({ type: 'UI.SET_CHUNKER_CHAR_ENABLED', enabled: false });
+    chunkerActor.send({ type: 'UI.SET_CHUNKER_CHAR_LIMIT', limit: 220 });
+    chunkerActor.send({ type: 'UI.SET_CHUNKER_WORD_ENABLED', enabled: false });
+    chunkerActor.send({ type: 'UI.SET_CHUNKER_WORD_LIMIT', limit: Number.POSITIVE_INFINITY });
+    chunkerActor.send({ type: 'UI.SET_CHUNKER_SOFT_PUNCT', softPunctSrc: String(/[,;:—–\-]/).slice(1, -1) });
+  }, [chunkerActor]);
+
+  // Use chunks from machine state
+  const uiChunks = useSelector(chunkerActor, (state) => state.context.uiChunks);
+  const autoplay = useSelector(chunkerActor, (state) => state.context.autoplay);
+  const voices = useSelector(chunkerActor, (state) => state.context.voices);
+  const selectedVoice = useSelector(chunkerActor, (state) => state.context.selectedVoice);
+  const speed = useSelector(chunkerActor, (state) => state.context.speed);
+  const device = useSelector(chunkerActor, (state) => state.context.device);
+  const error = useSelector(chunkerActor, (state) => state.context.error);
+  const isBoot = chunkerActor.getSnapshot().matches("boot");
+
+  const pushText = useCallback((s: string, _eos: boolean = false) => {
+    // Send text to the machine using the existing pushChunk mechanism
+    if (!isBoot) {
+      chunkerActor.send({ type: 'UI.SET_TEXT', text: s });
+      chunkerActor.send({ type: 'UI.SET_CURSOR', cursor: 0 });
+      chunkerActor.send({ type: 'UI.SET_PUSH_SIZE', pushSize: s.length });
+      chunkerActor.send({ type: 'UI.PUSH_CHUNK' });
+    }
+  }, [chunkerActor, isBoot]);
 
   // Playback & generation queue
-  const [autoplay, setAutoplay] = useState<boolean>(true);
   const [playhead, setPlayhead] = useState<number>(0);
   const [isUserPaused, setIsUserPaused] = useState<boolean>(false);
-  const [crossfadeMs, setCrossfadeMs] = useState<number>(800);
-  const genBusyRef = useRef<boolean>(false);
-  const queueNextGenerationRef = useRef<() => void>(() => {});
+  const [interruptionsEnabled, setInterruptionsEnabled] = useState<boolean>(false);
 
-  const sendGenerate = useCallback((chunk: UiChunk) => {
-    if (!workerReady) return false;
-    const voiceId = selectedVoice && voices[selectedVoice] ? selectedVoice : Object.keys(voices)[0];
-    if (!voiceId) {
-      // No voice yet
-      return false;
-    }
-    setUiChunks((prev) => prev.map((c) => (c.id === chunk.id ? { ...c, status: "generating" } : c)));
-    generate({ text: chunk.text, voice: voiceId, speed })
-      .then(({ url }) => {
-        setUiChunks((prev) => prev.map((c) => (c.id === chunk.id ? { ...c, status: "ready", audioUrl: url } : c)));
-        genBusyRef.current = false;
-        queueNextGenerationRef.current();
-      })
-      .catch(() => {
-        setUiChunks((prev) => prev.map((c) => (c.id === chunk.id && c.status === "generating" ? { ...c, status: "error" } : c)));
-        genBusyRef.current = false;
-        queueNextGenerationRef.current();
-      });
-    return true;
-  }, [generate, selectedVoice, speed, workerReady, voices]);
+  const playAudioUrl = useCallback((_audioUrl: string, chunkId: number) => {
+    const idx = uiChunks.findIndex(c => c.id === chunkId);
+    if (idx !== -1) setPlayhead(idx);
+  }, [uiChunks]);
 
-  const queueNextGeneration = useCallback(() => {
-    if (genBusyRef.current) return;
-    const next = uiChunks.find((c) => c.status === "pending");
-    if (!next) return;
-    genBusyRef.current = true;
-    sendGenerate(next);
-  }, [sendGenerate, uiChunks]);
-
+  // Attach events to both audio elements
   useEffect(() => {
-    queueNextGeneration();
-  }, [queueNextGeneration]);
+    const wire = (el: HTMLAudioElement | null) => {
+      if (!el) return () => {};
+      const onEnded = () => {
+        const id = el === audioARef.current ? aChunkIdRef.current : bChunkIdRef.current;
+        if (id != null) chunkerActor.send({ type: 'AUDIO_ENDED', chunkId: id });
+        setProgressRatio(0);
+      };
+      const onPlayEv = () => {
+        const id = el === audioARef.current ? aChunkIdRef.current : bChunkIdRef.current;
+        if (id != null) chunkerActor.send({ type: 'AUDIO_STARTED', chunkId: id });
+      };
+      const onPauseEv = () => {
+        if (el.ended) return;
+        const id = el === audioARef.current ? aChunkIdRef.current : bChunkIdRef.current;
+        if (id != null) chunkerActor.send({ type: 'AUDIO_PAUSED', chunkId: id });
+      };
+      const onTimeUpdate = () => {
+        const dur = el.duration || 0;
+        const cur = el.currentTime || 0;
+        const ratio = dur > 0 ? Math.max(0, Math.min(1, cur / dur)) : 0;
+        setProgressRatio(ratio);
+        chunkerActor.send({ type: 'AUDIO_PROGRESS', currentTime: cur, duration: dur });
+      };
+      el.addEventListener('ended', onEnded);
+      el.addEventListener('play', onPlayEv);
+      el.addEventListener('pause', onPauseEv);
+      el.addEventListener('timeupdate', onTimeUpdate);
+      return () => {
+        el.removeEventListener('ended', onEnded);
+        el.removeEventListener('play', onPlayEv);
+        el.removeEventListener('pause', onPauseEv);
+        el.removeEventListener('timeupdate', onTimeUpdate);
+      };
+    };
+    const offA = wire(audioARef.current);
+    const offB = wire(audioBRef.current);
+    return () => { offA && offA(); offB && offB(); };
+  }, [chunkerActor]);
 
-  useEffect(() => {
-    queueNextGenerationRef.current = queueNextGeneration;
-  }, [queueNextGeneration]);
-  // Hook: low-latency dual-audio queue playback
-  const { audioARef, audioBRef, activeAudioIndex, progressRatio, play, pause, stop, skip, clearAudioSources } = useTtsQueue({
-    items: useMemo(() => uiChunks.map((c) => ({ audioUrl: c.audioUrl, status: c.status })), [uiChunks]),
-    playhead,
-    setPlayhead,
-    autoplay,
-    setAutoplay,
-    isUserPaused,
-    setIsUserPaused,
-    onStatusChange: (idx, status) => {
-      setUiChunks((prev) => prev.map((c, i) => (i === idx ? { ...c, status } : c)));
-    },
-    onError: (m) => console.error(m),
-    crossfadeMs,
-  });
+  const play = useCallback(() => {
+    chunkerActor.send({ type: 'UI.PLAY' });
+  }, [chunkerActor]);
+
+  const pause = useCallback(() => {
+    chunkerActor.send({ type: 'UI.PAUSE' });
+  }, [chunkerActor]);
+
+  const stop = useCallback(() => {
+    chunkerActor.send({ type: 'UI.STOP' });
+  }, [chunkerActor]);
+
+  const skip = useCallback(() => {
+    chunkerActor.send({ type: 'UI.SKIP' });
+  }, [chunkerActor]);
+
+  const clearAudioSources = useCallback(() => {
+    const a = audioARef.current; const b = audioBRef.current;
+    if (a) { a.removeAttribute('src'); try { a.load(); } catch {} }
+    if (b) { b.removeAttribute('src'); try { b.load(); } catch {} }
+    setActiveAudioIndex(0);
+    setProgressRatio(0);
+  }, []);
 
   // lastFinalText is already pushed via onSegment; liveText shown in UI
 
@@ -188,10 +286,8 @@ export default function Page() {
 
   const clearAll = () => {
     onStop();
-    setUiChunks([]);
     setPlayhead(0);
-    nextUiIdRef.current = 1;
-    chunkReset();
+    chunkerActor.send({ type: 'UI.RESET_ALL' });
     clearAudioSources();
   };
 
@@ -312,16 +408,41 @@ export default function Page() {
           <h2 className="text-lg font-semibold">TTS</h2>
           <div className="flex flex-wrap items-center gap-3">
             <label className="text-sm text-gray-600" htmlFor="voice-select">Voice</label>
-            <select id="voice-select" value={selectedVoice} onChange={(e) => setSelectedVoice(e.target.value)} disabled={!workerReady || Object.keys(voices).length === 0} className="rounded-lg border px-3 py-2">
+            <select
+              id="voice-select"
+              value={selectedVoice}
+              onChange={(e) => chunkerActor.send({ type: 'UI.SET_VOICE', voice: e.target.value })}
+              disabled={isBoot || Object.keys(voices).length === 0}
+              className="rounded-lg border px-3 py-2"
+            >
               {Object.entries(voices).map(([id, v]) => (
                 <option key={id} value={id}>{v.name} ({v.language === "en-us" ? "American" : "British"} {v.gender})</option>
               ))}
             </select>
             <label className="text-sm text-gray-600" htmlFor="speed-range">Speed</label>
-            <input id="speed-range" type="range" min={0.5} max={2} step={0.05} value={speed} onChange={(e) => setSpeed(Number(e.target.value))} disabled={!workerReady} />
-            <input id="speed-number" type="number" min={0.5} max={2} step={0.05} value={speed} onChange={(e) => setSpeed(Number(e.target.value))} disabled={!workerReady} className="w-24 rounded-lg border px-2 py-1" />
+            <input
+              id="speed-range"
+              type="range"
+              min={0.5}
+              max={2}
+              step={0.05}
+              value={speed}
+              onChange={(e) => chunkerActor.send({ type: 'UI.SET_SPEED', speed: Number(e.target.value) })}
+              disabled={isBoot}
+            />
+            <input
+              id="speed-number"
+              type="number"
+              min={0.5}
+              max={2}
+              step={0.05}
+              value={speed}
+              onChange={(e) => chunkerActor.send({ type: 'UI.SET_SPEED', speed: Number(e.target.value) })}
+              disabled={isBoot}
+              className="w-24 rounded-lg border px-2 py-1"
+            />
             <span className="text-sm text-gray-600">{speed.toFixed(2)}x</span>
-            {workerError && <div className="text-sm text-red-600">{workerError}</div>}
+            {error && !isBoot && <div className="text-sm text-red-600">{error}</div>}
           </div>
         </div>
 
@@ -343,7 +464,7 @@ export default function Page() {
               <div><span className="font-medium">Recorder chunks</span>: {chunkCount}</div>
               <div><span className="font-medium">Live text length</span>: {liveText?.length ?? 0}</div>
               <div><span className="font-medium">Queue size</span>: {uiChunks.length}</div>
-              <div><span className="font-medium">Player</span>: track={activeAudioIndex} prog={Math.round((progressRatio || 0) * 100)}%</div>
+              <div><span className="font-medium">Player</span>: prog={Math.round((progressRatio || 0) * 100)}%</div>
             </div>
           </div>
           <div className="pt-2">
@@ -361,7 +482,10 @@ export default function Page() {
             <button type="button" onClick={onSkip} className="rounded-lg px-3 py-2 bg-amber-600 text-white">Skip</button>
             <button type="button" onClick={clearAll} className="rounded-lg px-3 py-2 bg-gray-200">Clear</button>
             <label className="ml-auto flex items-center gap-2 text-sm text-gray-600">
-              <input type="checkbox" checked={autoplay} onChange={(e) => setAutoplay(e.target.checked)} /> Autoplay
+              <input type="checkbox" checked={autoplay} onChange={(e) => chunkerActor.send({ type: 'UI.SET_AUTOPLAY', autoplay: e.target.checked })} /> Autoplay
+            </label>
+            <label className="flex items-center gap-2 text-sm text-gray-600">
+              <input type="checkbox" checked={interruptionsEnabled} onChange={(e) => setInterruptionsEnabled(e.target.checked)} /> Interruptions
             </label>
             <div className="flex items-center gap-2 ml-4">
               <label className="text-sm text-gray-600" htmlFor="crossfade-range">Crossover</label>
@@ -370,10 +494,10 @@ export default function Page() {
             </div>
           </div>
           <div className="relative">
-            <audio ref={audioARef} className={`w-full ${activeAudioIndex === 0 ? "" : "hidden"}`} controls preload="auto">
+            <audio ref={audioARef} className={`w-full`} controls preload="auto">
               <track kind="captions" label="TTS audio A" />
             </audio>
-            <audio ref={audioBRef} className={`w-full ${activeAudioIndex === 1 ? "" : "hidden"}`} controls preload="auto">
+            <audio ref={audioBRef} className={`w-full`} controls preload="auto">
               <track kind="captions" label="TTS audio B" />
             </audio>
           </div>
@@ -399,17 +523,7 @@ export default function Page() {
               <div className="text-sm text-gray-500">Segments will appear here as you speak and pause.</div>
             )}
             {uiChunks.map((c, i) => (
-              <div key={c.id} className={`rounded-lg border p-3 ${i === playhead ? "border-blue-600" : ""}`}>
-                <div className="flex items-center gap-2 text-xs text-gray-500">
-                  <span>#{i + 1}</span>
-                  <span>idx={c.chunkIdx}</span>
-                  <span>sent={c.sentenceIdx}</span>
-                  <span>piece={c.pieceIdx}</span>
-                  <span>off={c.startOffset}-{c.endOffset}</span>
-                  <span className="ml-auto">{statusBadge(c.status)}{c.isStreamFinal ? <span className="ml-2 text-purple-600">[EOF]</span> : null}</span>
-                </div>
-                <div className="mt-1 whitespace-pre-wrap">{c.text}</div>
-              </div>
+              <UiChunkItem key={c.id} chunk={c} index={i} isCurrent={i === playhead} />
             ))}
           </div>
         </div>
@@ -418,7 +532,36 @@ export default function Page() {
   );
 }
 
-function statusBadge(status: UiChunk["status"]) {
+interface UiChunkItemProps {
+  chunk: UiChunk;
+  index: number;
+  isCurrent: boolean;
+}
+
+function UiChunkItem({ chunk, index, isCurrent }: UiChunkItemProps) {
+  return (
+    <div className={`rounded-lg border p-3 ${isCurrent ? "border-blue-600" : ""}`}>
+      <div className="flex items-center gap-2 text-xs text-gray-500">
+        <span>#{index + 1}</span>
+        <span>idx={chunk.chunkIdx}</span>
+        <span>sent={chunk.sentenceIdx}</span>
+        <span>piece={chunk.pieceIdx}</span>
+        <span>off={chunk.startOffset}-{chunk.endOffset}</span>
+        <span className="ml-auto">
+          <StatusBadge status={chunk.status} />
+          {chunk.isStreamFinal ? <span className="ml-2 text-purple-600">[EOF]</span> : null}
+        </span>
+      </div>
+      <div className="mt-1 whitespace-pre-wrap">{chunk.text}</div>
+    </div>
+  );
+}
+
+interface StatusBadgeProps {
+  status: UiChunk["status"];
+}
+
+function StatusBadge({ status }: StatusBadgeProps) {
   const color =
     status === "pending" ? "bg-gray-200 text-gray-800" :
     status === "generating" ? "bg-indigo-200 text-indigo-800" :

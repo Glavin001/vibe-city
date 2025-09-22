@@ -58,13 +58,20 @@ export interface KokoroChunkerContext {
   autoplay: boolean;
   isUserPaused: boolean;
   crossfadeMs: number;
-  isPlaying: boolean;
+  // Crossfade scheduling
+  crossfadeScheduledForPlayhead: number | null;
+  isCrossfading: boolean;
+  activePlayerIndex: 0 | 1;
 
   // Callbacks
   onUtteranceGenerated?: (chunk: UiChunk) => void;
-  onAudioPlay?: (audioUrl: string, chunkId: number) => void;
+  onAudioPlay?: (audioUrl: string, chunkId: number, preferredPlayerIndex?: 0 | 1) => void;
   onAudioPause?: () => void;
   onAudioStop?: () => void;
+  // Advanced audio coordination (optional)
+  onAudioPreload?: (audioUrl: string, chunkId: number, preferredPlayerIndex?: 0 | 1) => void;
+  onCrossfadeStart?: (args: { currentChunkId: number; nextChunkId: number; durationMs: number; nextUrl: string; nextPlayerIndex: 0 | 1 }) => void;
+  onCrossfadeCancel?: () => void;
 }
 
 export type KokoroChunkerEvent =
@@ -104,7 +111,12 @@ export type KokoroChunkerEvent =
   | { type: 'AUDIO_ENDED'; chunkId: number }
   | { type: 'AUDIO_STARTED'; chunkId: number }
   | { type: 'AUDIO_PAUSED'; chunkId: number }
-  | { type: 'AUDIO_RESUMED'; chunkId: number };
+  | { type: 'AUDIO_RESUMED'; chunkId: number }
+  // Progress tick from the playing audio element
+  | { type: 'AUDIO_PROGRESS'; currentTime: number; duration: number }
+  // Crossfade lifecycle events
+  | { type: 'CROSSFADE.START' }
+  | { type: 'CROSSFADE.CANCEL' };
 
 function createKokoroChunkerMachine() {
   return createMachine({
@@ -161,14 +173,19 @@ function createKokoroChunkerMachine() {
         playhead: 0,
         autoplay: true,
         isUserPaused: false,
-        crossfadeMs: 800,
-        isPlaying: false,
+        crossfadeMs: input?.crossfadeEnabled === false ? 0 : (typeof input?.crossfadeMs === 'number' ? input.crossfadeMs : 800),
+        crossfadeScheduledForPlayhead: null,
+        isCrossfading: false,
+        activePlayerIndex: 0,
 
         // Callbacks
         onUtteranceGenerated: input?.onUtteranceGenerated,
         onAudioPlay: input?.onAudioPlay,
         onAudioPause: input?.onAudioPause,
         onAudioStop: input?.onAudioStop,
+        onAudioPreload: input?.onAudioPreload,
+        onCrossfadeStart: input?.onCrossfadeStart,
+        onCrossfadeCancel: input?.onCrossfadeCancel,
       };
     },
     initial: 'boot',
@@ -190,12 +207,33 @@ function createKokoroChunkerMachine() {
         initial: 'idle',
         states: {
           idle: {
+            always: [
+              {
+                guard: ({ context }) => {
+                  const current = context.uiChunks[context.playhead];
+                  return !!(context.autoplay && current && current.audioUrl && (current.status === 'ready' || current.status === 'paused'));
+                },
+                target: 'playing',
+                actions: 'playQueue',
+              },
+            ],
             on: {
               'UI.START_AUTO_STREAM': 'autoStreaming',
+              'UI.PLAY': { target: 'playing', actions: 'playQueue' },
             },
           },
           autoStreaming: {
             entry: 'pushChunk',
+            always: [
+              {
+                guard: ({ context }) => {
+                  // While auto-streaming, if autoplay and current playhead is ready/paused with url, start playing
+                  const current = context.uiChunks[context.playhead];
+                  return !!(context.autoplay && current && current.audioUrl && (current.status === 'ready' || current.status === 'paused'));
+                },
+                actions: 'playQueue',
+              },
+            ],
             on: {
               'UI.STOP_AUTO_STREAM': 'idle',
             },
@@ -211,6 +249,21 @@ function createKokoroChunkerMachine() {
                   actions: 'pushChunk',
                 },
               ],
+            },
+          },
+          playing: {
+            on: {
+              'UI.PAUSE': { target: 'paused', actions: 'pauseQueue' },
+              'UI.STOP': { target: 'idle', actions: 'stopQueue' },
+              'UI.SKIP': { target: 'idle', actions: 'skipQueue' },
+              'AUDIO_ENDED': { target: 'idle', actions: 'handleAudioEnded' },
+              'AUDIO_PAUSED': { target: 'paused', actions: 'handleAudioPaused' },
+            },
+          },
+          paused: {
+            on: {
+              'UI.PLAY': { target: 'playing', actions: 'playQueue' },
+              'UI.STOP': { target: 'idle', actions: 'stopQueue' },
             },
           },
         },
@@ -247,6 +300,9 @@ function createKokoroChunkerMachine() {
           'AUDIO_STARTED': { actions: 'handleAudioStarted' },
           'AUDIO_PAUSED': { actions: 'handleAudioPaused' },
           'AUDIO_RESUMED': { actions: 'handleAudioResumed' },
+          'AUDIO_PROGRESS': { actions: 'handleAudioProgress' },
+          'CROSSFADE.START': { actions: 'handleCrossfadeStart' },
+          'CROSSFADE.CANCEL': { actions: 'handleCrossfadeCancel' },
         },
       },
     },
@@ -488,11 +544,19 @@ function createKokoroChunkerMachine() {
           (context.playhead < updatedChunks.length && updatedChunks[context.playhead].status === 'ready')
         );
 
+        // Hint the UI to preload the immediate next audio
+        try {
+          const nextIndex = context.playhead + 1;
+          const next = updatedChunks[nextIndex];
+          if (next && next.audioUrl) {
+            const preferredIndex: 0 | 1 = context.activePlayerIndex === 0 ? 1 : 0;
+            context.onAudioPreload?.(next.audioUrl, next.id, preferredIndex);
+          }
+        } catch {}
+
+        // Autoplay is handled via guard in idle state (no timers)
         if (shouldAutoPlay) {
-          console.log('Auto-playing chunk', ttsEvent.chunkId);
-          setTimeout(() => {
-            self.send({ type: 'UI.PLAY' });
-          }, 50); // Small delay to ensure state updates first
+          console.log('Auto-play will be handled in idle via guard');
         }
 
         return { uiChunks: updatedChunks };
@@ -510,7 +574,7 @@ function createKokoroChunkerMachine() {
         // Mark the chunk as played
         const updatedChunks = context.uiChunks.map((chunk) => {
           if (chunk.id === audioEvent.chunkId) {
-            console.log('Marking chunk', chunk.id, 'as played');
+            console.log('Marking chunk with ID ', chunk.id, 'as played');
             return { ...chunk, status: 'played' as UiChunkStatus };
           }
           return chunk;
@@ -519,23 +583,22 @@ function createKokoroChunkerMachine() {
         // Auto-advance to next chunk if available and autoplay is enabled
         let nextPlayhead = context.playhead;
         let shouldAutoPlayNext = false;
+        let nextAlreadyPlaying = false;
         if (context.autoplay && context.playhead < context.uiChunks.length - 1) {
           nextPlayhead = context.playhead + 1;
-          shouldAutoPlayNext = true;
-          console.log('Auto-advancing to chunk', nextPlayhead);
+          const next = context.uiChunks[nextPlayhead];
+          nextAlreadyPlaying = !!next && next.status === 'playing';
+          shouldAutoPlayNext = !nextAlreadyPlaying;
+          console.log('Auto-advancing to chunk with index', nextPlayhead, 'alreadyPlaying=', nextAlreadyPlaying);
         }
 
-        // If we should auto-play the next chunk, schedule it
-        if (shouldAutoPlayNext) {
-          setTimeout(() => {
-            self.send({ type: 'UI.PLAY' });
-          }, 100); // Small delay to ensure state updates first
-        }
+        // Autoplay of next chunk handled via guard in idle (no timers)
 
         return {
           uiChunks: updatedChunks,
           playhead: nextPlayhead,
-          isPlaying: false,
+          isCrossfading: false,
+          crossfadeScheduledForPlayhead: null,
         };
       }),
 
@@ -551,7 +614,6 @@ function createKokoroChunkerMachine() {
 
         return {
           uiChunks: updatedChunks,
-          isPlaying: true,
         };
       }),
 
@@ -567,7 +629,6 @@ function createKokoroChunkerMachine() {
 
         return {
           uiChunks: updatedChunks,
-          isPlaying: false,
         };
       }),
 
@@ -583,8 +644,48 @@ function createKokoroChunkerMachine() {
 
         return {
           uiChunks: updatedChunks,
-          isPlaying: true,
         };
+      }),
+
+      // Crossfade scheduling / coordination (UI performs actual audio mixing)
+      handleAudioProgress: assign(({ context, event, self }) => {
+        const { currentTime, duration } = event as { type: 'AUDIO_PROGRESS'; currentTime: number; duration: number };
+        if (!context.autoplay) return {};
+        if (!context.crossfadeMs || context.crossfadeMs <= 0) return {};
+        const current = context.uiChunks[context.playhead];
+        const next = context.uiChunks[context.playhead + 1];
+        if (!current || !next || !next.audioUrl) return {};
+        if (current.status !== 'playing') return {};
+        if (next.status !== 'ready') return {};
+        const dur = duration || 0;
+        const cur = currentTime || 0;
+        if (!(dur > 0)) return {};
+        const timeLeftMs = Math.max(0, (dur - cur) * 1000);
+        if (timeLeftMs > context.crossfadeMs) return {};
+        if (context.crossfadeScheduledForPlayhead === context.playhead) return {};
+        // schedule
+        setTimeout(() => self.send({ type: 'CROSSFADE.START' }), 0);
+        return { crossfadeScheduledForPlayhead: context.playhead };
+      }),
+
+      handleCrossfadeStart: assign(({ context }) => {
+        const current = context.uiChunks[context.playhead];
+        const nextIndex = context.playhead + 1;
+        const next = context.uiChunks[nextIndex];
+        if (!current || !next || !next.audioUrl) return {};
+
+        // mark next as playing for UI consistency
+        const updated = context.uiChunks.map((c, i) => (i === nextIndex ? { ...c, status: 'playing' as UiChunkStatus } : c));
+        const nextPlayerIndex: 0 | 1 = context.activePlayerIndex === 0 ? 1 : 0;
+        try {
+          context.onCrossfadeStart?.({ currentChunkId: current.id, nextChunkId: next.id, durationMs: Math.max(1, context.crossfadeMs), nextUrl: next.audioUrl, nextPlayerIndex });
+        } catch {}
+        return { uiChunks: updated, isCrossfading: true, activePlayerIndex: nextPlayerIndex };
+      }),
+
+      handleCrossfadeCancel: assign(({ context }) => {
+        try { context.onCrossfadeCancel?.(); } catch {}
+        return { isCrossfading: false, crossfadeScheduledForPlayhead: null };
       }),
 
       playQueue: assign(({ context, self }) => {
@@ -595,8 +696,9 @@ function createKokoroChunkerMachine() {
           return {};
         }
 
-        // Call the callback to let the UI handle audio playback
-        context.onAudioPlay?.(chunk.audioUrl, chunk.id);
+        // Call the callback to let the UI handle audio playback (third arg: preferred player index)
+        const preferredPlayerIndex: 0 | 1 = context.isCrossfading ?  (0 as 0 | 1) : context.activePlayerIndex ?? 0;
+        context.onAudioPlay?.(chunk.audioUrl, chunk.id, preferredPlayerIndex);
 
         // Mark chunk as playing
         const updatedChunks = context.uiChunks.map((chunk, index) => {
@@ -608,7 +710,9 @@ function createKokoroChunkerMachine() {
 
         return {
           uiChunks: updatedChunks,
-          isPlaying: true,
+          isCrossfading: false,
+          crossfadeScheduledForPlayhead: null,
+          activePlayerIndex: preferredPlayerIndex,
         };
       }),
 
@@ -644,8 +748,9 @@ function createKokoroChunkerMachine() {
 
         return {
           uiChunks: updatedChunks,
-          isPlaying: false,
           playhead: 0,
+          isCrossfading: false,
+          crossfadeScheduledForPlayhead: null,
         };
       }),
 
@@ -665,7 +770,8 @@ function createKokoroChunkerMachine() {
         return {
           uiChunks: updatedChunks,
           playhead: nextPlayhead,
-          isPlaying: false,
+          isCrossfading: false,
+          crossfadeScheduledForPlayhead: null,
         };
       }),
 
@@ -683,9 +789,15 @@ function createKokoroChunkerMachine() {
 
 export interface KokoroChunkerInput {
   onUtteranceGenerated?: (chunk: UiChunk) => void;
-  onAudioPlay?: (audioUrl: string, chunkId: number) => void;
+  onAudioPlay?: (audioUrl: string, chunkId: number, preferredPlayerIndex?: 0 | 1) => void;
   onAudioPause?: () => void;
   onAudioStop?: () => void;
+  onAudioPreload?: (audioUrl: string, chunkId: number) => void;
+  onCrossfadeStart?: (args: { currentChunkId: number; nextChunkId: number; durationMs: number; nextUrl: string; nextPlayerIndex: 0 | 1 }) => void;
+  onCrossfadeCancel?: () => void;
+  // Initial configuration
+  crossfadeEnabled?: boolean;
+  crossfadeMs?: number;
 }
 
 export type KokoroChunkerActor = Actor<ReturnType<typeof createKokoroChunkerMachine>>;
