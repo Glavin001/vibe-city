@@ -136,6 +136,18 @@ const demoCategories: DemoCategory[] = [
         icon: "🧑‍🚀",
         title: "NPC Chat",
         description: "Interactive NPC conversations with personality. Game-ready dialogue system with character traits."
+      },
+      {
+        href: "/npc-chat-physics",
+        icon: "🎮",
+        title: "NPC Chat (Physics)",
+        description: "NPC chat with Rapier physics. Both player and NPCs use character controllers that collide with walls!"
+      },
+      {
+        href: "/ai-text-world",
+        icon: "🌍",
+        title: "AI Text World",
+        description: "Text-based virtual world with AI tool calling. Chat with an AI agent that can move, perform actions, and interact with the environment using real-time tool execution."
       }
     ]
   },

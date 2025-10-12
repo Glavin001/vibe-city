@@ -30,14 +30,14 @@ export const BUILDINGS: Record<string, BuildingConfig> = {
     size: [6, 3.5, 4.5],
     doorFace: 'east',
     doorOffset: 1.5,
-    doorSize: [1.2, 1.6],
+    doorSize: [1.5, 2.4], // 1.5m wide (1.5 people), 2.4m tall (extra clearance for 1.8m people)
   },
   BUNKER: {
     center: [15, 0, 0],
     size: [7, 5, 7],
     doorFace: 'west',
     doorOffset: 1.5,
-    doorSize: [1.8, 2.4],
+    doorSize: [1.5, 2.4], // 1.5m wide (1.5 people), 2.4m tall (extra clearance for 1.8m people)
   },
 }
 
@@ -136,7 +136,7 @@ export function findPath<S extends GateState>(state: S, from: NodeId, to: NodeId
   const q: NodeId[] = [from]
   const prev = new Map<NodeId, NodeId>()
   while (q.length) {
-    // biome-ignore lint/style/noNonNullAssertion: <explanation>
+    // biome-ignore lint/style/noNonNullAssertion: q.length check ensures shift() returns non-null
     const cur = q.shift()!
     for (const n of neighbors(state, cur)) {
       if (seen.has(n)) continue

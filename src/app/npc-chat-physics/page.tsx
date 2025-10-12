@@ -2,25 +2,27 @@
 
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import * as THREE from 'three'
-import { Canvas, useFrame, useThree } from '@react-three/fiber'
-import { KeyboardControls, PointerLockControls, useKeyboardControls, Html } from '@react-three/drei'
+import { Canvas, useThree } from '@react-three/fiber'
+import { KeyboardControls, PointerLockControls, Html } from '@react-three/drei'
 import { Physics } from '@react-three/rapier'
-import { Ground, BoxMarker, Building, EnhancedObject, SmallSphere, InventoryItem } from '../../lib/bunker-scene'
+import { Ground, BoxMarker, Building, EnhancedObject, SmallSphere } from '../../lib/bunker-scene'
 import { BUILDINGS, N, NODE_POS, type Vec3, type NodeId, type BuildingConfig } from '../../lib/bunker-world'
-import { useBunkerWorld, type WorldState, type BoomEffect } from '../../hooks/use-bunker-world'
+import { useBunkerWorld, type WorldState as BunkerWorldState, type BoomEffect } from '../../hooks/use-bunker-world'
 import { 
   COMMAND_DEFINITIONS, 
   parseCommandToActions, 
   NODE_TITLES,
   type NpcAction,
-  type Inventory,
 } from '../../lib/npc-commands'
-import { NpcAgent, type NpcApi, type WorldOps, type AgentPose } from '../../components/npc/NpcAgent'
+import { PlayerKCC, type AgentPose } from '../../components/physics/PlayerKCC'
+import { GroundPhysics } from '../../components/physics/GroundPhysics'
+import { BuildingColliders } from '../../components/physics/BuildingColliders'
+import { NpcAgent, type NpcApi, type WorldOps } from '../../components/npc/NpcAgent'
 import { CommandHelp } from '../../components/chat/CommandHelp'
 import { LocationPicker } from '../../components/chat/LocationPicker'
 import { FacingArrow } from '../../components/scene/FacingArrow'
 
-type Controls = 'forward' | 'backward' | 'left' | 'right' | 'run'
+type Controls = 'forward' | 'backward' | 'left' | 'right' | 'jump' | 'run'
 
 type ChatMessage = {
   id: string
@@ -31,64 +33,6 @@ type ChatMessage = {
 }
 
 const PLAYER_EYE_HEIGHT = 1.65 // Realistic human eye height (1.8m person)
-const MOVE_SPEED = 5
-const RUN_SPEED = 9
-
-const direction = new THREE.Vector3()
-const upVector = new THREE.Vector3(0, 1, 0)
-const camForward = new THREE.Vector3()
-const camRight = new THREE.Vector3()
-
-function Player({ poseRef, jumpOffsetRef, onLock, onUnlock, startSelector }: {
-  poseRef: React.MutableRefObject<AgentPose>
-  jumpOffsetRef: React.MutableRefObject<number>
-  onLock?: () => void
-  onUnlock?: () => void
-  startSelector?: string
-}) {
-  const [, get] = useKeyboardControls<Controls>()
-  const camera = useThree((state) => state.camera)
-
-  useEffect(() => {
-    const spawn = NODE_POS[N.COURTYARD]
-    const initialPose: AgentPose = {
-      position: [spawn[0], PLAYER_EYE_HEIGHT, spawn[2]],
-      yaw: 3/4 * Math.PI,
-      pitch: 0,
-    }
-    camera.position.set(...initialPose.position)
-    camera.rotation.set(initialPose.pitch, initialPose.yaw, 0)
-    poseRef.current = initialPose
-  }, [camera, poseRef])
-
-  useFrame((_, delta) => {
-    const { forward, backward, left, right, run } = get()
-    const speed = (run ? RUN_SPEED : MOVE_SPEED) * delta
-
-    // Compute camera-relative directions projected onto ground (ignore pitch)
-    camera.getWorldDirection(camForward)
-    camForward.y = 0
-    if (camForward.lengthSq() > 0) camForward.normalize()
-    camRight.copy(camForward).cross(upVector).normalize()
-
-    // Compose movement
-    direction.set(0, 0, 0)
-    const forwardMove = Number(forward) - Number(backward)
-    const rightMove = Number(right) - Number(left)
-    if (forwardMove !== 0) direction.addScaledVector(camForward, forwardMove * speed)
-    if (rightMove !== 0) direction.addScaledVector(camRight, rightMove * speed)
-
-    camera.position.add(direction)
-    camera.position.y = PLAYER_EYE_HEIGHT + (jumpOffsetRef.current || 0)
-
-    poseRef.current = {
-      position: [camera.position.x, camera.position.y, camera.position.z],
-      yaw: camera.rotation.y,
-      pitch: camera.rotation.x,
-    }
-  })
-  return <PointerLockControls makeDefault onLock={onLock} onUnlock={onUnlock} selector={startSelector} />
-}
 
 function computeDoorPromptTarget(building: BuildingConfig): Vec3 {
   const [cx, cy, cz] = building.center
@@ -119,16 +63,16 @@ function InteractionPrompt3D({ text, target, onActivate, visible = true }: {
 
   useEffect(() => {
     function tick() {
-    if (!groupRef.current || !target || !visible) return
-    const cam = camera.position
-    const t = new THREE.Vector3(target[0], target[1], target[2])
-    const dirToTarget = new THREE.Vector3().copy(t).sub(cam)
-    const dist = dirToTarget.length() || 1
-    dirToTarget.normalize()
-    const nudge = Math.min(0.5, Math.max(0.18, dist * 0.06))
-    const pos = new THREE.Vector3().copy(t).addScaledVector(dirToTarget, -nudge)
-    pos.y += 0.2
-    groupRef.current.position.copy(pos)
+      if (!groupRef.current || !target || !visible) return
+      const cam = camera.position
+      const t = new THREE.Vector3(target[0], target[1], target[2])
+      const dirToTarget = new THREE.Vector3().copy(t).sub(cam)
+      const dist = dirToTarget.length() || 1
+      dirToTarget.normalize()
+      const nudge = Math.min(0.5, Math.max(0.18, dist * 0.06))
+      const pos = new THREE.Vector3().copy(t).addScaledVector(dirToTarget, -nudge)
+      pos.y += 0.2
+      groupRef.current.position.copy(pos)
     }
     const id = setInterval(tick, 16)
     return () => clearInterval(id)
@@ -154,7 +98,6 @@ function InteractionPrompt3D({ text, target, onActivate, visible = true }: {
 function Scene({ 
   world, 
   playerPoseRef, 
-  playerInv,
   npcInventories, 
   npcApisRef, 
   worldOps,
@@ -165,10 +108,9 @@ function Scene({
   onLock,
   onUnlock,
 }: {
-  world: WorldState
+  world: BunkerWorldState
   playerPoseRef: React.MutableRefObject<AgentPose>
-  playerInv: Inventory
-  npcInventories: Record<string, Inventory>
+  npcInventories: Record<string, { hasKey: boolean; hasC4: boolean; hasStar: boolean }>
   npcApisRef: React.MutableRefObject<Record<string, NpcApi>>
   worldOps: React.MutableRefObject<WorldOps>
   boom: BoomEffect
@@ -178,7 +120,7 @@ function Scene({
   onLock: () => void
   onUnlock: () => void
 }) {
-  const playerJumpOffsetRef = useRef<number>(0)
+  const spawn: [number, number, number] = useMemo(() => [NODE_POS[N.COURTYARD][0], 0.9, NODE_POS[N.COURTYARD][2]], [])
   
   const npcs = useMemo(() => [
     { id: 'npc_alex', name: 'Alex', color: '#60a5fa', pos: [-3, 0, -3] as Vec3 }, // Northwest of courtyard
@@ -238,10 +180,10 @@ function Scene({
         <mesh position={boom.at}>
           <sphereGeometry args={[0.5, 16, 16]} />
           <meshStandardMaterial color="#f97316" emissive="#dc2626" emissiveIntensity={1.2} transparent opacity={0.7} />
-      </mesh>
+        </mesh>
       )}
 
-      {/* NPCs without physics */}
+      {/* NPCs with physics */}
       {npcs.map((npc) => (
         <NpcAgent
           key={npc.id}
@@ -250,19 +192,23 @@ function Scene({
           color={npc.color}
           initialPos={npc.pos}
           apiRegistry={npcApisRef}
-          inv={npcInventories[npc.id] || { hasKey: false, hasC4: false, hasStar: false }}
+          inv={{ 
+            hasKey: (npcInventories[npc.id]?.hasKey) || false, 
+            hasC4: (npcInventories[npc.id]?.hasC4) || false, 
+            hasStar: (npcInventories[npc.id]?.hasStar) || false 
+          }}
           worldOps={worldOps}
-          usePhysics={false}
+          usePhysics={true}
         />
       ))}
 
-      {/* Player */}
-      <Player
-        poseRef={playerPoseRef}
-        jumpOffsetRef={playerJumpOffsetRef}
-        onLock={onLock}
-        onUnlock={onUnlock}
-        startSelector="#startPointerLock"
+      {/* Player with physics */}
+      <PlayerKCC 
+        start={spawn} 
+        poseRef={playerPoseRef} 
+        eyeHeight={PLAYER_EYE_HEIGHT} 
+        initialYaw={3/4 * Math.PI}
+        initialPitch={0}
       />
       
       {/* Player orientation arrow */}
@@ -273,11 +219,6 @@ function Scene({
         color="#f59e0b" 
       />
 
-      {/* Player inventory */}
-      {playerInv.hasKey && (<InventoryItem agentPos={[playerPoseRef.current.position[0], 0, playerPoseRef.current.position[2]]} type="key" color="#fbbf24" index={0} />)}
-      {playerInv.hasC4 && (<InventoryItem agentPos={[playerPoseRef.current.position[0], 0, playerPoseRef.current.position[2]]} type="c4" color="#ef4444" index={1} />)}
-      {playerInv.hasStar && (<InventoryItem agentPos={[playerPoseRef.current.position[0], 0, playerPoseRef.current.position[2]]} type="star" color="#fde68a" index={2} />)}
-
       {/* Interaction prompt */}
       <InteractionPrompt3D
         text={interactPrompt}
@@ -285,22 +226,25 @@ function Scene({
         onActivate={() => interactHandlerRef.current()}
         visible={Boolean(interactPrompt && interactTarget)}
       />
+
+      <PointerLockControls makeDefault onLock={onLock} onUnlock={onUnlock} selector="#startPointerLockPhysics" />
     </>
   )
 }
 
-export default function NpcChatPage() {
+export default function NpcChatPhysicsPage() {
   const controlsMap = useMemo(() => (
     [
       { name: 'forward', keys: ['ArrowUp', 'w', 'W'] },
       { name: 'backward', keys: ['ArrowDown', 's', 'S'] },
       { name: 'left', keys: ['ArrowLeft', 'a', 'A'] },
       { name: 'right', keys: ['ArrowRight', 'd', 'D'] },
+      { name: 'jump', keys: ['Space'] },
       { name: 'run', keys: ['Shift'] },
     ] as { name: Controls; keys: string[] }[]
   ), [])
 
-  // World state using shared hook
+  // World state
   const { world, boom, playerInv, npcInventories, setNpcInventory, worldOps } = useBunkerWorld()
 
   // Player pose
@@ -323,9 +267,9 @@ export default function NpcChatPage() {
   // Chat state
   const [selectedNpcId, setSelectedNpcId] = useState<string>('npc_alex')
   const [messagesByNpc, setMessagesByNpc] = useState<Record<string, ChatMessage[]>>({
-    npc_alex: [{ id: 'm1', npcId: 'npc_alex', sender: 'npc', text: 'Hey! Use WASD to move, mouse to look. Type "help" for commands.', ts: Date.now() }],
-    npc_riley: [{ id: 'm2', npcId: 'npc_riley', sender: 'npc', text: 'Standing by the bunker door.', ts: Date.now() }],
-    npc_sam: [{ id: 'm3', npcId: 'npc_sam', sender: 'npc', text: 'Guarding storage entrance.', ts: Date.now() }],
+    npc_alex: [{ id: 'm1', npcId: 'npc_alex', sender: 'npc', text: 'Hey! Use WASD to move, mouse to look. Type "help" for commands. Now with physics!', ts: Date.now() }],
+    npc_riley: [{ id: 'm2', npcId: 'npc_riley', sender: 'npc', text: 'Standing by the bunker door. Try walking into walls!', ts: Date.now() }],
+    npc_sam: [{ id: 'm3', npcId: 'npc_sam', sender: 'npc', text: 'Guarding storage entrance with physics.', ts: Date.now() }],
   })
   const [draft, setDraft] = useState('')
   const [showHelp, setShowHelp] = useState(false)
@@ -460,7 +404,7 @@ export default function NpcChatPage() {
       return
     }
 
-    // Parse command → actions using shared parser
+    // Parse command → actions
     const parsed = parseCommandToActions(text)
     if (parsed.isAbort) {
       npcApisRef.current[npcId]?.abortAll()
@@ -522,19 +466,21 @@ export default function NpcChatPage() {
   return (
     <div className="min-h-screen bg-gray-900">
       <div className="p-6">
-        <h1 className="text-3xl font-bold text-white mb-2">NPC Chat Sandbox</h1>
-        <p className="text-gray-300 mb-4">First-person movement with WASD + mouse look. Press Esc to unlock pointer.</p>
+        <h1 className="text-3xl font-bold text-white mb-2">NPC Chat with Physics</h1>
+        <p className="text-gray-300 mb-4">First-person movement with Rapier physics. NPCs also use character controllers and collide with walls!</p>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2">
             <div className="w-full h-[80vh] bg-black rounded-lg overflow-hidden relative">
               <KeyboardControls map={controlsMap}>
-                <Canvas shadows camera={{ fov: 75, rotation: [0, Math.PI/2, 0] }}>
+                <Canvas shadows camera={{ fov: 75 }}>
                   <Physics>
+                    <GroundPhysics />
+                    <BuildingColliders config={BUILDINGS.STORAGE} />
+                    <BuildingColliders config={BUILDINGS.BUNKER} />
                     <Scene
                       world={world}
                       playerPoseRef={playerPoseRef}
-                      playerInv={playerInv}
                       npcInventories={npcInventories}
                       npcApisRef={npcApisRef}
                       worldOps={worldOps}
@@ -542,28 +488,20 @@ export default function NpcChatPage() {
                       interactPrompt={interactPrompt}
                       interactTarget={interactTarget}
                       interactHandlerRef={interactHandlerRef}
-                    onLock={() => setIsLocked(true)}
-                    onUnlock={() => setIsLocked(false)}
+                      onLock={() => setIsLocked(true)}
+                      onUnlock={() => setIsLocked(false)}
                     />
                   </Physics>
                 </Canvas>
               </KeyboardControls>
-              <div id="startPointerLock" className="absolute inset-0 select-none cursor-pointer" style={{ display: isLocked ? 'none' : 'block' }} title="Click to start (Esc to unlock)">
+              <div id="startPointerLockPhysics" className="absolute inset-0 select-none cursor-pointer" style={{ display: isLocked ? 'none' : 'block' }} title="Click to start (Esc to unlock)">
                 <div className="pointer-events-none absolute bottom-3 right-3 text-[11px] bg-gray-900/40 text-gray-200 px-2 py-1 rounded">
                   Click to start · Esc to unlock
                 </div>
               </div>
             </div>
-            <div className="mt-2 text-gray-400 text-sm flex items-center gap-3 justify-between">
-              <span>Controls: WASD move, Shift run, Space jump, G wave, E interact, X detonate.</span>
-              <div className="flex items-center gap-2">
-                <button type="button" className="px-2 py-1 text-xs rounded bg-slate-700 hover:bg-slate-600 text-white" onClick={() => void worldOps.current.pickupKey('player', () => playerPoseRef.current.position)}>Pick Key</button>
-                <button type="button" className="px-2 py-1 text-xs rounded bg-slate-700 hover:bg-slate-600 text-white" onClick={() => void worldOps.current.unlockStorage('player', () => playerPoseRef.current.position)}>Unlock Storage</button>
-                <button type="button" className="px-2 py-1 text-xs rounded bg-slate-700 hover:bg-slate-600 text-white" onClick={() => void worldOps.current.pickupC4('player', () => playerPoseRef.current.position)}>Pick C4</button>
-                <button type="button" className="px-2 py-1 text-xs rounded bg-slate-700 hover:bg-slate-600 text-white" onClick={() => void worldOps.current.placeC4('player', () => playerPoseRef.current.position)}>Place C4</button>
-                <button type="button" className="px-2 py-1 text-xs rounded bg-rose-700 hover:bg-rose-600 text-white" onClick={() => void worldOps.current.detonate()}>Detonate</button>
-                <button type="button" className="px-2 py-1 text-xs rounded bg-slate-700 hover:bg-slate-600 text-white" onClick={() => void worldOps.current.pickupStar('player', () => playerPoseRef.current.position)}>Pick Star</button>
-              </div>
+            <div className="mt-2 text-gray-400 text-sm">
+              Controls: WASD move, Shift run, Space jump, E interact, X detonate. Walk into walls to feel the physics!
             </div>
           </div>
 
@@ -751,3 +689,4 @@ export default function NpcChatPage() {
     </div>
   )
 }
+
