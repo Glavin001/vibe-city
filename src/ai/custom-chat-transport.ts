@@ -1,7 +1,8 @@
-import { type UIMessage } from "@ai-sdk/react";
+import type { UIMessage } from "@ai-sdk/react";
 import {
   convertToModelMessages,
   streamText,
+  stepCountIs,
   type ChatRequestOptions,
   type ChatTransport,
   type LanguageModel,
@@ -9,12 +10,18 @@ import {
 } from "ai";
 import type { GoogleGenerativeAIProviderOptions } from "@ai-sdk/google";
 
+// Extract the tools type from streamText parameters
+type StreamTextParams = Parameters<typeof streamText>[0];
+type ToolsType = StreamTextParams["tools"];
+
 export class CustomChatTransport implements ChatTransport<UIMessage> {
   private model: LanguageModel;
   private systemPrompt: string = "";
+  private tools: ToolsType;
 
-  constructor(model: LanguageModel) {
+  constructor(model: LanguageModel, tools?: ToolsType) {
     this.model = model;
+    this.tools = tools;
   }
 
   updateModel(model: LanguageModel) {
@@ -23,6 +30,10 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
 
   updateSystemPrompt(prompt: string) {
     this.systemPrompt = prompt ?? "";
+  }
+
+  updateTools(tools: ToolsType) {
+    this.tools = tools;
   }
 
   async sendMessages(
@@ -39,7 +50,8 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
       model: this.model,
       messages: convertToModelMessages(options.messages),
       abortSignal: options.abortSignal,
-      toolChoice: "auto",
+      tools: this.tools,
+      stopWhen: this.tools ? stepCountIs(5) : undefined,
       system: this.systemPrompt || undefined,
       providerOptions: {
         google: {

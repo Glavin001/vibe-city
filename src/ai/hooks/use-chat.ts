@@ -1,10 +1,18 @@
-import { type UIMessage, type UseChatOptions, useChat as useChatSDK } from "@ai-sdk/react";
-import { type ChatInit, type LanguageModel } from "ai";
+import { useChat as useChatSDK, type UIMessage, type UseChatOptions } from "@ai-sdk/react";
+import type { ChatInit, LanguageModel } from "ai";
+// biome-ignore lint: streamText is needed for type extraction via typeof
+import { streamText } from "ai";
 import { useEffect, useRef } from "react";
 import { CustomChatTransport } from "../custom-chat-transport";
 
+// Extract the tools type from streamText parameters
+type StreamTextParams = Parameters<typeof streamText>[0];
+type ToolsType = StreamTextParams["tools"];
+
 type ClientChatOptions = Omit<ChatInit<UIMessage>, "transport"> &
-  Pick<UseChatOptions<UIMessage>, "experimental_throttle" | "resume">;
+  Pick<UseChatOptions<UIMessage>, "experimental_throttle" | "resume"> & {
+    tools?: ToolsType;
+  };
 
 export function useClientSideChat(
   model: LanguageModel,
@@ -13,12 +21,16 @@ export function useClientSideChat(
   const transportRef = useRef<CustomChatTransport | null>(null);
 
   if (!transportRef.current) {
-    transportRef.current = new CustomChatTransport(model);
+    transportRef.current = new CustomChatTransport(model, options?.tools);
   }
 
   useEffect(() => {
     transportRef.current?.updateModel(model);
   }, [model]);
+
+  useEffect(() => {
+    transportRef.current?.updateTools(options?.tools);
+  }, [options?.tools]);
 
   const setSystemPrompt = (prompt: string) => {
     transportRef.current?.updateSystemPrompt(prompt ?? "");
