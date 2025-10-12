@@ -1,11 +1,12 @@
 'use client'
 
-import { Suspense, useMemo, useRef, useState, useCallback } from 'react'
+import React, { Suspense, useMemo, useRef, useState, useCallback, useEffect } from 'react'
 import { Canvas, useFrame } from '@react-three/fiber'
 import { OrbitControls, StatsGl, Text } from '@react-three/drei'
 import { Physics, RigidBody, HeightfieldCollider, BallCollider } from '@react-three/rapier'
 import type { CollisionEnterPayload, RapierRigidBody } from '@react-three/rapier'
 import * as THREE from 'three'
+import { DestructibleWall } from '@/components/destruction/DestructibleWall'
 
 // Configure collider refresh in terms of FPS for clarity
 // const colliderFps = 12.5
@@ -64,6 +65,7 @@ const METEOR_COLORS = [
   '#6c5ce7',
 ] as const
 
+
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value))
 }
@@ -74,7 +76,7 @@ function smoothstep(edge0: number, edge1: number, x: number) {
   return t * t * (3 - 2 * t)
 }
 
-function CraterHeightfieldScene() {
+const CraterHeightfieldScene = React.memo(function CraterHeightfieldScene() {
   // Grid/scale config
   const widthQuads = 60
   const depthQuads = 60
@@ -84,12 +86,18 @@ function CraterHeightfieldScene() {
   const scaleY = 4
   const scaleZ = 50
 
+  useEffect(() => {
+    console.log('CraterHeightfieldScene mount')
+    return () => {
+      console.log('CraterHeightfieldScene unmount')
+    }
+  }, [])
+
   // Heights storage (row-major, size rows*cols). Start completely flat at 0.
   const heightsRef = useRef<Float32Array>(new Float32Array(rows * cols))
 
-  // Snapshot for collider and key to force remount
+  // Heights for collider
   const [colliderHeights, setColliderHeights] = useState<number[]>(() => Array.from({ length: rows * cols }, () => 0))
-  const [colliderKey, setColliderKey] = useState(0)
 
   // Geometry aligned to Rapier heightfield orientation
   const geometry = useMemo(() => {
@@ -147,7 +155,7 @@ function CraterHeightfieldScene() {
       const h = hx0 * (1 - tz) + hx1 * tz
       return h * scaleY
     },
-    [cols, rows, scaleX, scaleY, scaleZ],
+    [cols, rows],
   )
 
   const surfaceNormalAt = useCallback(
@@ -169,7 +177,7 @@ function CraterHeightfieldScene() {
       const normal = new THREE.Vector3(-gradientX, 1, -gradientZ)
       return normal.normalize()
     },
-    [cols, rows, sampleHeightAtWorld, scaleX, scaleZ],
+    [cols, rows, sampleHeightAtWorld],
   )
 
   // Crater application flag + timer for throttled collider rebuild
@@ -382,7 +390,7 @@ function CraterHeightfieldScene() {
         }
       }
     }
-  }, [sampleWorldX, sampleWorldZ, rows, cols, scaleY])
+  }, [sampleWorldX, sampleWorldZ, rows, cols])
 
   // Visual update + throttled normals/collider refresh
   useFrame((_, delta) => {
@@ -401,13 +409,12 @@ function CraterHeightfieldScene() {
     if (needsColliderUpdateRef.current && colliderTimerRef.current >= refreshInterval) {
       geometry.computeVertexNormals()
       setColliderHeights(Array.from(heights))
-      setColliderKey((k) => k + 1)
       needsColliderUpdateRef.current = false
       colliderTimerRef.current = 0
     }
   })
 
-  const applyMeteorImpact = useCallback((impact: MeteorImpact): MeteorImpactResponse | void => {
+  const applyMeteorImpact = useCallback((impact: MeteorImpact): MeteorImpactResponse | undefined => {
     const velocity = impact.velocity
     const speed = velocity.length()
     if (speed < 0.1) return
@@ -523,6 +530,34 @@ function CraterHeightfieldScene() {
     }
   }, [carveCrater, surfaceNormalAt])
 
+  // Generate scattered hut positions across the terrain
+  const hutPositions = useMemo(() => {
+    console.log('hutPositions new')
+    const positions: Array<[number, number, number]> = []
+    const hutCount = 10
+    const marginX = 6
+    const marginZ = 6
+    const minSpacing = 8
+    let attempts = 0
+    while (positions.length < hutCount && attempts < 2000) {
+      attempts++
+      
+      const x = (Math.random() - 0.5) * (scaleX - marginX * 2)
+      const z = (Math.random() - 0.5) * (scaleZ - marginZ * 2)
+      
+      // const x = 0
+      // const z = 0
+
+      if (positions.every(([px, , pz]) => Math.hypot(px - x, pz - z) >= minSpacing)) {
+        // Use initial height (0) to prevent recomputation when terrain changes
+        const y = 0 // sampleHeightAtWorld(x, z)
+        positions.push([x, y + 0.0, z])
+        // positions.push([0, y + 0.0, 0])
+      }
+    }
+    return positions
+  }, []) // Remove dependency on sampleHeightAtWorld
+
   return (
     <>
       {/* Ground heightfield (physics + visual) */}
@@ -536,7 +571,6 @@ function CraterHeightfieldScene() {
         density={1}
       >
         <HeightfieldCollider
-          key={colliderKey}
           args={[widthQuads, depthQuads, colliderHeights, { x: scaleX, y: scaleY, z: scaleZ }]}
         />
         <mesh
@@ -549,8 +583,15 @@ function CraterHeightfieldScene() {
         </mesh>
       </RigidBody>
 
+      {/* Scattered huts */}
+      {hutPositions.map((pos, hutIndex) => (
+        <MiniHut key={`hut-${// biome-ignore lint/suspicious/noArrayIndexKey: <explanation>
+hutIndex}`} basePosition={pos} />
+      ))}
+
 
       {/* Falling meteors */}
+      
       <FallingMeteors
         groundName="CraterTerrain"
         spawnWidth={scaleX}
@@ -559,6 +600,7 @@ function CraterHeightfieldScene() {
         numMeteors={10}
         onImpact={applyMeteorImpact}
       />
+      
 
       {/* UI */}
       <Text
@@ -572,7 +614,7 @@ function CraterHeightfieldScene() {
       </Text>
     </>
   )
-}
+})
 
 function FallingMeteors({
   groundName,
@@ -587,7 +629,7 @@ function FallingMeteors({
   spawnDepth: number
   spawnHeight?: number
   numMeteors?: number
-  onImpact: (impact: MeteorImpact) => MeteorImpactResponse | void
+  onImpact: (impact: MeteorImpact) => MeteorImpactResponse | undefined
 }) {
   const bodyRefs = useRef<Map<number, RapierRigidBody | null>>(new Map())
   const processingIdsRef = useRef<Set<number>>(new Set())
@@ -823,26 +865,20 @@ function FallingMeteors({
   )
 }
 
-export default function CraterHeightfieldDemo() {
+function CraterHeightfieldDemo() {
+  console.log('CraterHeightfieldDemo render')
+  useEffect(() => {
+    console.log('CraterHeightfieldDemo mount')
+    return () => {
+      console.log('CraterHeightfieldDemo unmount')
+    }
+  }, [])
+
   return (
     <div className="w-full h-[100vh] bg-gradient-to-b from-emerald-500 to-teal-300 rounded-lg overflow-hidden relative">
       <Canvas shadows camera={{ position: [10, 10, 12], fov: 55 }}>
-        <Suspense fallback={null}>
-          <ambientLight intensity={0.5} />
-          <directionalLight
-            position={[12, 16, 6]}
-            intensity={1}
-            castShadow
-            shadow-mapSize-width={1024}
-            shadow-mapSize-height={1024}
-          />
-
-          <Physics gravity={[0, -9.81, 0]} debug={false}>
-            <CraterHeightfieldScene />
-          </Physics>
-
-          <OrbitControls enablePan enableZoom enableRotate />
-          <StatsGl className="absolute top-80 left-10" />
+        <Suspense fallback={<SuspenseFallback />}>
+          <SceneRoot />
         </Suspense>
       </Canvas>
 
@@ -858,4 +894,143 @@ export default function CraterHeightfieldDemo() {
   )
 }
 
+function SceneRoot() {
+  return (
+    <>
+      <ambientLight intensity={0.5} />
+      <directionalLight
+        position={[12, 16, 6]}
+        intensity={1}
+        castShadow
+        shadow-mapSize-width={1024}
+        shadow-mapSize-height={1024}
+      />
+      <Physics gravity={[0, -9.81, 0]} debug={false}>
+        <PhysicsContent />
+      </Physics>
+      <OrbitControls enablePan enableZoom enableRotate />
+      <StatsGl className="absolute top-80 left-10" />
+    </>
+  )
+}
 
+function PhysicsContent() {
+  return (
+    <Suspense fallback={null}>
+      <CraterHeightfieldScene />
+    </Suspense>
+  )
+}
+
+function SuspenseFallback() {
+  // console.log('SuspenseFallback render')
+  useEffect(() => {
+    console.log('SuspenseFallback mount')
+    return () => {
+      console.log('SuspenseFallback unmount')
+    }
+  }, [])
+  return null
+}
+
+export const CraterHeightfieldDemoMemo = React.memo(CraterHeightfieldDemo)
+
+// Destructible hut composed of four thin walls
+const MiniHut = React.memo(function MiniHut({
+  basePosition,
+  width = 6,
+  depth = 4.4,
+  height = 3,
+  wallThickness = 0.32,
+  fragmentCount = 24,
+  color = '#b8b8b8',
+  innerColor = '#d25555',
+}: {
+  basePosition: [number, number, number]
+  width?: number
+  depth?: number
+  height?: number
+  wallThickness?: number
+  fragmentCount?: number
+  color?: string
+  innerColor?: string
+}) {
+  const [bx, by, bz] = basePosition
+  const halfW = width / 2
+  const halfD = depth / 2
+  const wallCenterY = by + height / 2
+
+  // console.log('hut')
+  // biome-ignore lint/correctness/useExhaustiveDependencies: <explanation>
+  useEffect(() => {
+    console.log('hut mount', basePosition)
+    return () => {
+      console.log('hut unmount', basePosition)
+    }
+  }, [])
+
+  return (
+    <group>
+      {/* Front wall */}
+      <DestructibleWall
+        spec={{
+          id: `hut-front-${bx.toFixed(2)}-${bz.toFixed(2)}`,
+          size: [width, height, wallThickness],
+          center: [bx, wallCenterY, bz - halfD + wallThickness / 2],
+          fragmentCount,
+          impactDirection: 'posZ',
+          outerColor: color,
+          innerColor,
+        }}
+        jointsEnabled={false}
+        sleep={true}
+      />
+      {/* Back wall */}
+      <DestructibleWall
+        spec={{
+          id: `hut-back-${bx.toFixed(2)}-${bz.toFixed(2)}`,
+          size: [width, height, wallThickness],
+          center: [bx, wallCenterY, bz + halfD - wallThickness / 2],
+          fragmentCount,
+          impactDirection: 'negZ',
+          outerColor: color,
+          innerColor,
+        }}
+        jointsEnabled={false}
+        sleep={true}
+      />
+      {/* Left wall */}
+      {/*
+      <DestructibleWall
+        spec={{
+          id: `hut-left-${bx.toFixed(2)}-${bz.toFixed(2)}`,
+          size: [wallThickness, height, depth],
+          center: [bx - halfW + wallThickness / 2, wallCenterY, bz],
+          fragmentCount,
+          impactDirection: 'posX',
+          outerColor: color,
+          innerColor,
+        }}
+        jointsEnabled={false}
+        sleep={true}
+      />
+      */}
+      {/* Right wall */}
+      {/*
+      <DestructibleWall
+        spec={{
+          id: `hut-right-${bx.toFixed(2)}-${bz.toFixed(2)}`,
+          size: [wallThickness, height, depth],
+          center: [bx + halfW - wallThickness / 2, wallCenterY, bz],
+          fragmentCount,
+          impactDirection: 'negX',
+          outerColor: color,
+          innerColor,
+        }}
+        jointsEnabled={false}
+        sleep={true}
+      />
+      */}
+    </group>
+  )
+})
