@@ -21,6 +21,12 @@ const demoCategories: DemoCategory[] = [
         description: "Basic THREE.js setup with interactive 3D scene. A starting point for 3D web graphics."
       },
       {
+        href: "/humanoid-demo",
+        icon: "🧍",
+        title: "Universal Humanoid",
+        description: "Optimized 3D character model with 45 animations. Demonstrates instanced rendering and animation blending with gltfjsx."
+      },
+      {
         href: "/grass",
         icon: "🌿",
         title: "Grass Demo (V1)",
