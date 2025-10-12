@@ -110,6 +110,40 @@ const ACTIONS = [
   "stand_up",
 ] as const;
 
+type ActionName = typeof ACTIONS[number];
+
+// Single source of truth for action metadata
+const ACTION_METADATA: Record<ActionName, { shortDesc: string; successMessage: string }> = {
+  wave: {
+    shortDesc: "wave your hand in greeting",
+    successMessage: "You wave your hand in greeting"
+  },
+  jump: {
+    shortDesc: "jump up and down",
+    successMessage: "You jump up and down energetically"
+  },
+  duck_down: {
+    shortDesc: "crouch down low",
+    successMessage: "You duck down low to the ground"
+  },
+  sit_down: {
+    shortDesc: "sit down on the ground",
+    successMessage: "You sit down on the ground"
+  },
+  stand_up: {
+    shortDesc: "stand up from sitting",
+    successMessage: "You stand up from your sitting position"
+  },
+  drink_coffee: {
+    shortDesc: "sip coffee (requires filled mug)",
+    successMessage: "You take a sip of hot coffee. Delicious!"
+  },
+  drink_water: {
+    shortDesc: "drink water (requires water bottle)",
+    successMessage: "You take a refreshing drink of water"
+  },
+};
+
 const FEELINGS = ["Happiness", "Sadness", "Anger", "Fear", "Disgust", "Surprise"] as const;
 
 // World state interface
@@ -253,13 +287,7 @@ function buildSystemPrompt(
 ${locationsText}
 
 **Available actions you can perform:**
-- drink_coffee: Take a sip of coffee
-- jump: Jump up and down
-- wave: Wave your hand
-- duck_down: Duck down to avoid something
-- drink_water: Take a drink of water
-- sit_down: Sit down
-- stand_up: Stand up
+${ACTIONS.map(action => `- ${action}: ${ACTION_METADATA[action].shortDesc}`).join("\n")}
 
 ${objectsText}
 
@@ -695,15 +723,48 @@ function TextWorldChat({ apiKey }: { apiKey: string }) {
     }),
 
     perform_action: tool({
-      description: "You personally (not another player) perform this action",
+      description: `You personally (not another player) perform an animation action. Available actions: ${ACTIONS.map(action => `${action} (${ACTION_METADATA[action].shortDesc})`).join(", ")}`,
       inputSchema: z.object({
-        action_name: z.enum(ACTIONS).describe("The action to perform"),
+        action_name: z.enum(ACTIONS).describe(`The action to perform. Options: ${ACTIONS.join(", ")}`),
       }),
       execute: async ({ action_name }) => {
-        setWorldState(prev => ({ ...prev, aiLastAction: action_name }));
-        addToLog(`AI performed action: ${action_name}`);
-        addToHistory("action", `Performed action: ${action_name.replace(/_/g, " ")}`);
-        return { success: true, message: `You performed the action: ${action_name}` };
+        let validationError: string | null = null;
+        
+        setWorldState(prev => {
+          // Validate context-specific actions
+          if (action_name === "drink_coffee") {
+            const hasCoffeeMug = prev.aiInventory.includes("coffee_mug");
+            if (!hasCoffeeMug) {
+              validationError = "You need to be holding a coffee mug to drink coffee";
+              return prev;
+            }
+            const coffeeMug = prev.objects.find(o => o.id === "coffee_mug");
+            if (coffeeMug && !coffeeMug.state?.filled) {
+              validationError = "The coffee mug is empty. You need to fill it with coffee first";
+              return prev;
+            }
+          }
+          
+          if (action_name === "drink_water") {
+            const hasWaterBottle = prev.aiInventory.includes("water_bottle");
+            if (!hasWaterBottle) {
+              validationError = "You need to be holding a water bottle to drink water";
+              return prev;
+            }
+          }
+          
+          addToLog(`AI performed action: ${action_name}`);
+          addToHistory("action", `Performed action: ${action_name.replace(/_/g, " ")}`);
+          return { ...prev, aiLastAction: action_name };
+        });
+        
+        if (validationError) {
+          return { success: false, message: validationError };
+        }
+        
+        // Return action-specific message from metadata
+        const message = ACTION_METADATA[action_name]?.successMessage || `You performed the action: ${action_name}`;
+        return { success: true, message };
       },
     }),
 
@@ -713,9 +774,27 @@ function TextWorldChat({ apiKey }: { apiKey: string }) {
         object_id: z.string().describe("The ID of the object or location to point at"),
       }),
       execute: async ({ object_id }) => {
-        setWorldState(prev => ({ ...prev, aiPointingAt: object_id }));
-        addToLog(`AI is pointing at: ${object_id}`);
-        addToHistory("pointing", `Started pointing at ${object_id.replace(/_/g, " ")}`);
+        let validationError: string | null = null;
+        
+        setWorldState(prev => {
+          // Check if it's a valid location or object
+          const isLocation = LOCATIONS.includes(object_id as LocationId);
+          const isObject = prev.objects.some(o => o.id === object_id);
+          
+          if (!isLocation && !isObject) {
+            validationError = `Cannot point at '${object_id}' - it doesn't exist in this world`;
+            return prev;
+          }
+          
+          addToLog(`AI is pointing at: ${object_id}`);
+          addToHistory("pointing", `Started pointing at ${object_id.replace(/_/g, " ")}`);
+          return { ...prev, aiPointingAt: object_id };
+        });
+        
+        if (validationError) {
+          return { success: false, message: validationError };
+        }
+        
         return { success: true, message: `You are now pointing at ${object_id}` };
       },
     }),
@@ -827,7 +906,7 @@ function TextWorldChat({ apiKey }: { apiKey: string }) {
     }),
 
     give_object: tool({
-      description: "Give an object from your inventory to another person. You must be carrying the object first.",
+      description: "Give an object from your inventory to another person. You must be carrying the object first and be at the same location as the person.",
       inputSchema: z.object({
         object_id: z.string().describe("The ID of the object to give"),
         destination_person: z.string().describe("The person to give the object to (e.g., 'other_player')"),
@@ -845,6 +924,14 @@ function TextWorldChat({ apiKey }: { apiKey: string }) {
           if (!obj) {
             validationError = `Object ${object_id} does not exist`;
             return prev;
+          }
+          
+          // Check if you're near the person you're giving to
+          if (destination_person === "other_player") {
+            if (prev.aiPosition !== prev.playerPosition) {
+              validationError = `You need to be near the player to give them something. You are at ${prev.aiPosition}, they are at ${prev.playerPosition}`;
+              return prev;
+            }
           }
           
           addToLog(`AI gave ${object_id} to ${destination_person}`);
@@ -877,84 +964,182 @@ function TextWorldChat({ apiKey }: { apiKey: string }) {
         use_with_object_id: z.string().optional().describe("Optional: ID of another object to use this with"),
       }),
       execute: async ({ object_id, use_with_object_id }) => {
-        let validationError: string | null = null;
-        let resultMessage = "";
+        // Get current state for validation
+        const currentState = worldState;
+        const obj = currentState.objects.find(o => o.id === object_id);
         
-        setWorldState(prev => {
-          const obj = prev.objects.find(o => o.id === object_id);
-          
-          if (!obj) {
-            validationError = `Object ${object_id} does not exist`;
-            return prev;
-          }
-          
-          if (!obj.canUse) {
-            validationError = `${obj.name} cannot be used`;
-            return prev;
-          }
-          
-          // Check if object is accessible (at current location or in inventory)
-          const isAccessible = obj.location === prev.aiPosition || prev.aiInventory.includes(object_id);
-          if (!isAccessible) {
-            validationError = `You cannot reach ${obj.name}. You are at ${prev.aiPosition}, object is at ${obj.location}`;
-            return prev;
-          }
-          
-          // Handle special interactions
-          if (object_id === "coffee_machine" && use_with_object_id === "coffee_mug") {
-            const mug = prev.objects.find(o => o.id === "coffee_mug");
-            if (!mug) {
-              validationError = "Coffee mug not found";
-              return prev;
-            }
-            
-            if (!prev.aiInventory.includes("coffee_mug")) {
-              validationError = "You need to be holding the coffee mug to fill it";
-              return prev;
-            }
-            
-            resultMessage = "You filled the coffee mug with fresh hot coffee!";
-            addToLog(`AI used coffee machine to fill coffee mug`);
-            addToHistory("use", "Filled coffee mug using coffee machine");
-            
-            return {
-              ...prev,
-              objects: prev.objects.map(o => 
-                o.id === "coffee_mug" 
-                  ? { ...o, description: "A coffee mug filled with hot coffee", state: { filled: true } }
-                  : o
-              ),
-            };
-          }
-          
-          // Generic use
-          resultMessage = use_with_object_id 
-            ? `You used ${obj.name} with ${use_with_object_id}`
-            : `You used ${obj.name}`;
-          addToLog(`AI used: ${object_id}${use_with_object_id ? ` with ${use_with_object_id}` : ""}`);
-          addToHistory("use", `Used ${obj.name}${use_with_object_id ? ` with ${use_with_object_id}` : ""}`);
-          
-          return prev;
-        });
-        
-        if (validationError) {
-          return { success: false, message: validationError };
+        if (!obj) {
+          return { success: false, message: `Object ${object_id} does not exist` };
         }
+        
+        if (!obj.canUse) {
+          return { success: false, message: `${obj.name} cannot be used` };
+        }
+        
+        // Check if object is accessible (at current location or in inventory)
+        const isAccessible = obj.location === currentState.aiPosition || currentState.aiInventory.includes(object_id);
+        if (!isAccessible) {
+          return { success: false, message: `You cannot reach ${obj.name}. You are at ${currentState.aiPosition}, object is at ${obj.location}` };
+        }
+        
+        // Handle special interactions
+        if (object_id === "coffee_machine" && use_with_object_id === "coffee_mug") {
+          const mug = currentState.objects.find(o => o.id === "coffee_mug");
+          if (!mug) {
+            return { success: false, message: "Coffee mug not found" };
+          }
+          
+          if (!currentState.aiInventory.includes("coffee_mug")) {
+            return { success: false, message: "You need to be holding the coffee mug to fill it" };
+          }
+          
+          setWorldState(prev => ({
+            ...prev,
+            objects: prev.objects.map(o => 
+              o.id === "coffee_mug" 
+                ? { ...o, description: "A coffee mug filled with hot coffee", state: { filled: true } }
+                : o
+            ),
+          }));
+          
+          addToLog(`AI used coffee machine to fill coffee mug`);
+          addToHistory("use", "Filled coffee mug using coffee machine");
+          
+          return { success: true, message: "You filled the coffee mug with fresh hot coffee!" };
+        }
+        
+        // Generic use
+        const resultMessage = use_with_object_id 
+          ? `You used ${obj.name} with ${use_with_object_id}`
+          : `You used ${obj.name}`;
+        
+        addToLog(`AI used: ${object_id}${use_with_object_id ? ` with ${use_with_object_id}` : ""}`);
+        addToHistory("use", `Used ${obj.name}${use_with_object_id ? ` with ${use_with_object_id}` : ""}`);
         
         return { success: true, message: resultMessage };
       },
     }),
 
     look_at: tool({
-      description: "You look at an object or location",
+      description: "You look at an object, location, or person to see detailed information about it",
       inputSchema: z.object({
-        object_id: z.string().describe("The ID of the object or location to look at"),
+        object_id: z.string().describe("The ID of the object, location, or 'other_player' to look at"),
       }),
       execute: async ({ object_id }) => {
+        // Get current state to build message
+        const currentState = worldState;
+        let detailedMessage = "";
+        
+        // Special case: looking at the player
+        if (object_id === "other_player" || object_id === "player") {
+          const playerLocation = currentState.playerPosition.replace(/_/g, " ");
+          detailedMessage = `You look at the player. They are currently at ${playerLocation}.`;
+          
+          // Add inventory information
+          if (currentState.playerInventory.length === 0) {
+            detailedMessage += " They are not carrying anything.";
+          } else {
+            const inventoryItems = currentState.playerInventory
+              .map(objId => {
+                const obj = currentState.objects.find(o => o.id === objId);
+                if (obj) {
+                  const stateSuffix = obj.state?.filled ? " (filled with coffee)" : "";
+                  return `${obj.name}${stateSuffix}`;
+                }
+                return objId;
+              })
+              .join(", ");
+            detailedMessage += ` They are carrying: ${inventoryItems}.`;
+          }
+          
+          // Mention if you're at the same location
+          if (currentState.aiPosition === currentState.playerPosition) {
+            detailedMessage += " You are both at the same location.";
+          }
+          
+          setWorldState(prev => ({ ...prev, aiLookingAt: "other_player" }));
+          addToLog(`AI is looking at: other_player`);
+          addToHistory("looking", "Started looking at the player");
+          return { success: true, message: detailedMessage };
+        }
+        
+        // Check if it's a valid location or object
+        const isLocation = LOCATIONS.includes(object_id as LocationId);
+        const isObject = currentState.objects.some(o => o.id === object_id);
+        
+        if (!isLocation && !isObject) {
+          return { success: false, message: `Cannot look at '${object_id}' - it doesn't exist in this world` };
+        }
+        
+        // Build detailed description based on what's being looked at
+        if (isLocation) {
+          // Looking at a location - describe what's there
+          const objectsAtLocation = currentState.objects.filter(o => o.location === object_id);
+          const locationName = object_id.replace(/_/g, " ");
+          
+          detailedMessage = `You look at ${locationName}.`;
+          
+          // Mention if you're at this location
+          if (object_id === currentState.aiPosition) {
+            detailedMessage += " This is where you currently are.";
+          }
+          
+          // List objects
+          if (objectsAtLocation.length === 0) {
+            detailedMessage += " There's nothing notable here right now.";
+          } else {
+            const objectDescriptions = objectsAtLocation.map(obj => {
+              const stateSuffix = obj.state?.filled ? " (filled with hot coffee)" : "";
+              return `${obj.name}${stateSuffix}`;
+            });
+            
+            detailedMessage += ` You can see: ${objectDescriptions.join(", ")}.`;
+          }
+          
+          // Check if player is at this location
+          if (object_id === currentState.playerPosition) {
+            detailedMessage += " The player is here.";
+          }
+        } else {
+          // Looking at a specific object - provide detailed description
+          const obj = currentState.objects.find(o => o.id === object_id);
+          if (obj) {
+            let description = `You look at the ${obj.name}. ${obj.description}`;
+            
+            // Add state information
+            if (obj.state?.filled) {
+              description += " It's filled with hot coffee.";
+            }
+            
+            // Add location context
+            if (obj.location === "inventory") {
+              description += " You're currently holding it.";
+            } else if (obj.location === "other_player_inventory") {
+              description += " The player is holding it.";
+            } else {
+              description += ` It's located at ${obj.location.replace(/_/g, " ")}.`;
+            }
+            
+            // Add capability hints
+            const capabilities = [];
+            if (obj.canPickUp && obj.location !== "inventory") capabilities.push("can be picked up");
+            if (obj.canUse) capabilities.push("can be used");
+            if (capabilities.length > 0) {
+              description += ` This object ${capabilities.join(" and ")}.`;
+            }
+            
+            detailedMessage = description;
+          } else {
+            // Object should exist but wasn't found - shouldn't happen but handle gracefully
+            detailedMessage = `You look at ${object_id.replace(/_/g, " ")}, but can't make out any details.`;
+          }
+        }
+        
         setWorldState(prev => ({ ...prev, aiLookingAt: object_id }));
         addToLog(`AI is looking at: ${object_id}`);
         addToHistory("looking", `Started looking at ${object_id.replace(/_/g, " ")}`);
-        return { success: true, message: `You are now looking at ${object_id}` };
+        
+        return { success: true, message: detailedMessage };
       },
     }),
 
@@ -974,7 +1159,7 @@ function TextWorldChat({ apiKey }: { apiKey: string }) {
         return { success: true, message: `You take a mental snapshot of what you're currently looking at.` };
       },
     }),
-  }), [addToLog, addToHistory]);
+  }), [addToLog, addToHistory, worldState]);
 
   // Create JavaScript API from base tools
   // This automatically exposes all base tools to the perform_complex_actions environment
