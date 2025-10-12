@@ -3,9 +3,9 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import * as THREE from 'three'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
-import { KeyboardControls, PointerLockControls, useKeyboardControls, Line } from '@react-three/drei'
+import { KeyboardControls, PointerLockControls, useKeyboardControls, Line, Html } from '@react-three/drei'
 import { Ground, BoxMarker, Building, LabelSprite, EnhancedObject, SmallSphere, InventoryItem } from '../../lib/bunker-scene'
-import { BUILDINGS, N, NODE_POS, type Vec3, type NodeId } from '../../lib/bunker-world'
+import { BUILDINGS, N, NODE_POS, getBuildingDoorPosition, type Vec3, type NodeId, type BuildingConfig } from '../../lib/bunker-world'
 import type * as React from 'react'
 
 type Controls = 'forward' | 'backward' | 'left' | 'right' | 'run'
@@ -65,9 +65,14 @@ function Player({ poseRef, jumpOffsetRef, onLock, onUnlock, startSelector }: {
 
   useEffect(() => {
     const spawn = NODE_POS[N.COURTYARD]
-    camera.position.set(spawn[0], PLAYER_EYE_HEIGHT, spawn[2])
-    camera.rotation.set(0, 0, 0)
-    poseRef.current = { position: [spawn[0], PLAYER_EYE_HEIGHT, spawn[2]], yaw: 0, pitch: 0 }
+    const initialPose: AgentPose = {
+      position: [spawn[0], PLAYER_EYE_HEIGHT, spawn[2]],
+      yaw: 3/4 * Math.PI,
+      pitch: 0,
+    }
+    camera.position.set(...initialPose.position)
+    camera.rotation.set(initialPose.pitch, initialPose.yaw, 0)
+    poseRef.current = initialPose
   }, [camera, poseRef])
 
   useFrame((_, delta) => {
@@ -106,6 +111,60 @@ function FacingArrow({ origin, yaw, length = 1.5, color = '#22d3ee' }: { origin:
   }, [yaw])
   const end: Vec3 = useMemo(() => [origin[0] + forward.x * length, origin[1], origin[2] + forward.z * length], [origin, forward, length])
   return <Line points={[origin, end]} color={color} lineWidth={2} dashed={false} />
+}
+function clamp(x: number, a: number, b: number): number { return Math.max(a, Math.min(b, x)) }
+
+function computeDoorPromptTarget(building: BuildingConfig, cameraPos: Vec3): Vec3 {
+  const [cx, cy, cz] = building.center
+  const [bw, _bh, bd] = building.size
+  const [doorW, doorH] = building.doorSize
+  // Use the actual wall face plane (door embedded in wall), not the external offset node
+  let center = new THREE.Vector3(cx, cy + doorH / 2, cz)
+  let normal = new THREE.Vector3(1, 0, 0)
+  let axisU = new THREE.Vector3(0, 0, 1)
+  if (building.doorFace === 'west') { center = new THREE.Vector3(cx - bw / 2, cy + doorH / 2, cz); normal = new THREE.Vector3(-1, 0, 0); axisU = new THREE.Vector3(0, 0, 1) }
+  else if (building.doorFace === 'east') { center = new THREE.Vector3(cx + bw / 2, cy + doorH / 2, cz); normal = new THREE.Vector3(1, 0, 0); axisU = new THREE.Vector3(0, 0, 1) }
+  else if (building.doorFace === 'south') { center = new THREE.Vector3(cx, cy + doorH / 2, cz + bd / 2); normal = new THREE.Vector3(0, 0, 1); axisU = new THREE.Vector3(1, 0, 0) }
+  else if (building.doorFace === 'north') { center = new THREE.Vector3(cx, cy + doorH / 2, cz - bd / 2); normal = new THREE.Vector3(0, 0, -1); axisU = new THREE.Vector3(1, 0, 0) }
+  // Return the exact center of the door. The InteractionPrompt3D will nudge toward the camera,
+  // ensuring the prompt is between the player and the door and at mid-height.
+  return [center.x, center.y, center.z]
+}
+function InteractionPrompt3D({ text, target, onActivate, visible = true }: { text: string; target: Vec3 | null; onActivate?: () => void; visible?: boolean }) {
+  const groupRef = useRef<THREE.Group | null>(null)
+  const camera = useThree((s) => s.camera)
+  const cleanText = useMemo(() => (text || '').replace(/^\s*press\s*[eE]\s*to\s*/i, ''), [text])
+
+  useFrame(() => {
+    if (!groupRef.current || !target || !visible) return
+    const cam = camera.position
+    const t = new THREE.Vector3(target[0], target[1], target[2])
+    // Place prompt very close to the object, nudged slightly toward the camera
+    const dirToTarget = new THREE.Vector3().copy(t).sub(cam)
+    const dist = dirToTarget.length() || 1
+    dirToTarget.normalize()
+    // Nudge amount scales a bit with distance so it doesn't sit inside the object when you're very close
+    const nudge = Math.min(0.5, Math.max(0.18, dist * 0.06))
+    const pos = new THREE.Vector3().copy(t).addScaledVector(dirToTarget, -nudge)
+    pos.y += 0.2
+    groupRef.current.position.copy(pos)
+  })
+
+  if (!visible || !target) return null
+  return (
+    <group ref={groupRef}>
+      <Html sprite center distanceFactor={8} style={{ pointerEvents: 'auto', transform: 'translateZ(0) scale(0.78)' }}>
+        <button
+          type="button"
+          onClick={() => onActivate?.()}
+          className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-black/70 text-gray-100 border border-white/10 shadow-md backdrop-blur-sm max-w-[180px] whitespace-normal"
+        >
+          <span className="px-1 py-0.5 rounded bg-gray-800 text-gray-200 border border-white/10 text-[10px] leading-none">E</span>
+          <span className="text-[11px] leading-tight">{cleanText || 'Interact'}</span>
+        </button>
+      </Html>
+    </group>
+  )
 }
 
 // (Removed in-world ActionButton; replaced with DOM toolbar buttons below the canvas)
@@ -899,6 +958,7 @@ export default function NpcChatPage() {
 
   // Player action helpers
   const [interactPrompt, setInteractPrompt] = useState<string>('')
+  const [interactTarget, setInteractTarget] = useState<Vec3 | null>(null)
   const interactHandlerRef = useRef<() => void>(() => {})
   useEffect(() => {
     const id = setInterval(() => {
@@ -910,30 +970,36 @@ export default function NpcChatPage() {
       const pStar = world.starPresent && near(N.STAR, 1.7)
       if (pKey) {
         setInteractPrompt('Press E to Pick up Key')
+        setInteractTarget([NODE_POS[N.TABLE][0], NODE_POS[N.TABLE][1] + 0.6, NODE_POS[N.TABLE][2]])
         interactHandlerRef.current = () => { void worldOps.current.pickupKey('player') }
         return
       }
       if (pUnlock) {
         setInteractPrompt('Press E to Unlock Storage')
+        setInteractTarget(computeDoorPromptTarget(BUILDINGS.STORAGE, playerPoseRef.current.position))
         interactHandlerRef.current = () => { void worldOps.current.unlockStorage('player') }
         return
       }
       if (pC4) {
         setInteractPrompt('Press E to Pick up C4')
+        setInteractTarget([NODE_POS[N.C4_TABLE][0], NODE_POS[N.C4_TABLE][1] + 0.6, NODE_POS[N.C4_TABLE][2]])
         interactHandlerRef.current = () => { void worldOps.current.pickupC4('player') }
         return
       }
       if (pPlace) {
         setInteractPrompt('Press E to Place C4')
+        setInteractTarget(computeDoorPromptTarget(BUILDINGS.BUNKER, playerPoseRef.current.position))
         interactHandlerRef.current = () => { void worldOps.current.placeC4('player') }
         return
       }
       if (pStar) {
         setInteractPrompt('Press E to Pick up Star')
+        setInteractTarget([NODE_POS[N.STAR][0], NODE_POS[N.STAR][1] + 0.5, NODE_POS[N.STAR][2]])
         interactHandlerRef.current = () => { void worldOps.current.pickupStar('player') }
         return
       }
       setInteractPrompt('')
+      setInteractTarget(null)
       interactHandlerRef.current = () => {}
     }, 120)
     return () => clearInterval(id)
@@ -1095,7 +1161,7 @@ export default function NpcChatPage() {
           <div className="lg:col-span-2">
             <div className="w-full h-[80vh] bg-black rounded-lg overflow-hidden relative">
               <KeyboardControls map={controlsMap}>
-                <Canvas shadows camera={{ fov: 75 }}>
+                <Canvas shadows camera={{ fov: 75, rotation: [0, Math.PI/2, 0] }}>
                   <ambientLight intensity={0.6} />
                   <directionalLight position={[10, 20, 10]} intensity={0.9} castShadow />
 
@@ -1130,9 +1196,9 @@ export default function NpcChatPage() {
 
                   <BoxMarker position={NODE_POS[N.COURTYARD]} color="#2c3e50" label="Courtyard" />
                   <BoxMarker position={NODE_POS[N.TABLE]} color="#2f74c0" label="Table" />
-                  <BoxMarker position={NODE_POS[N.STORAGE_DOOR]} color="#a16207" label="Storage Door" />
+                  {/* <BoxMarker position={NODE_POS[N.STORAGE_DOOR]} color="#a16207" label="Storage Door" /> */}
                   <BoxMarker position={NODE_POS[N.C4_TABLE]} color="#7f1d1d" label="C4 Table" />
-                  <BoxMarker position={NODE_POS[N.BUNKER_DOOR]} color="#7c2d12" label="Bunker Door" />
+                  {/* <BoxMarker position={NODE_POS[N.BUNKER_DOOR]} color="#7c2d12" label="Bunker Door" /> */}
                   <BoxMarker position={NODE_POS[N.STAR]} color="#6b21a8" label="Star" />
                   <BoxMarker position={NODE_POS[N.SAFE]} color="#0ea5e9" label="Blast Safe Zone" />
 
@@ -1180,6 +1246,14 @@ export default function NpcChatPage() {
                   {playerInv.hasStar && (<InventoryItem agentPos={[playerPose.position[0], 0, playerPose.position[2]]} type="star" color="#fde68a" index={2} />)}
 
                   {/* No in-world action buttons */}
+
+                  {/* In-world interaction prompt */}
+                  <InteractionPrompt3D
+                    text={interactPrompt}
+                    target={interactTarget}
+                    onActivate={() => interactHandlerRef.current()}
+                    visible={Boolean(interactPrompt && interactTarget)}
+                  />
                 </Canvas>
               </KeyboardControls>
               <div id="startPointerLock" className="absolute inset-0 select-none cursor-pointer" style={{ display: isLocked ? 'none' : 'block' }} title="Click to start (Esc to unlock)">
@@ -1199,9 +1273,6 @@ export default function NpcChatPage() {
                 <button type="button" className="px-2 py-1 text-xs rounded bg-slate-700 hover:bg-slate-600 text-white" onClick={() => void worldOps.current.pickupStar('player')}>Pick Star</button>
               </div>
             </div>
-            {interactPrompt && (
-              <div className="mt-2 text-emerald-300 text-sm">{interactPrompt}</div>
-            )}
           </div>
 
           {/* Chat sidebar */}

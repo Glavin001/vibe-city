@@ -1,0 +1,5 @@
+---
+globs: src/app/**/page.tsx,src/app/page.tsx
+alwaysApply: false
+---
+- Whenever you add a new page, also add its listing to the root homepage at `src/app/page.tsx`

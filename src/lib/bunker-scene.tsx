@@ -256,7 +256,7 @@ export function Building({
           </mesh>
         </group>
       )}
-      <LabelSprite position={[0, dy / 2 + 0.6, 0]} text={label} />
+      <LabelSprite position={[0, dy / 2 + 1.6, 0]} text={label} />
     </group>
   )
 }
