@@ -103,6 +103,12 @@ const demoCategories: DemoCategory[] = [
     name: "AI & Game Logic",
     demos: [
       {
+        href: "/ai-world",
+        icon: "🌐",
+        title: "AI World (Advanced)",
+        description: "Advanced 3D interactive world with physics, multiple AI NPCs, action system, and Gemini chat integration. Complete ECS-style world with HTN planning."
+      },
+      {
         href: "/bunker",
         icon: "🏰",
         title: "Bunker Mission (HTN)",

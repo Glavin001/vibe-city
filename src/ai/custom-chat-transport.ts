@@ -51,7 +51,7 @@ export class CustomChatTransport implements ChatTransport<UIMessage> {
       messages: convertToModelMessages(options.messages),
       abortSignal: options.abortSignal,
       tools: this.tools,
-      stopWhen: this.tools ? stepCountIs(5) : undefined,
+      stopWhen: this.tools ? stepCountIs(10) : undefined,
       system: this.systemPrompt || undefined,
       providerOptions: {
         google: {
