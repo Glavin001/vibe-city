@@ -43,6 +43,12 @@ const demoCategories: DemoCategory[] = [
         icon: "🔲",
         title: "Instanced Mesh2 Demo",
         description: "Advanced instanced mesh rendering for thousands of objects. Demonstrates GPU optimization techniques."
+      },
+      {
+        href: "/wood-materials",
+        icon: "🪵",
+        title: "Procedural Wood Materials",
+        description: "Showcase of procedural wood materials with different wood types and finishes. Interactive controls for customizing wood appearance."
       }
     ]
   },
