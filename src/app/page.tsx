@@ -27,6 +27,12 @@ const demoCategories: DemoCategory[] = [
         description: "Optimized 3D character model with 45 animations. Demonstrates instanced rendering and animation blending with gltfjsx."
       },
       {
+        href: "/animation-mixer-demo",
+        icon: "🎭",
+        title: "Animation State Machine",
+        description: "Advanced animation blending with 2D blend spaces, layered animations, and state machines. Features parameter damping, masked layers, and smooth transitions."
+      },
+      {
         href: "/grass",
         icon: "🌿",
         title: "Grass Demo (V1)",
@@ -45,10 +51,22 @@ const demoCategories: DemoCategory[] = [
         description: "Advanced instanced mesh rendering for thousands of objects. Demonstrates GPU optimization techniques."
       },
       {
-        href: "/wood-materials",
-        icon: "🪵",
-        title: "Procedural Wood Materials",
-        description: "Showcase of procedural wood materials with different wood types and finishes. Interactive controls for customizing wood appearance."
+        href: "/materials",
+        icon: "🎨",
+        title: "Materials Gallery",
+        description: "Comprehensive WebGPU materials showcase featuring 10 procedural wood types (40 variations) and 8 industry-standard MaterialX materials. All displayed in a unified grid with interactive controls. Includes chrome, copper, gold, jade, marble, velvet, plastic, and brushed metal."
+      },
+      {
+        href: "/decals-demo",
+        icon: "🎯",
+        title: "Instanced Decals Demo",
+        description: "Click-to-place decals on instanced meshes with BatchedMesh for efficient rendering. Demonstrates raycasting, DecalGeometry, and ring buffer optimization with up to 2000 decals in a single draw call."
+      },
+      {
+        href: "/gpu-rain",
+        icon: "🌧️",
+        title: "GPU Compute Particles Rain",
+        description: "WebGPU compute shader rain simulation with 50,000 particles. Features real-time collision detection via render-to-texture, GPU-driven particle physics, and dynamic ripple effects."
       }
     ]
   },
@@ -246,7 +264,7 @@ export default function Home() {
     <div className="min-h-screen bg-gradient-to-b from-gray-900 via-gray-900 to-black">
       <div className="container mx-auto px-6 py-12 max-w-7xl">
         <header className="text-center mb-16">
-          <h1 className="text-5xl font-bold text-white mb-4 bg-gradient-to-r from-blue-400 to-purple-600 bg-clip-text text-transparent">
+          <h1 className="text-5xl font-bold mb-4 bg-gradient-to-r from-blue-400 to-purple-600 bg-clip-text text-transparent">
             Vibe City Demos
           </h1>
           <p className="text-xl text-gray-400 max-w-2xl mx-auto">
