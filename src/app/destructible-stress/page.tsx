@@ -102,7 +102,12 @@ function Scene({ debug, physicsWireframe, gravity, iteration, structureId, projT
   const camera = useThree((s) => s.camera as THREE.Camera);
   const scene = useThree((s) => s.scene as THREE.Scene);
   const rapierDebugRef = useRef<RapierDebugRenderer | null>(null);
+  const physicsWireframeStateRef = useRef<boolean>(physicsWireframe);
   const isDev = true; //process.env.NODE_ENV !== 'production';
+  useEffect(() => {
+    physicsWireframeStateRef.current = physicsWireframe;
+  }, [physicsWireframe]);
+
 
   const placeClickMarker = useCallback((pos: THREE.Vector3) => {
     if (!groupRef.current) return;
@@ -162,20 +167,10 @@ function Scene({ debug, physicsWireframe, gravity, iteration, structureId, projT
           rapierDebugRef.current.dispose({});
           rapierDebugRef.current = null;
         }
-        // Always create; enable state is controlled separately
-        rapierDebugRef.current = new RapierDebugRenderer(scene, core.world, { enabled: physicsWireframe });
+        // Initialize with current wireframe state stored in ref; further changes handled by separate effect
+        rapierDebugRef.current = new RapierDebugRenderer(scene, core.world, { enabled: physicsWireframeStateRef.current });
       } catch {}
-
-      // Listen for a one-time test projectile spawn request
-      const onSpawn = () => {
-        const target = new THREE.Vector3(0, 1.5, 0);
-        const start = new THREE.Vector3(0, 4.5, 6);
-        const dir = target.clone().sub(start).normalize();
-        const vel = dir.multiplyScalar(projectileSpeed);
-        if (isDev) console.debug('[Page] onSpawn', { start, target, vel, iteration });
-        core.enqueueProjectile({ start: { x: start.x, y: start.y, z: start.z }, linvel: { x: vel.x, y: vel.y, z: vel.z }, x: target.x, z: target.z, type: 'ball', radius: 0.5, mass: projectileMass, friction: 0.6, restitution: 0.2 });
-      };
-      window.addEventListener('spawnTestProjectile', onSpawn, { once: true });
+      if (isDev) console.debug('[Page] Initialized destructible core', { iteration, gravity, structureId });
     })();
     return () => {
       mounted = false;
@@ -207,7 +202,25 @@ function Scene({ debug, physicsWireframe, gravity, iteration, structureId, projT
       if (coreRef.current) coreRef.current.dispose();
       coreRef.current = null;
     };
-  }, [iteration, gravity, structureId, wallSpan, wallHeight, wallThickness, wallSpanSeg, wallHeightSeg, wallLayers, projectileSpeed, projectileMass, bondsXEnabled, bondsYEnabled, bondsZEnabled, physicsWireframe, scene]);
+  }, [iteration, gravity, structureId, wallSpan, wallHeight, wallThickness, wallSpanSeg, wallHeightSeg, wallLayers, bondsXEnabled, bondsYEnabled, bondsZEnabled, scene]);
+
+  // Listen for a one-time test projectile spawn request; depends on speed/mass only
+  useEffect(() => {
+    const onSpawn = () => {
+      const core = coreRef.current;
+      if (!core) return;
+      const target = new THREE.Vector3(0, 1.5, 0);
+      const start = new THREE.Vector3(0, 4.5, 6);
+      const dir = target.clone().sub(start).normalize();
+      const vel = dir.multiplyScalar(projectileSpeed);
+      if (isDev) console.debug('[Page] onSpawn', { start, target, vel });
+      core.enqueueProjectile({ start: { x: start.x, y: start.y, z: start.z }, linvel: { x: vel.x, y: vel.y, z: vel.z }, x: target.x, z: target.z, type: 'ball', radius: 0.5, mass: projectileMass, friction: 0.6, restitution: 0.2 });
+    };
+    window.addEventListener('spawnTestProjectile', onSpawn, { once: true });
+    return () => {
+      window.removeEventListener('spawnTestProjectile', onSpawn as EventListener);
+    };
+  }, [projectileSpeed, projectileMass]);
 
   // Toggle Rapier wireframe on/off when checkbox changes
   useEffect(() => {
@@ -476,9 +489,6 @@ export default function Page() {
   const [bondsZEnabled, setBondsZEnabled] = useState(true);
   const structures = STRESS_PRESET_METADATA;
   const currentStructure = structures.find((item) => item.id === structureId) ?? structures[0];
-  useEffect(() => {
-    setIteration((value) => value + 1);
-  }, [structureId]);
   // Auto-spawn on first render disabled; click-to-spawn only.
   return (
     <div style={{ width: "100%", height: "100vh" }}>
