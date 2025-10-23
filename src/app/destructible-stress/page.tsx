@@ -7,6 +7,13 @@ import { OrbitControls, StatsGl } from "@react-three/drei";
 import { buildDestructibleCore } from "@/lib/stress/core/destructible-core";
 import type { DestructibleCore } from "@/lib/stress/core/types";
 import { buildWallScenario } from "@/lib/stress/scenarios/wallScenario";
+import {
+  STRESS_PRESET_METADATA,
+  buildBridgeScenario,
+  buildHutScenario,
+  buildTowerScenario,
+  type StressPresetId,
+} from "@/lib/stress/scenarios/structurePresets";
 import { buildChunkMeshes, buildSolverDebugHelper, updateChunkMeshes, updateProjectileMeshes } from "@/lib/stress/three/destructible-adapter";
 import RapierDebugRenderer from "@/lib/rapier/rapier-debug-renderer";
 
@@ -26,6 +33,7 @@ type SceneProps = {
   physicsWireframe: boolean;
   gravity: number;
   iteration: number;
+  structureId: StressPresetId;
   projType: 'ball' | 'box';
   projectileSpeed: number;
   projectileMass: number;
@@ -43,7 +51,50 @@ type SceneProps = {
   onReset: () => void;
 };
 
-function Scene({ debug, physicsWireframe, gravity, iteration, projType, projectileSpeed, projectileMass, materialScale, wallSpan, wallHeight, wallThickness, wallSpanSeg, wallHeightSeg, wallLayers, showAllDebugLines, bondsXEnabled, bondsYEnabled, bondsZEnabled, onReset: _onReset }: SceneProps) {
+type ScenarioBuilderParams = {
+  wallSpan: number;
+  wallHeight: number;
+  wallThickness: number;
+  wallSpanSeg: number;
+  wallHeightSeg: number;
+  wallLayers: number;
+  bondsXEnabled: boolean;
+  bondsYEnabled: boolean;
+  bondsZEnabled: boolean;
+};
+
+const SCENARIO_BUILDERS: Record<StressPresetId, (params: ScenarioBuilderParams) => ReturnType<typeof buildWallScenario>> = {
+  wall: ({
+    wallSpan,
+    wallHeight,
+    wallThickness,
+    wallSpanSeg,
+    wallHeightSeg,
+    wallLayers,
+    bondsXEnabled,
+    bondsYEnabled,
+    bondsZEnabled,
+  }) =>
+    buildWallScenario({
+      span: wallSpan,
+      height: wallHeight,
+      thickness: wallThickness,
+      spanSegments: wallSpanSeg,
+      heightSegments: wallHeightSeg,
+      layers: wallLayers,
+      bondsX: bondsXEnabled,
+      bondsY: bondsYEnabled,
+      bondsZ: bondsZEnabled,
+    }),
+  hut: ({ bondsXEnabled, bondsYEnabled, bondsZEnabled }) =>
+    buildHutScenario({ bondsX: bondsXEnabled, bondsY: bondsYEnabled, bondsZ: bondsZEnabled }),
+  bridge: ({ bondsXEnabled, bondsYEnabled, bondsZEnabled }) =>
+    buildBridgeScenario({ bondsX: bondsXEnabled, bondsY: bondsYEnabled, bondsZ: bondsZEnabled }),
+  tower: ({ bondsXEnabled, bondsYEnabled, bondsZEnabled }) =>
+    buildTowerScenario({ bondsX: bondsXEnabled, bondsY: bondsYEnabled, bondsZ: bondsZEnabled }),
+};
+
+function Scene({ debug, physicsWireframe, gravity, iteration, structureId, projType, projectileSpeed, projectileMass, materialScale, wallSpan, wallHeight, wallThickness, wallSpanSeg, wallHeightSeg, wallLayers, showAllDebugLines, bondsXEnabled, bondsYEnabled, bondsZEnabled, onReset: _onReset }: SceneProps) {
   const coreRef = useRef<DestructibleCore | null>(null);
   const debugHelperRef = useRef<ReturnType<typeof buildSolverDebugHelper> | null>(null);
   const chunkMeshesRef = useRef<THREE.Mesh[] | null>(null);
@@ -74,7 +125,18 @@ function Scene({ debug, physicsWireframe, gravity, iteration, projType, projecti
   useEffect(() => {
     let mounted = true;
     (async () => {
-      const scenario = buildWallScenario({ span: wallSpan, height: wallHeight, thickness: wallThickness, spanSegments: wallSpanSeg, heightSegments: wallHeightSeg, layers: wallLayers, bondsX: bondsXEnabled, bondsY: bondsYEnabled, bondsZ: bondsZEnabled });
+      const builder = SCENARIO_BUILDERS[structureId] ?? SCENARIO_BUILDERS.wall;
+      const scenario = builder({
+        wallSpan,
+        wallHeight,
+        wallThickness,
+        wallSpanSeg,
+        wallHeightSeg,
+        wallLayers,
+        bondsXEnabled,
+        bondsYEnabled,
+        bondsZEnabled,
+      });
       const core = await buildDestructibleCore({
         scenario,
         nodeSize: (_index, scen) => {
@@ -145,7 +207,7 @@ function Scene({ debug, physicsWireframe, gravity, iteration, projType, projecti
       if (coreRef.current) coreRef.current.dispose();
       coreRef.current = null;
     };
-  }, [iteration, gravity, wallSpan, wallHeight, wallThickness, wallSpanSeg, wallHeightSeg, wallLayers, projectileSpeed, projectileMass, bondsXEnabled, bondsYEnabled, bondsZEnabled, physicsWireframe, scene]);
+  }, [iteration, gravity, structureId, wallSpan, wallHeight, wallThickness, wallSpanSeg, wallHeightSeg, wallLayers, projectileSpeed, projectileMass, bondsXEnabled, bondsYEnabled, bondsZEnabled, physicsWireframe, scene]);
 
   // Toggle Rapier wireframe on/off when checkbox changes
   useEffect(() => {
@@ -277,7 +339,8 @@ function Scene({ debug, physicsWireframe, gravity, iteration, projType, projecti
   );
 }
 
-function HtmlOverlay({ debug, setDebug, physicsWireframe, setPhysicsWireframe, gravity, setGravity, projType, setProjType, reset, projectileSpeed, setProjectileSpeed, projectileMass, setProjectileMass, materialScale, setMaterialScale, wallSpan, setWallSpan, wallHeight, setWallHeight, wallThickness, setWallThickness, wallSpanSeg, setWallSpanSeg, wallHeightSeg, setWallHeightSeg, wallLayers, setWallLayers, showAllDebugLines, setShowAllDebugLines, bondsXEnabled, setBondsXEnabled, bondsYEnabled, setBondsYEnabled, bondsZEnabled, setBondsZEnabled }: { debug: boolean; setDebug: (v: boolean) => void; physicsWireframe: boolean; setPhysicsWireframe: (v: boolean) => void; gravity: number; setGravity: (v: number) => void; projType: 'ball' | 'box'; setProjType: (v: 'ball' | 'box') => void; reset: () => void; projectileSpeed: number; setProjectileSpeed: (v: number) => void; projectileMass: number; setProjectileMass: (v: number) => void; materialScale: number; setMaterialScale: (v: number) => void; wallSpan: number; setWallSpan: (v: number) => void; wallHeight: number; setWallHeight: (v: number) => void; wallThickness: number; setWallThickness: (v: number) => void; wallSpanSeg: number; setWallSpanSeg: (v: number) => void; wallHeightSeg: number; setWallHeightSeg: (v: number) => void; wallLayers: number; setWallLayers: (v: number) => void; showAllDebugLines: boolean; setShowAllDebugLines: (v: boolean) => void; bondsXEnabled: boolean; setBondsXEnabled: (v: boolean) => void; bondsYEnabled: boolean; setBondsYEnabled: (v: boolean) => void; bondsZEnabled: boolean; setBondsZEnabled: (v: boolean) => void }) {
+function HtmlOverlay({ debug, setDebug, physicsWireframe, setPhysicsWireframe, gravity, setGravity, projType, setProjType, reset, projectileSpeed, setProjectileSpeed, projectileMass, setProjectileMass, materialScale, setMaterialScale, wallSpan, setWallSpan, wallHeight, setWallHeight, wallThickness, setWallThickness, wallSpanSeg, setWallSpanSeg, wallHeightSeg, setWallHeightSeg, wallLayers, setWallLayers, showAllDebugLines, setShowAllDebugLines, bondsXEnabled, setBondsXEnabled, bondsYEnabled, setBondsYEnabled, bondsZEnabled, setBondsZEnabled, structureId, setStructureId, structures, structureDescription, }: { debug: boolean; setDebug: (v: boolean) => void; physicsWireframe: boolean; setPhysicsWireframe: (v: boolean) => void; gravity: number; setGravity: (v: number) => void; projType: 'ball' | 'box'; setProjType: (v: 'ball' | 'box') => void; reset: () => void; projectileSpeed: number; setProjectileSpeed: (v: number) => void; projectileMass: number; setProjectileMass: (v: number) => void; materialScale: number; setMaterialScale: (v: number) => void; wallSpan: number; setWallSpan: (v: number) => void; wallHeight: number; setWallHeight: (v: number) => void; wallThickness: number; setWallThickness: (v: number) => void; wallSpanSeg: number; setWallSpanSeg: (v: number) => void; wallHeightSeg: number; setWallHeightSeg: (v: number) => void; wallLayers: number; setWallLayers: (v: number) => void; showAllDebugLines: boolean; setShowAllDebugLines: (v: boolean) => void; bondsXEnabled: boolean; setBondsXEnabled: (v: boolean) => void; bondsYEnabled: boolean; setBondsYEnabled: (v: boolean) => void; bondsZEnabled: boolean; setBondsZEnabled: (v: boolean) => void; structureId: StressPresetId; setStructureId: (v: StressPresetId) => void; structures: typeof STRESS_PRESET_METADATA; structureDescription?: string }) {
+  const isWallStructure = structureId === "wall";
   return (
     <div style={{ position: 'absolute', top: 110, left: 16, zIndex: 10, display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 360 }}>
       <div style={{ display: 'flex', gap: 8 }}>
@@ -287,6 +350,16 @@ function HtmlOverlay({ debug, setDebug, physicsWireframe, setPhysicsWireframe, g
           <option value="box">Box</option>
         </select>
       </div>
+      <select value={structureId} onChange={(e) => setStructureId(e.target.value as StressPresetId)} style={{ background: '#111', color: '#eee', border: '1px solid #333', borderRadius: 6, padding: '8px 10px' }}>
+        {structures.map((item) => (
+          <option key={item.id} value={item.id}>
+            {item.label}
+          </option>
+        ))}
+      </select>
+      {structureDescription ? (
+        <p style={{ margin: 0, color: '#9ca3af', fontSize: 13, lineHeight: 1.4 }}>{structureDescription}</p>
+      ) : null}
       <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#d1d5db', fontSize: 14 }}>
         <input type="checkbox" checked={debug} onChange={(e) => setDebug(e.target.checked)} style={{ accentColor: '#4da2ff', width: 16, height: 16 }} />
         Stress debug lines
@@ -336,37 +409,46 @@ function HtmlOverlay({ debug, setDebug, physicsWireframe, setPhysicsWireframe, g
         </label>
       </div>
       <div style={{ height: 8 }} />
-      <div style={{ color: '#9ca3af', fontSize: 13 }}>Wall</div>
+      <div style={{ color: '#9ca3af', fontSize: 13, display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <span>Wall</span>
+        {!isWallStructure ? (
+          <span style={{ color: '#6b7280', fontSize: 12 }}>
+            Dimension sliders only apply to the tunable wall preset.
+          </span>
+        ) : null}
+      </div>
+      <div style={{ opacity: isWallStructure ? 1 : 0.5, pointerEvents: isWallStructure ? 'auto' : 'none' }}>
       <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#d1d5db', fontSize: 14 }}>
         Span (m)
-        <input type="range" min={2} max={20} step={0.5} value={wallSpan} onChange={(e) => setWallSpan(parseFloat(e.target.value))} style={{ flex: 1 }} />
+        <input type="range" min={2} max={20} step={0.5} value={wallSpan} onChange={(e) => setWallSpan(parseFloat(e.target.value))} style={{ flex: 1 }} disabled={!isWallStructure} />
         <span style={{ color: '#9ca3af', width: 60, textAlign: 'right' }}>{wallSpan.toFixed(1)}</span>
       </label>
       <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#d1d5db', fontSize: 14 }}>
         Height (m)
-        <input type="range" min={1} max={10} step={0.5} value={wallHeight} onChange={(e) => setWallHeight(parseFloat(e.target.value))} style={{ flex: 1 }} />
+        <input type="range" min={1} max={10} step={0.5} value={wallHeight} onChange={(e) => setWallHeight(parseFloat(e.target.value))} style={{ flex: 1 }} disabled={!isWallStructure} />
         <span style={{ color: '#9ca3af', width: 60, textAlign: 'right' }}>{wallHeight.toFixed(1)}</span>
       </label>
       <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#d1d5db', fontSize: 14 }}>
         Thickness (m)
-        <input type="range" min={0.1} max={1.0} step={0.02} value={wallThickness} onChange={(e) => setWallThickness(parseFloat(e.target.value))} style={{ flex: 1 }} />
+        <input type="range" min={0.1} max={1.0} step={0.02} value={wallThickness} onChange={(e) => setWallThickness(parseFloat(e.target.value))} style={{ flex: 1 }} disabled={!isWallStructure} />
         <span style={{ color: '#9ca3af', width: 60, textAlign: 'right' }}>{wallThickness.toFixed(2)}</span>
       </label>
       <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#d1d5db', fontSize: 14 }}>
         Span Segments
-        <input type="range" min={3} max={30} step={1} value={wallSpanSeg} onChange={(e) => setWallSpanSeg(parseInt(e.target.value))} style={{ flex: 1 }} />
+        <input type="range" min={3} max={30} step={1} value={wallSpanSeg} onChange={(e) => setWallSpanSeg(parseInt(e.target.value))} style={{ flex: 1 }} disabled={!isWallStructure} />
         <span style={{ color: '#9ca3af', width: 60, textAlign: 'right' }}>{wallSpanSeg}</span>
       </label>
       <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#d1d5db', fontSize: 14 }}>
         Height Segments
-        <input type="range" min={1} max={12} step={1} value={wallHeightSeg} onChange={(e) => setWallHeightSeg(parseInt(e.target.value))} style={{ flex: 1 }} />
+        <input type="range" min={1} max={12} step={1} value={wallHeightSeg} onChange={(e) => setWallHeightSeg(parseInt(e.target.value))} style={{ flex: 1 }} disabled={!isWallStructure} />
         <span style={{ color: '#9ca3af', width: 60, textAlign: 'right' }}>{wallHeightSeg}</span>
       </label>
       <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#d1d5db', fontSize: 14 }}>
         Layers
-        <input type="range" min={1} max={3} step={1} value={wallLayers} onChange={(e) => setWallLayers(parseInt(e.target.value))} style={{ flex: 1 }} />
+        <input type="range" min={1} max={3} step={1} value={wallLayers} onChange={(e) => setWallLayers(parseInt(e.target.value))} style={{ flex: 1 }} disabled={!isWallStructure} />
         <span style={{ color: '#9ca3af', width: 60, textAlign: 'right' }}>{wallLayers}</span>
       </label>
+      </div>
       <p style={{ margin: 0, color: '#d1d5db', fontSize: 14 }}>Click ground to drop a projectile. Bottom row is support (infinite mass). Splits occur when bonds overstress.</p>
     </div>
   );
@@ -377,6 +459,7 @@ export default function Page() {
   const [physicsWireframe, setPhysicsWireframe] = useState(false);
   const [gravity, setGravity] = useState(-9.81);
   const [iteration, setIteration] = useState(0);
+  const [structureId, setStructureId] = useState<StressPresetId>('hut');
   const [projType, setProjType] = useState<'ball' | 'box'>("ball");
   const [projectileSpeed, setProjectileSpeed] = useState(36);
   const [projectileMass, setProjectileMass] = useState(15000);
@@ -391,6 +474,11 @@ export default function Page() {
   const [bondsXEnabled, setBondsXEnabled] = useState(true);
   const [bondsYEnabled, setBondsYEnabled] = useState(true);
   const [bondsZEnabled, setBondsZEnabled] = useState(true);
+  const structures = STRESS_PRESET_METADATA;
+  const currentStructure = structures.find((item) => item.id === structureId) ?? structures[0];
+  useEffect(() => {
+    setIteration((value) => value + 1);
+  }, [structureId]);
   // Auto-spawn on first render disabled; click-to-spawn only.
   return (
     <div style={{ width: "100%", height: "100vh" }}>
@@ -430,6 +518,10 @@ export default function Page() {
         setBondsYEnabled={setBondsYEnabled}
         bondsZEnabled={bondsZEnabled}
         setBondsZEnabled={setBondsZEnabled}
+        structureId={structureId}
+        setStructureId={setStructureId}
+        structures={structures}
+        structureDescription={currentStructure?.description}
       />
       <Canvas shadows camera={{ position: [7, 5, 9], fov: 45 }}>
         <color attach="background" args={["#0e0e12"]} />
@@ -438,6 +530,7 @@ export default function Page() {
           physicsWireframe={physicsWireframe}
           gravity={gravity}
           iteration={iteration}
+          structureId={structureId}
           projType={projType}
           projectileSpeed={projectileSpeed}
           projectileMass={projectileMass}
