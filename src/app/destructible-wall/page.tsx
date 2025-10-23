@@ -14,6 +14,7 @@ import type { CollisionEnterPayload, ContactForcePayload, RapierRigidBody } from
 // import { fracture, FractureOptions } from "@dgreenheck/three-pinata";
 import { Shockwave, SHOCKWAVE_PRESETS } from "@/components/Shockwave";
 import { DestructibleWall as SharedDestructibleWall } from "@/components/destruction/DestructibleWall";
+import { STRESS_PRESET_METADATA } from "@/lib/stress/scenarios/structurePresets";
 
 const IDENTITY_QUATERNION = { w: 1, x: 0, y: 0, z: 0 } as const;
 // Physical densities in kg/m^3 (Rapier uses SI units when gravity is ~9.81)
@@ -632,6 +633,30 @@ export default function Page() {
               </option>
             ))}
           </select>
+        </div>
+        <div
+          style={{
+            border: "1px solid #202020",
+            background: "#111",
+            borderRadius: 6,
+            padding: "10px 12px",
+            display: "flex",
+            flexDirection: "column",
+            gap: 4,
+          }}
+        >
+          <span style={{ color: "#e5e7eb", fontSize: 13, fontWeight: 600 }}>Blast stress presets</span>
+          <span style={{ color: "#9ca3af", fontSize: 12 }}>
+            Explore the stress solver page to try:
+          </span>
+          <ul style={{ margin: 0, paddingLeft: 18, color: "#9ca3af", fontSize: 12, display: "flex", flexDirection: "column", gap: 2 }}>
+            {STRESS_PRESET_METADATA.filter((preset) => preset.id !== "wall").map((preset) => (
+              <li key={preset.id} style={{ listStyle: "disc" }}>
+                <span style={{ color: "#d1d5db" }}>{preset.label}</span>
+                <span style={{ color: "#6b7280" }}> — {preset.description}</span>
+              </li>
+            ))}
+          </ul>
         </div>
         <label style={{ display: "flex", alignItems: "center", gap: 8, color: "#d1d5db", fontSize: 14 }}>
           <input
