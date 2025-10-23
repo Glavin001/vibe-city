@@ -116,6 +116,7 @@ export async function buildDestructibleCore({ scenario, nodeSize, gravity = -9.8
   const pendingBallSpawns: ProjectileSpawn[] = [];
   const projectiles: Array<{ bodyHandle: number; radius: number; type: 'ball'|'box'; mesh?: unknown }> = [];
   const removedBondIndices = new Set<number>();
+  const pendingExternalForces: Array<{ nodeIndex:number; point: Vec3; force: Vec3 }> = [];
 
   let safeFrames = 0;
   let warnedColliderMapEmptyOnce = false;
@@ -209,6 +210,22 @@ export async function buildDestructibleCore({ scenario, nodeSize, gravity = -9.8
         console.warn('drainContactForceEvents', ev, 'h2 is null');
       }
     });
+
+    // Inject external (non-contact) forces into solver at node space
+    if (pendingExternalForces.length > 0) {
+      try {
+        const rb = world.getRigidBody(rootBody.handle);
+        const rot = rb.rotation();
+        const qInv = { x: -rot.x, y: -rot.y, z: -rot.z, w: rot.w };
+        for (const ef of pendingExternalForces) {
+          const localForce = applyQuatToVec3(ef.force, qInv);
+          const localPoint = applyQuatToVec3(ef.point, qInv);
+          solver.addForce(ef.nodeIndex, { x: localPoint.x, y: localPoint.y, z: localPoint.z }, { x: localForce.x, y: localForce.y, z: localForce.z }, runtime.ExtForceMode.Force);
+        }
+      } catch {}
+      // Clear queue after injection
+      pendingExternalForces.splice(0, pendingExternalForces.length);
+    }
 
     // Gravity and solver update
     // solver.addGravity(world.gravity);
@@ -376,6 +393,11 @@ export async function buildDestructibleCore({ scenario, nodeSize, gravity = -9.8
     return lines as Array<{ p0: Vec3; p1: Vec3; color0: number; color1: number }>;
   }
 
+  function applyExternalForce(nodeIndex: number, worldPoint: Vec3, worldForce: Vec3) {
+    pendingExternalForces.push({ nodeIndex, point: { x: worldPoint.x, y: worldPoint.y, z: worldPoint.z }, force: { x: worldForce.x, y: worldForce.y, z: worldForce.z } });
+    safeFrames = Math.max(safeFrames, 1);
+  }
+
   function getNodeBonds(nodeIndex: number): BondRef[] {
     const indices = bondsByNode.get(nodeIndex) ?? [];
     const out: BondRef[] = [];
@@ -457,6 +479,7 @@ export async function buildDestructibleCore({ scenario, nodeSize, gravity = -9.8
     getNodeBonds,
     cutBond,
     cutNodeBonds,
+    applyExternalForce,
     dispose,
   };
 }

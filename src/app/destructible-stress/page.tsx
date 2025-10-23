@@ -34,7 +34,8 @@ type SceneProps = {
   gravity: number;
   iteration: number;
   structureId: StressPresetId;
-  mode: 'projectile' | 'cutter';
+  mode: 'projectile' | 'cutter' | 'push';
+  pushForce: number;
   projType: 'ball' | 'box';
   projectileSpeed: number;
   projectileMass: number;
@@ -95,7 +96,7 @@ const SCENARIO_BUILDERS: Record<StressPresetId, (params: ScenarioBuilderParams) 
     buildTowerScenario({ bondsX: bondsXEnabled, bondsY: bondsYEnabled, bondsZ: bondsZEnabled }),
 };
 
-function Scene({ debug, physicsWireframe, gravity, iteration, structureId, mode, projType, projectileSpeed, projectileMass, materialScale, wallSpan, wallHeight, wallThickness, wallSpanSeg, wallHeightSeg, wallLayers, showAllDebugLines, bondsXEnabled, bondsYEnabled, bondsZEnabled, onReset: _onReset }: SceneProps) {
+function Scene({ debug, physicsWireframe, gravity, iteration, structureId, mode, pushForce, projType, projectileSpeed, projectileMass, materialScale, wallSpan, wallHeight, wallThickness, wallSpanSeg, wallHeightSeg, wallLayers, showAllDebugLines, bondsXEnabled, bondsYEnabled, bondsZEnabled, onReset: _onReset }: SceneProps) {
   const coreRef = useRef<DestructibleCore | null>(null);
   const debugHelperRef = useRef<ReturnType<typeof buildSolverDebugHelper> | null>(null);
   const chunkMeshesRef = useRef<THREE.Mesh[] | null>(null);
@@ -267,7 +268,7 @@ function Scene({ debug, physicsWireframe, gravity, iteration, structureId, mode,
     if (core) core.setGravity(gravity);
   }, [gravity]);
 
-  // Click: either spawn projectile or cut bonds depending on mode
+  // Click: spawn projectile, cut bonds, or push chunk depending on mode
   useEffect(() => {
     const canvas = document.querySelector("canvas") as HTMLCanvasElement | null;
     if (!canvas) return;
@@ -313,7 +314,7 @@ function Scene({ debug, physicsWireframe, gravity, iteration, structureId, mode,
         const linvel = new THREE.Vector3().subVectors(target, start).normalize().multiplyScalar(projectileSpeed);
         if (isDev) console.debug('[Page] Click fire', { target, start, linvel, projType });
         core.enqueueProjectile({ start: { x: start.x, y: start.y, z: start.z }, linvel: { x: linvel.x, y: linvel.y, z: linvel.z }, x: target.x, z: target.z, type: projType, radius: 0.5, mass: projectileMass, friction: 0.6, restitution: 0.2 });
-      } else {
+      } else if (mode === 'cutter') {
         // Cutter: choose first intersected mesh with nodeIndex
         let hitNodeIndex: number | null = null;
         for (const intr of intersects) {
@@ -328,19 +329,51 @@ function Scene({ debug, physicsWireframe, gravity, iteration, structureId, mode,
         const bonds = core.getNodeBonds(hitNodeIndex);
         if (isDev) console.debug('[Page] Cutter: cutting bonds', { node: hitNodeIndex, count: bonds.length });
         for (const b of bonds) core.cutBond(b.index);
+      } else if (mode === 'push') {
+        // Push: pick intersected chunk and apply external force along ray direction
+        let hit: THREE.Intersection | undefined;
+        for (const intr of intersects) {
+          const obj = intr.object as THREE.Object3D & { userData?: Record<string, unknown> };
+          const idx = obj?.userData?.nodeIndex as number | undefined;
+          if (typeof idx === 'number') { hit = intr; break; }
+        }
+        if (!hit) {
+          if (isDev) console.warn('[Page] Push: no nodeIndex on hit object');
+          return;
+        }
+        const nodeIndex = (hit.object as THREE.Object3D & { userData?: Record<string, unknown> }).userData.nodeIndex as number;
+        const dirWorld = raycaster.ray.direction.clone().normalize();
+        const force = dirWorld.multiplyScalar(pushForce);
+        // Apply to Rapier directly at the body's current pose
+        const seg = core.chunks[nodeIndex];
+        const handle = seg?.bodyHandle;
+        if (handle != null) {
+          const body = core.world.getRigidBody(handle);
+          if (body) {
+            const bt = body.translation();
+            const r = new THREE.Vector3(hit.point.x - bt.x, hit.point.y - bt.y, hit.point.z - bt.z);
+            const torque = new THREE.Vector3().copy(r).cross(force);
+            body.addForce({ x: force.x, y: force.y, z: force.z }, true);
+            body.addTorque({ x: torque.x, y: torque.y, z: torque.z }, true);
+          }
+        }
+        // Mirror to solver only (solver consumes and clears per-frame)
+        core.applyExternalForce(nodeIndex, { x: hit.point.x, y: hit.point.y, z: hit.point.z }, { x: force.x, y: force.y, z: force.z });
+        if (isDev) console.debug('[Page] Push: applied', { nodeIndex, point: hit.point, force });
       }
     };
     canvas.addEventListener('pointerdown', handle);
     return () => canvas.removeEventListener('pointerdown', handle);
-  }, [mode, projType, camera, projectileSpeed, projectileMass, placeClickMarker]);
+  }, [mode, pushForce, projType, camera, projectileSpeed, projectileMass, placeClickMarker]);
 
   useFrame(() => {
     const core = coreRef.current; if (!core) return;
     core.step();
-    // Update Rapier wireframe
-    if (rapierDebugRef.current) rapierDebugRef.current.update();
+    // Update scene meshes first, then debug renderers to avoid Rapier aliasing issues
     if (chunkMeshesRef.current) updateChunkMeshes(core, chunkMeshesRef.current);
     if (groupRef.current) updateProjectileMeshes(core, groupRef.current);
+    // Update Rapier wireframe last
+    if (rapierDebugRef.current) rapierDebugRef.current.update();
     if (debug && debugHelperRef.current) {
       const lines = core.getSolverDebugLines();
       const worldLines = computeWorldDebugLines(core, lines);
@@ -361,15 +394,16 @@ function Scene({ debug, physicsWireframe, gravity, iteration, structureId, mode,
   );
 }
 
-function HtmlOverlay({ debug, setDebug, physicsWireframe, setPhysicsWireframe, gravity, setGravity, mode, setMode, projType, setProjType, reset, projectileSpeed, setProjectileSpeed, projectileMass, setProjectileMass, materialScale, setMaterialScale, wallSpan, setWallSpan, wallHeight, setWallHeight, wallThickness, setWallThickness, wallSpanSeg, setWallSpanSeg, wallHeightSeg, setWallHeightSeg, wallLayers, setWallLayers, showAllDebugLines, setShowAllDebugLines, bondsXEnabled, setBondsXEnabled, bondsYEnabled, setBondsYEnabled, bondsZEnabled, setBondsZEnabled, structureId, setStructureId, structures, structureDescription, }: { debug: boolean; setDebug: (v: boolean) => void; physicsWireframe: boolean; setPhysicsWireframe: (v: boolean) => void; gravity: number; setGravity: (v: number) => void; mode: 'projectile' | 'cutter'; setMode: (v: 'projectile' | 'cutter') => void; projType: 'ball' | 'box'; setProjType: (v: 'ball' | 'box') => void; reset: () => void; projectileSpeed: number; setProjectileSpeed: (v: number) => void; projectileMass: number; setProjectileMass: (v: number) => void; materialScale: number; setMaterialScale: (v: number) => void; wallSpan: number; setWallSpan: (v: number) => void; wallHeight: number; setWallHeight: (v: number) => void; wallThickness: number; setWallThickness: (v: number) => void; wallSpanSeg: number; setWallSpanSeg: (v: number) => void; wallHeightSeg: number; setWallHeightSeg: (v: number) => void; wallLayers: number; setWallLayers: (v: number) => void; showAllDebugLines: boolean; setShowAllDebugLines: (v: boolean) => void; bondsXEnabled: boolean; setBondsXEnabled: (v: boolean) => void; bondsYEnabled: boolean; setBondsYEnabled: (v: boolean) => void; bondsZEnabled: boolean; setBondsZEnabled: (v: boolean) => void; structureId: StressPresetId; setStructureId: (v: StressPresetId) => void; structures: typeof STRESS_PRESET_METADATA; structureDescription?: string }) {
+function HtmlOverlay({ debug, setDebug, physicsWireframe, setPhysicsWireframe, gravity, setGravity, mode, setMode, projType, setProjType, reset, projectileSpeed, setProjectileSpeed, projectileMass, setProjectileMass, materialScale, setMaterialScale, wallSpan, setWallSpan, wallHeight, setWallHeight, wallThickness, setWallThickness, wallSpanSeg, setWallSpanSeg, wallHeightSeg, setWallHeightSeg, wallLayers, setWallLayers, showAllDebugLines, setShowAllDebugLines, bondsXEnabled, setBondsXEnabled, bondsYEnabled, setBondsYEnabled, bondsZEnabled, setBondsZEnabled, structureId, setStructureId, structures, structureDescription, pushForce, setPushForce, }: { debug: boolean; setDebug: (v: boolean) => void; physicsWireframe: boolean; setPhysicsWireframe: (v: boolean) => void; gravity: number; setGravity: (v: number) => void; mode: 'projectile' | 'cutter' | 'push'; setMode: (v: 'projectile' | 'cutter' | 'push') => void; projType: 'ball' | 'box'; setProjType: (v: 'ball' | 'box') => void; reset: () => void; projectileSpeed: number; setProjectileSpeed: (v: number) => void; projectileMass: number; setProjectileMass: (v: number) => void; materialScale: number; setMaterialScale: (v: number) => void; wallSpan: number; setWallSpan: (v: number) => void; wallHeight: number; setWallHeight: (v: number) => void; wallThickness: number; setWallThickness: (v: number) => void; wallSpanSeg: number; setWallSpanSeg: (v: number) => void; wallHeightSeg: number; setWallHeightSeg: (v: number) => void; wallLayers: number; setWallLayers: (v: number) => void; showAllDebugLines: boolean; setShowAllDebugLines: (v: boolean) => void; bondsXEnabled: boolean; setBondsXEnabled: (v: boolean) => void; bondsYEnabled: boolean; setBondsYEnabled: (v: boolean) => void; bondsZEnabled: boolean; setBondsZEnabled: (v: boolean) => void; structureId: StressPresetId; setStructureId: (v: StressPresetId) => void; structures: typeof STRESS_PRESET_METADATA; structureDescription?: string; pushForce: number; setPushForce: (v: number) => void }) {
   const isWallStructure = structureId === "wall";
   return (
     <div style={{ position: 'absolute', top: 110, left: 16, zIndex: 10, display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 360 }}>
       <div style={{ display: 'flex', gap: 8 }}>
         <button type="button" onClick={reset} style={{ padding: '8px 14px', background: '#0d0d0d', color: 'white', borderRadius: 6, border: '1px solid #303030' }}>Reset</button>
-        <select value={mode} onChange={(e) => setMode(e.target.value as 'projectile' | 'cutter')} style={{ background: '#111', color: '#eee', border: '1px solid #333', borderRadius: 6, padding: '8px 10px', flex: 1 }}>
+        <select value={mode} onChange={(e) => setMode(e.target.value as 'projectile' | 'cutter' | 'push')} style={{ background: '#111', color: '#eee', border: '1px solid #333', borderRadius: 6, padding: '8px 10px', flex: 1 }}>
           <option value="projectile">Projectile</option>
           <option value="cutter">Cutter</option>
+          <option value="push">Push</option>
         </select>
       </div>
       <select value={structureId} onChange={(e) => setStructureId(e.target.value as StressPresetId)} style={{ background: '#111', color: '#eee', border: '1px solid #333', borderRadius: 6, padding: '8px 10px' }}>
@@ -400,6 +434,12 @@ function HtmlOverlay({ debug, setDebug, physicsWireframe, setPhysicsWireframe, g
         <span style={{ color: '#9ca3af', width: 60, textAlign: 'right' }}>{gravity.toFixed(2)}</span>
       </label>
       <div style={{ height: 8 }} />
+      <div style={{ color: '#9ca3af', fontSize: 13 }}>Push</div>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#d1d5db', fontSize: 14 }}>
+        Force (N)
+        <input type="range" min={100} max={100000} step={100} value={pushForce} onChange={(e) => setPushForce(parseFloat(e.target.value))} style={{ flex: 1 }} />
+        <span style={{ color: '#9ca3af', width: 80, textAlign: 'right' }}>{Math.round(pushForce).toLocaleString()}</span>
+      </label>
       <div style={{ color: '#9ca3af', fontSize: 13 }}>Projectile</div>
       <select value={projType} onChange={(e) => setProjType(e.target.value as 'ball' | 'box')} style={{ background: '#111', color: '#eee', border: '1px solid #333', borderRadius: 6, padding: '8px 10px' }}>
         <option value="ball">Ball</option>
@@ -485,12 +525,13 @@ export default function Page() {
   const [physicsWireframe, setPhysicsWireframe] = useState(false);
   const [gravity, setGravity] = useState(-9.81);
   const [iteration, setIteration] = useState(0);
-  const [mode, setMode] = useState<'projectile' | 'cutter'>('projectile');
+  const [mode, setMode] = useState<'projectile' | 'cutter' | 'push'>('projectile');
   const [structureId, setStructureId] = useState<StressPresetId>('hut');
   const [projType, setProjType] = useState<'ball' | 'box'>("ball");
   const [projectileSpeed, setProjectileSpeed] = useState(36);
   const [projectileMass, setProjectileMass] = useState(15000);
   const [materialScale, setMaterialScale] = useState(1.0);
+  const [pushForce, setPushForce] = useState(8000);
   const [wallSpan, setWallSpan] = useState(6.0);
   const [wallHeight, setWallHeight] = useState(3.0);
   const [wallThickness, setWallThickness] = useState(0.32);
@@ -515,6 +556,8 @@ export default function Page() {
         setGravity={setGravity}
         mode={mode}
         setMode={setMode}
+        pushForce={pushForce}
+        setPushForce={setPushForce}
         projType={projType}
         setProjType={setProjType}
         reset={() => setIteration((v) => v + 1)}
@@ -558,6 +601,7 @@ export default function Page() {
           iteration={iteration}
           structureId={structureId}
           mode={mode}
+          pushForce={pushForce}
           projType={projType}
           projectileSpeed={projectileSpeed}
           projectileMass={projectileMass}

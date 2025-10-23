@@ -81,6 +81,8 @@ export type DestructibleCore = {
   getNodeBonds: (nodeIndex: number) => BondRef[];
   cutBond: (bondIndex: number) => boolean;
   cutNodeBonds: (nodeIndex: number) => boolean;
+  // External force application (non-contact force injection)
+  applyExternalForce: (nodeIndex: number, worldPoint: Vec3, worldForce: Vec3) => void;
   dispose: () => void;
 };
 
