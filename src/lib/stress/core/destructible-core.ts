@@ -1,6 +1,6 @@
 import RAPIER from '@dimforge/rapier3d-compat';
 import { loadStressSolver } from 'blast-stress-solver';
-import type { DestructibleCore, ScenarioDesc, ChunkData, Vec3, ProjectileSpawn } from './types';
+import type { DestructibleCore, ScenarioDesc, ChunkData, Vec3, ProjectileSpawn, BondRef } from './types';
 
 type BuildCoreOptions = {
   scenario: ScenarioDesc;
@@ -24,6 +24,17 @@ export async function buildDestructibleCore({ scenario, nodeSize, gravity = -9.8
   const nodes = scenario.nodes.map((n) => ({ centroid: n.centroid, mass: n.mass, volume: n.volume }));
   const bonds = scenario.bonds.map((b) => ({ node0: b.node0, node1: b.node1, centroid: b.centroid, normal: b.normal, area: b.area }));
   const solver = runtime.createExtSolver({ nodes, bonds, settings });
+  // Persist bond list with indices for cutting and adjacency
+  const bondTable: Array<{ index:number; node0:number; node1:number; centroid:Vec3; normal:Vec3; area:number }> = scenario.bonds.map((b, i) => ({ index: i, node0: b.node0, node1: b.node1, centroid: b.centroid, normal: b.normal, area: b.area }));
+  const bondsByNode = new Map<number, number[]>();
+  for (const b of bondTable) {
+    if (!bondsByNode.has(b.node0)) bondsByNode.set(b.node0, []);
+    if (!bondsByNode.has(b.node1)) bondsByNode.set(b.node1, []);
+    const arr0 = bondsByNode.get(b.node0);
+    const arr1 = bondsByNode.get(b.node1);
+    if (arr0) arr0.push(b.index);
+    if (arr1) arr1.push(b.index);
+  }
 
   const world = new RAPIER.World({ x: 0, y: gravity, z: 0 });
   const eventQueue = new RAPIER.EventQueue(true);
@@ -104,6 +115,7 @@ export async function buildDestructibleCore({ scenario, nodeSize, gravity = -9.8
   const bodiesToRemove = new Set<number>();
   const pendingBallSpawns: ProjectileSpawn[] = [];
   const projectiles: Array<{ bodyHandle: number; radius: number; type: 'ball'|'box'; mesh?: unknown }> = [];
+  const removedBondIndices = new Set<number>();
 
   let safeFrames = 0;
   let warnedColliderMapEmptyOnce = false;
@@ -364,6 +376,63 @@ export async function buildDestructibleCore({ scenario, nodeSize, gravity = -9.8
     return lines as Array<{ p0: Vec3; p1: Vec3; color0: number; color1: number }>;
   }
 
+  function getNodeBonds(nodeIndex: number): BondRef[] {
+    const indices = bondsByNode.get(nodeIndex) ?? [];
+    const out: BondRef[] = [];
+    for (const bi of indices) {
+      if (removedBondIndices.has(bi)) continue;
+      const b = bondTable[bi];
+      if (!b) continue;
+      out.push({ index: b.index, node0: b.node0, node1: b.node1, area: b.area, centroid: b.centroid, normal: b.normal });
+    }
+    return out;
+  }
+
+  function cutBond(bondIndex: number): boolean {
+    if (removedBondIndices.has(bondIndex)) return false;
+    const b = bondTable[bondIndex];
+    if (!b) return false;
+    // Map node -> actorIndex from live solver view
+    let actorIndexA: number | undefined;
+    let actorIndexB: number | undefined;
+    try {
+      const actors = (solver as unknown as { actors: () => Array<{ actorIndex:number; nodes:number[] }> }).actors?.() ?? [];
+      const nodeToActor = new Map<number, number>();
+      for (const a of actors) {
+        for (const n of a.nodes ?? []) nodeToActor.set(n, a.actorIndex);
+      }
+      actorIndexA = nodeToActor.get(b.node0);
+      actorIndexB = nodeToActor.get(b.node1);
+    } catch {}
+    if (actorIndexA == null || actorIndexB == null || actorIndexA !== actorIndexB) {
+      // If endpoints aren’t in same actor, either already split or invalid
+      removedBondIndices.add(bondIndex);
+      return false;
+    }
+    const fractureSets = [{ actorIndex: actorIndexA, fractures: [{ userdata: bondIndex, nodeIndex0: b.node0, nodeIndex1: b.node1, health: 1e9 }] }];
+    let applied = false;
+    try {
+      const splitEvents = solver.applyFractureCommands(fractureSets as unknown as Array<{ actorIndex:number; fractures:Array<{ userdata:number; nodeIndex0:number; nodeIndex1:number; health:number }> }>);
+      removedBondIndices.add(bondIndex);
+      if (Array.isArray(splitEvents) && splitEvents.length > 0) {
+        queueSplitResults(splitEvents as Array<{ parentActorIndex:number; children:Array<{ actorIndex:number; nodes:number[] }> }>);
+        safeFrames = Math.max(safeFrames, 2);
+      }
+      applied = true;
+    } catch (e) {
+      if (process.env.NODE_ENV !== 'production') console.warn('[Core] cutBond failed', bondIndex, e);
+    }
+    return applied;
+  }
+
+  function cutNodeBonds(nodeIndex: number): boolean {
+    const bonds = getNodeBonds(nodeIndex);
+    if (bonds.length === 0) return false;
+    let any = false;
+    for (const br of bonds) any = cutBond(br.index) || any;
+    return any;
+  }
+
   function dispose() {
     try { solver.destroy?.(); } catch {}
   }
@@ -385,6 +454,9 @@ export async function buildDestructibleCore({ scenario, nodeSize, gravity = -9.8
     stepSafe,
     setGravity,
     getSolverDebugLines,
+    getNodeBonds,
+    cutBond,
+    cutNodeBonds,
     dispose,
   };
 }

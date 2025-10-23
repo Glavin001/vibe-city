@@ -8,6 +8,7 @@ export function buildChunkMeshes(core: DestructibleCore, materials?: { deck?: TH
   for (const chunk of core.chunks) {
     const mat = chunk.isSupport ? supportMat.clone() : deckMat.clone();
     const mesh = new THREE.Mesh(new THREE.BoxGeometry(chunk.size.x, chunk.size.y, chunk.size.z), mat);
+    mesh.userData.nodeIndex = chunk.nodeIndex;
     mesh.castShadow = true; mesh.receiveShadow = true;
     meshes.push(mesh);
   }

@@ -50,6 +50,15 @@ export type ProjectileSpawn = {
   restitution: number;
 };
 
+export type BondRef = {
+  index: number;
+  node0: number;
+  node1: number;
+  area: number;
+  centroid: Vec3;
+  normal: Vec3;
+};
+
 export type DestructibleCore = {
   world: RAPIER.World;
   eventQueue: RAPIER.EventQueue;
@@ -68,6 +77,10 @@ export type DestructibleCore = {
   stepSafe: () => void;
   setGravity: (g: number) => void;
   getSolverDebugLines: () => Array<{ p0: Vec3; p1: Vec3; color0: number; color1: number }>;
+  // Bond interaction helpers
+  getNodeBonds: (nodeIndex: number) => BondRef[];
+  cutBond: (bondIndex: number) => boolean;
+  cutNodeBonds: (nodeIndex: number) => boolean;
   dispose: () => void;
 };
 

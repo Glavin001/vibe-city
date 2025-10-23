@@ -34,6 +34,7 @@ type SceneProps = {
   gravity: number;
   iteration: number;
   structureId: StressPresetId;
+  mode: 'projectile' | 'cutter';
   projType: 'ball' | 'box';
   projectileSpeed: number;
   projectileMass: number;
@@ -94,7 +95,7 @@ const SCENARIO_BUILDERS: Record<StressPresetId, (params: ScenarioBuilderParams) 
     buildTowerScenario({ bondsX: bondsXEnabled, bondsY: bondsYEnabled, bondsZ: bondsZEnabled }),
 };
 
-function Scene({ debug, physicsWireframe, gravity, iteration, structureId, projType, projectileSpeed, projectileMass, materialScale, wallSpan, wallHeight, wallThickness, wallSpanSeg, wallHeightSeg, wallLayers, showAllDebugLines, bondsXEnabled, bondsYEnabled, bondsZEnabled, onReset: _onReset }: SceneProps) {
+function Scene({ debug, physicsWireframe, gravity, iteration, structureId, mode, projType, projectileSpeed, projectileMass, materialScale, wallSpan, wallHeight, wallThickness, wallSpanSeg, wallHeightSeg, wallLayers, showAllDebugLines, bondsXEnabled, bondsYEnabled, bondsZEnabled, onReset: _onReset }: SceneProps) {
   const coreRef = useRef<DestructibleCore | null>(null);
   const debugHelperRef = useRef<ReturnType<typeof buildSolverDebugHelper> | null>(null);
   const chunkMeshesRef = useRef<THREE.Mesh[] | null>(null);
@@ -266,7 +267,7 @@ function Scene({ debug, physicsWireframe, gravity, iteration, structureId, projT
     if (core) core.setGravity(gravity);
   }, [gravity]);
 
-  // Click to spawn projectile (shoot from offset toward hit point)
+  // Click: either spawn projectile or cut bonds depending on mode
   useEffect(() => {
     const canvas = document.querySelector("canvas") as HTMLCanvasElement | null;
     if (!canvas) return;
@@ -303,18 +304,35 @@ function Scene({ debug, physicsWireframe, gravity, iteration, structureId, projT
       }
       placeClickMarker(target);
 
-      // Spawn above and behind camera toward target
-      const camPos = new THREE.Vector3();
-      cam.getWorldPosition(camPos);
-      const dir = new THREE.Vector3().subVectors(target, camPos).normalize();
-      const start = camPos.clone().addScaledVector(dir, 6).add(new THREE.Vector3(0, 2.5, 0));
-      const linvel = new THREE.Vector3().subVectors(target, start).normalize().multiplyScalar(projectileSpeed);
-      if (isDev) console.debug('[Page] Click fire', { target, start, linvel, projType });
-      core.enqueueProjectile({ start: { x: start.x, y: start.y, z: start.z }, linvel: { x: linvel.x, y: linvel.y, z: linvel.z }, x: target.x, z: target.z, type: projType, radius: 0.5, mass: projectileMass, friction: 0.6, restitution: 0.2 });
+      if (mode === 'projectile') {
+        // Spawn above and behind camera toward target
+        const camPos = new THREE.Vector3();
+        cam.getWorldPosition(camPos);
+        const dir = new THREE.Vector3().subVectors(target, camPos).normalize();
+        const start = camPos.clone().addScaledVector(dir, 6).add(new THREE.Vector3(0, 2.5, 0));
+        const linvel = new THREE.Vector3().subVectors(target, start).normalize().multiplyScalar(projectileSpeed);
+        if (isDev) console.debug('[Page] Click fire', { target, start, linvel, projType });
+        core.enqueueProjectile({ start: { x: start.x, y: start.y, z: start.z }, linvel: { x: linvel.x, y: linvel.y, z: linvel.z }, x: target.x, z: target.z, type: projType, radius: 0.5, mass: projectileMass, friction: 0.6, restitution: 0.2 });
+      } else {
+        // Cutter: choose first intersected mesh with nodeIndex
+        let hitNodeIndex: number | null = null;
+        for (const intr of intersects) {
+          const obj = intr.object as THREE.Object3D & { userData?: Record<string, unknown> };
+          const idx = obj?.userData?.nodeIndex as number | undefined;
+          if (typeof idx === 'number') { hitNodeIndex = idx; break; }
+        }
+        if (hitNodeIndex == null) {
+          if (isDev) console.warn('[Page] Cutter: no nodeIndex on hit object');
+          return;
+        }
+        const bonds = core.getNodeBonds(hitNodeIndex);
+        if (isDev) console.debug('[Page] Cutter: cutting bonds', { node: hitNodeIndex, count: bonds.length });
+        for (const b of bonds) core.cutBond(b.index);
+      }
     };
     canvas.addEventListener('pointerdown', handle);
     return () => canvas.removeEventListener('pointerdown', handle);
-  }, [projType, camera, projectileSpeed, projectileMass, placeClickMarker]);
+  }, [mode, projType, camera, projectileSpeed, projectileMass, placeClickMarker]);
 
   useFrame(() => {
     const core = coreRef.current; if (!core) return;
@@ -343,15 +361,15 @@ function Scene({ debug, physicsWireframe, gravity, iteration, structureId, projT
   );
 }
 
-function HtmlOverlay({ debug, setDebug, physicsWireframe, setPhysicsWireframe, gravity, setGravity, projType, setProjType, reset, projectileSpeed, setProjectileSpeed, projectileMass, setProjectileMass, materialScale, setMaterialScale, wallSpan, setWallSpan, wallHeight, setWallHeight, wallThickness, setWallThickness, wallSpanSeg, setWallSpanSeg, wallHeightSeg, setWallHeightSeg, wallLayers, setWallLayers, showAllDebugLines, setShowAllDebugLines, bondsXEnabled, setBondsXEnabled, bondsYEnabled, setBondsYEnabled, bondsZEnabled, setBondsZEnabled, structureId, setStructureId, structures, structureDescription, }: { debug: boolean; setDebug: (v: boolean) => void; physicsWireframe: boolean; setPhysicsWireframe: (v: boolean) => void; gravity: number; setGravity: (v: number) => void; projType: 'ball' | 'box'; setProjType: (v: 'ball' | 'box') => void; reset: () => void; projectileSpeed: number; setProjectileSpeed: (v: number) => void; projectileMass: number; setProjectileMass: (v: number) => void; materialScale: number; setMaterialScale: (v: number) => void; wallSpan: number; setWallSpan: (v: number) => void; wallHeight: number; setWallHeight: (v: number) => void; wallThickness: number; setWallThickness: (v: number) => void; wallSpanSeg: number; setWallSpanSeg: (v: number) => void; wallHeightSeg: number; setWallHeightSeg: (v: number) => void; wallLayers: number; setWallLayers: (v: number) => void; showAllDebugLines: boolean; setShowAllDebugLines: (v: boolean) => void; bondsXEnabled: boolean; setBondsXEnabled: (v: boolean) => void; bondsYEnabled: boolean; setBondsYEnabled: (v: boolean) => void; bondsZEnabled: boolean; setBondsZEnabled: (v: boolean) => void; structureId: StressPresetId; setStructureId: (v: StressPresetId) => void; structures: typeof STRESS_PRESET_METADATA; structureDescription?: string }) {
+function HtmlOverlay({ debug, setDebug, physicsWireframe, setPhysicsWireframe, gravity, setGravity, mode, setMode, projType, setProjType, reset, projectileSpeed, setProjectileSpeed, projectileMass, setProjectileMass, materialScale, setMaterialScale, wallSpan, setWallSpan, wallHeight, setWallHeight, wallThickness, setWallThickness, wallSpanSeg, setWallSpanSeg, wallHeightSeg, setWallHeightSeg, wallLayers, setWallLayers, showAllDebugLines, setShowAllDebugLines, bondsXEnabled, setBondsXEnabled, bondsYEnabled, setBondsYEnabled, bondsZEnabled, setBondsZEnabled, structureId, setStructureId, structures, structureDescription, }: { debug: boolean; setDebug: (v: boolean) => void; physicsWireframe: boolean; setPhysicsWireframe: (v: boolean) => void; gravity: number; setGravity: (v: number) => void; mode: 'projectile' | 'cutter'; setMode: (v: 'projectile' | 'cutter') => void; projType: 'ball' | 'box'; setProjType: (v: 'ball' | 'box') => void; reset: () => void; projectileSpeed: number; setProjectileSpeed: (v: number) => void; projectileMass: number; setProjectileMass: (v: number) => void; materialScale: number; setMaterialScale: (v: number) => void; wallSpan: number; setWallSpan: (v: number) => void; wallHeight: number; setWallHeight: (v: number) => void; wallThickness: number; setWallThickness: (v: number) => void; wallSpanSeg: number; setWallSpanSeg: (v: number) => void; wallHeightSeg: number; setWallHeightSeg: (v: number) => void; wallLayers: number; setWallLayers: (v: number) => void; showAllDebugLines: boolean; setShowAllDebugLines: (v: boolean) => void; bondsXEnabled: boolean; setBondsXEnabled: (v: boolean) => void; bondsYEnabled: boolean; setBondsYEnabled: (v: boolean) => void; bondsZEnabled: boolean; setBondsZEnabled: (v: boolean) => void; structureId: StressPresetId; setStructureId: (v: StressPresetId) => void; structures: typeof STRESS_PRESET_METADATA; structureDescription?: string }) {
   const isWallStructure = structureId === "wall";
   return (
     <div style={{ position: 'absolute', top: 110, left: 16, zIndex: 10, display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 360 }}>
       <div style={{ display: 'flex', gap: 8 }}>
         <button type="button" onClick={reset} style={{ padding: '8px 14px', background: '#0d0d0d', color: 'white', borderRadius: 6, border: '1px solid #303030' }}>Reset</button>
-        <select value={projType} onChange={(e) => setProjType(e.target.value as 'ball' | 'box')} style={{ background: '#111', color: '#eee', border: '1px solid #333', borderRadius: 6, padding: '8px 10px', flex: 1 }}>
-          <option value="ball">Ball</option>
-          <option value="box">Box</option>
+        <select value={mode} onChange={(e) => setMode(e.target.value as 'projectile' | 'cutter')} style={{ background: '#111', color: '#eee', border: '1px solid #333', borderRadius: 6, padding: '8px 10px', flex: 1 }}>
+          <option value="projectile">Projectile</option>
+          <option value="cutter">Cutter</option>
         </select>
       </div>
       <select value={structureId} onChange={(e) => setStructureId(e.target.value as StressPresetId)} style={{ background: '#111', color: '#eee', border: '1px solid #333', borderRadius: 6, padding: '8px 10px' }}>
@@ -383,6 +401,10 @@ function HtmlOverlay({ debug, setDebug, physicsWireframe, setPhysicsWireframe, g
       </label>
       <div style={{ height: 8 }} />
       <div style={{ color: '#9ca3af', fontSize: 13 }}>Projectile</div>
+      <select value={projType} onChange={(e) => setProjType(e.target.value as 'ball' | 'box')} style={{ background: '#111', color: '#eee', border: '1px solid #333', borderRadius: 6, padding: '8px 10px' }}>
+        <option value="ball">Ball</option>
+        <option value="box">Box</option>
+      </select>
       <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#d1d5db', fontSize: 14 }}>
         Speed
         <input type="range" min={1} max={100} step={1} value={projectileSpeed} onChange={(e) => setProjectileSpeed(parseFloat(e.target.value))} style={{ flex: 1 }} />
@@ -463,6 +485,7 @@ export default function Page() {
   const [physicsWireframe, setPhysicsWireframe] = useState(false);
   const [gravity, setGravity] = useState(-9.81);
   const [iteration, setIteration] = useState(0);
+  const [mode, setMode] = useState<'projectile' | 'cutter'>('projectile');
   const [structureId, setStructureId] = useState<StressPresetId>('hut');
   const [projType, setProjType] = useState<'ball' | 'box'>("ball");
   const [projectileSpeed, setProjectileSpeed] = useState(36);
@@ -490,6 +513,8 @@ export default function Page() {
         setPhysicsWireframe={setPhysicsWireframe}
         gravity={gravity}
         setGravity={setGravity}
+        mode={mode}
+        setMode={setMode}
         projType={projType}
         setProjType={setProjType}
         reset={() => setIteration((v) => v + 1)}
@@ -532,6 +557,7 @@ export default function Page() {
           gravity={gravity}
           iteration={iteration}
           structureId={structureId}
+          mode={mode}
           projType={projType}
           projectileSpeed={projectileSpeed}
           projectileMass={projectileMass}
