@@ -127,6 +127,12 @@ const demoCategories: DemoCategory[] = [
         title: "Shockwave Demo",
         description: "Interactive explosive shockwave with presets (TNT/C4/etc.) and simple scenes."
       }
+      ,{
+        href: "/ragdoll",
+        icon: "🧍",
+        title: "Ragdoll Physics",
+        description: "Spawn humanoid ragdolls with Rapier joints. Click to place them on varied terrain; toggle debug and gravity with Leva."
+      }
     ]
   },
   {
