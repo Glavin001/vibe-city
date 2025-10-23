@@ -83,6 +83,10 @@ export type DestructibleCore = {
   cutNodeBonds: (nodeIndex: number) => boolean;
   // External force application (non-contact force injection)
   applyExternalForce: (nodeIndex: number, worldPoint: Vec3, worldForce: Vec3) => void;
+  // Toggles and parameters
+  setSolverGravityEnabled: (enabled: boolean) => void;
+  setExcessForceEnabled: (enabled: boolean) => void;
+  setExcessForceScale: (scale: number) => void;
   dispose: () => void;
 };
 

@@ -117,6 +117,12 @@ export async function buildDestructibleCore({ scenario, nodeSize, gravity = -9.8
   const projectiles: Array<{ bodyHandle: number; radius: number; type: 'ball'|'box'; mesh?: unknown }> = [];
   const removedBondIndices = new Set<number>();
   const pendingExternalForces: Array<{ nodeIndex:number; point: Vec3; force: Vec3 }> = [];
+  // Pending excess forces returned from solver for child actors created after splits
+  const pendingExcessForces: Array<{ actorIndex:number; force: Vec3; torque: Vec3 }> = [];
+  // Flags and parameters controlling solver coupling
+  let solverGravityEnabled = false;
+  let excessForceEnabled = true;
+  let excessForceScale = 0.25;
 
   let safeFrames = 0;
   let warnedColliderMapEmptyOnce = false;
@@ -228,13 +234,36 @@ export async function buildDestructibleCore({ scenario, nodeSize, gravity = -9.8
     }
 
     // Gravity and solver update
-    // solver.addGravity(world.gravity);
+    if (solverGravityEnabled) solver.addGravity(world.gravity);
     solver.update();
 
     if (solver.overstressedBondCount() > 0) {
       const perActor = solver.generateFractureCommandsPerActor();
       const splitEvents = solver.applyFractureCommands(perActor);
+      // Apply excess forces from the solver to parent actors now, and queue for children until bodies exist
       if (Array.isArray(splitEvents) && splitEvents.length > 0) {
+        for (const evt of splitEvents) {
+          try {
+            const exParent = solver.getExcessForces(evt.parentActorIndex);
+            const parentBodyHandle = actorMap.get(evt.parentActorIndex)?.bodyHandle ?? rootBody.handle;
+            if (excessForceEnabled && exParent) {
+              const body = world.getRigidBody(parentBodyHandle);
+              if (body) {
+                const q = body.rotation();
+                const F = applyQuatToVec3(scaleVec3(exParent.force, excessForceScale), q);
+                const T = applyQuatToVec3(scaleVec3(exParent.torque, excessForceScale), q);
+                body.addForce({ x: F.x, y: F.y, z: F.z }, true);
+                body.addTorque({ x: T.x, y: T.y, z: T.z }, true);
+              }
+            }
+          } catch {}
+          try {
+            for (const child of evt.children ?? []) {
+              const exChild = solver.getExcessForces(child.actorIndex);
+              if (excessForceEnabled && exChild) pendingExcessForces.push({ actorIndex: child.actorIndex, force: scaleVec3(exChild.force, excessForceScale), torque: scaleVec3(exChild.torque, excessForceScale) });
+            }
+          } catch {}
+        }
         queueSplitResults(splitEvents);
         safeFrames = Math.max(safeFrames, 2);
       }
@@ -323,6 +352,21 @@ export async function buildDestructibleCore({ scenario, nodeSize, gravity = -9.8
         }
         const body = world.createRigidBody(desc);
         actorMap.set(pb.actorIndex, { bodyHandle: body.handle });
+        // Apply any queued excess forces for this child actor now that its body exists
+        try {
+          const q = body.rotation();
+          for (let i = pendingExcessForces.length - 1; i >= 0; i--) {
+            const it = pendingExcessForces[i];
+            if (it.actorIndex !== pb.actorIndex) continue;
+            const F = applyQuatToVec3(it.force, q);
+            const T = applyQuatToVec3(it.torque, q);
+            if (excessForceEnabled) {
+              body.addForce({ x: F.x, y: F.y, z: F.z }, true);
+              body.addTorque({ x: T.x, y: T.y, z: T.z }, true);
+            }
+            pendingExcessForces.splice(i, 1);
+          }
+        } catch {}
         for (const nodeIndex of pb.nodes) pendingColliderMigrations.push({ nodeIndex, targetBodyHandle: body.handle });
       }
     }
@@ -437,6 +481,29 @@ export async function buildDestructibleCore({ scenario, nodeSize, gravity = -9.8
       const splitEvents = solver.applyFractureCommands(fractureSets as unknown as Array<{ actorIndex:number; fractures:Array<{ userdata:number; nodeIndex0:number; nodeIndex1:number; health:number }> }>);
       removedBondIndices.add(bondIndex);
       if (Array.isArray(splitEvents) && splitEvents.length > 0) {
+        // Apply excess forces to parent, and queue for children
+        for (const evt of splitEvents as Array<{ parentActorIndex:number; children:Array<{ actorIndex:number; nodes:number[] }> }>) {
+          try {
+            const exParent = solver.getExcessForces(evt.parentActorIndex);
+            const parentBodyHandle = actorMap.get(evt.parentActorIndex)?.bodyHandle ?? rootBody.handle;
+            if (excessForceEnabled && exParent) {
+              const body = world.getRigidBody(parentBodyHandle);
+              if (body) {
+                const q = body.rotation();
+                const F = applyQuatToVec3(scaleVec3(exParent.force, excessForceScale), q);
+                const T = applyQuatToVec3(scaleVec3(exParent.torque, excessForceScale), q);
+                body.addForce({ x: F.x, y: F.y, z: F.z }, true);
+                body.addTorque({ x: T.x, y: T.y, z: T.z }, true);
+              }
+            }
+          } catch {}
+          try {
+            for (const child of evt.children ?? []) {
+              const exChild = solver.getExcessForces(child.actorIndex);
+              if (excessForceEnabled && exChild) pendingExcessForces.push({ actorIndex: child.actorIndex, force: scaleVec3(exChild.force, excessForceScale), torque: scaleVec3(exChild.torque, excessForceScale) });
+            }
+          } catch {}
+        }
         queueSplitResults(splitEvents as Array<{ parentActorIndex:number; children:Array<{ actorIndex:number; nodes:number[] }> }>);
         safeFrames = Math.max(safeFrames, 2);
       }
@@ -480,6 +547,9 @@ export async function buildDestructibleCore({ scenario, nodeSize, gravity = -9.8
     cutBond,
     cutNodeBonds,
     applyExternalForce,
+    setSolverGravityEnabled: (enabled: boolean) => { solverGravityEnabled = !!enabled; },
+    setExcessForceEnabled: (enabled: boolean) => { excessForceEnabled = !!enabled; },
+    setExcessForceScale: (scale: number) => { excessForceScale = Math.max(0, Number.isFinite(scale) ? scale : 0); },
     dispose,
   };
 }
@@ -512,6 +582,10 @@ function applyQuatToVec3(v: Vec3, q: Quat): Vec3 {
     y: iy * qw + iw * -qy + iz * -qx - ix * -qz,
     z: iz * qw + iw * -qz + ix * -qy - iy * -qx,
   };
+}
+
+function scaleVec3(v: Vec3, s: number): Vec3 {
+  return { x: (v.x ?? 0) * s, y: (v.y ?? 0) * s, z: (v.z ?? 0) * s };
 }
 
 

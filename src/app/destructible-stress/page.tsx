@@ -40,6 +40,9 @@ type SceneProps = {
   projectileSpeed: number;
   projectileMass: number;
   materialScale: number;
+  useSolverGravity: boolean;
+  useExcessForce: boolean;
+  excessForceScale: number;
   wallSpan: number;
   wallHeight: number;
   wallThickness: number;
@@ -96,7 +99,7 @@ const SCENARIO_BUILDERS: Record<StressPresetId, (params: ScenarioBuilderParams) 
     buildTowerScenario({ bondsX: bondsXEnabled, bondsY: bondsYEnabled, bondsZ: bondsZEnabled }),
 };
 
-function Scene({ debug, physicsWireframe, gravity, iteration, structureId, mode, pushForce, projType, projectileSpeed, projectileMass, materialScale, wallSpan, wallHeight, wallThickness, wallSpanSeg, wallHeightSeg, wallLayers, showAllDebugLines, bondsXEnabled, bondsYEnabled, bondsZEnabled, onReset: _onReset }: SceneProps) {
+function Scene({ debug, physicsWireframe, gravity, iteration, structureId, mode, pushForce, projType, projectileSpeed, projectileMass, materialScale, useSolverGravity, useExcessForce, excessForceScale, wallSpan, wallHeight, wallThickness, wallSpanSeg, wallHeightSeg, wallLayers, showAllDebugLines, bondsXEnabled, bondsYEnabled, bondsZEnabled, onReset: _onReset }: SceneProps) {
   const coreRef = useRef<DestructibleCore | null>(null);
   const debugHelperRef = useRef<ReturnType<typeof buildSolverDebugHelper> | null>(null);
   const chunkMeshesRef = useRef<THREE.Mesh[] | null>(null);
@@ -268,6 +271,23 @@ function Scene({ debug, physicsWireframe, gravity, iteration, structureId, mode,
     if (core) core.setGravity(gravity);
   }, [gravity]);
 
+  // Toggle solver gravity/excess-force flags
+  useEffect(() => {
+    const core = coreRef.current;
+    if (!core) return;
+    try { core.setSolverGravityEnabled(useSolverGravity); } catch {}
+  }, [useSolverGravity]);
+  useEffect(() => {
+    const core = coreRef.current;
+    if (!core) return;
+    try { core.setExcessForceEnabled(useExcessForce); } catch {}
+  }, [useExcessForce]);
+  useEffect(() => {
+    const core = coreRef.current;
+    if (!core) return;
+    try { core.setExcessForceScale(excessForceScale); } catch {}
+  }, [excessForceScale]);
+
   // Click: spawn projectile, cut bonds, or push chunk depending on mode
   useEffect(() => {
     const canvas = document.querySelector("canvas") as HTMLCanvasElement | null;
@@ -394,7 +414,7 @@ function Scene({ debug, physicsWireframe, gravity, iteration, structureId, mode,
   );
 }
 
-function HtmlOverlay({ debug, setDebug, physicsWireframe, setPhysicsWireframe, gravity, setGravity, mode, setMode, projType, setProjType, reset, projectileSpeed, setProjectileSpeed, projectileMass, setProjectileMass, materialScale, setMaterialScale, wallSpan, setWallSpan, wallHeight, setWallHeight, wallThickness, setWallThickness, wallSpanSeg, setWallSpanSeg, wallHeightSeg, setWallHeightSeg, wallLayers, setWallLayers, showAllDebugLines, setShowAllDebugLines, bondsXEnabled, setBondsXEnabled, bondsYEnabled, setBondsYEnabled, bondsZEnabled, setBondsZEnabled, structureId, setStructureId, structures, structureDescription, pushForce, setPushForce, }: { debug: boolean; setDebug: (v: boolean) => void; physicsWireframe: boolean; setPhysicsWireframe: (v: boolean) => void; gravity: number; setGravity: (v: number) => void; mode: 'projectile' | 'cutter' | 'push'; setMode: (v: 'projectile' | 'cutter' | 'push') => void; projType: 'ball' | 'box'; setProjType: (v: 'ball' | 'box') => void; reset: () => void; projectileSpeed: number; setProjectileSpeed: (v: number) => void; projectileMass: number; setProjectileMass: (v: number) => void; materialScale: number; setMaterialScale: (v: number) => void; wallSpan: number; setWallSpan: (v: number) => void; wallHeight: number; setWallHeight: (v: number) => void; wallThickness: number; setWallThickness: (v: number) => void; wallSpanSeg: number; setWallSpanSeg: (v: number) => void; wallHeightSeg: number; setWallHeightSeg: (v: number) => void; wallLayers: number; setWallLayers: (v: number) => void; showAllDebugLines: boolean; setShowAllDebugLines: (v: boolean) => void; bondsXEnabled: boolean; setBondsXEnabled: (v: boolean) => void; bondsYEnabled: boolean; setBondsYEnabled: (v: boolean) => void; bondsZEnabled: boolean; setBondsZEnabled: (v: boolean) => void; structureId: StressPresetId; setStructureId: (v: StressPresetId) => void; structures: typeof STRESS_PRESET_METADATA; structureDescription?: string; pushForce: number; setPushForce: (v: number) => void }) {
+function HtmlOverlay({ debug, setDebug, physicsWireframe, setPhysicsWireframe, gravity, setGravity, mode, setMode, projType, setProjType, reset, projectileSpeed, setProjectileSpeed, projectileMass, setProjectileMass, materialScale, setMaterialScale, wallSpan, setWallSpan, wallHeight, setWallHeight, wallThickness, setWallThickness, wallSpanSeg, setWallSpanSeg, wallHeightSeg, setWallHeightSeg, wallLayers, setWallLayers, showAllDebugLines, setShowAllDebugLines, bondsXEnabled, setBondsXEnabled, bondsYEnabled, setBondsYEnabled, bondsZEnabled, setBondsZEnabled, structureId, setStructureId, structures, structureDescription, pushForce, setPushForce, useSolverGravity, setUseSolverGravity, useExcessForce, setUseExcessForce, excessForceScale, setExcessForceScale, }: { debug: boolean; setDebug: (v: boolean) => void; physicsWireframe: boolean; setPhysicsWireframe: (v: boolean) => void; gravity: number; setGravity: (v: number) => void; mode: 'projectile' | 'cutter' | 'push'; setMode: (v: 'projectile' | 'cutter' | 'push') => void; projType: 'ball' | 'box'; setProjType: (v: 'ball' | 'box') => void; reset: () => void; projectileSpeed: number; setProjectileSpeed: (v: number) => void; projectileMass: number; setProjectileMass: (v: number) => void; materialScale: number; setMaterialScale: (v: number) => void; wallSpan: number; setWallSpan: (v: number) => void; wallHeight: number; setWallHeight: (v: number) => void; wallThickness: number; setWallThickness: (v: number) => void; wallSpanSeg: number; setWallSpanSeg: (v: number) => void; wallHeightSeg: number; setWallHeightSeg: (v: number) => void; wallLayers: number; setWallLayers: (v: number) => void; showAllDebugLines: boolean; setShowAllDebugLines: (v: boolean) => void; bondsXEnabled: boolean; setBondsXEnabled: (v: boolean) => void; bondsYEnabled: boolean; setBondsYEnabled: (v: boolean) => void; bondsZEnabled: boolean; setBondsZEnabled: (v: boolean) => void; structureId: StressPresetId; setStructureId: (v: StressPresetId) => void; structures: typeof STRESS_PRESET_METADATA; structureDescription?: string; pushForce: number; setPushForce: (v: number) => void; useSolverGravity: boolean; setUseSolverGravity: (v: boolean) => void; useExcessForce: boolean; setUseExcessForce: (v: boolean) => void; excessForceScale: number; setExcessForceScale: (v: number) => void }) {
   const isWallStructure = structureId === "wall";
   return (
     <div style={{ position: 'absolute', top: 110, left: 16, zIndex: 10, display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 360 }}>
@@ -428,6 +448,23 @@ function HtmlOverlay({ debug, setDebug, physicsWireframe, setPhysicsWireframe, g
         <input type="checkbox" checked={showAllDebugLines} onChange={(e) => setShowAllDebugLines(e.target.checked)} style={{ accentColor: '#4da2ff', width: 16, height: 16 }} />
         Show all solver lines
       </label>
+      <div style={{ height: 8 }} />
+      <div style={{ color: '#9ca3af', fontSize: 13 }}>Solver</div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#d1d5db', fontSize: 14 }}>
+          <input type="checkbox" checked={useSolverGravity} onChange={(e) => setUseSolverGravity(e.target.checked)} style={{ accentColor: '#4da2ff', width: 16, height: 16 }} />
+          Solver Gravity
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#d1d5db', fontSize: 14 }}>
+          <input type="checkbox" checked={useExcessForce} onChange={(e) => setUseExcessForce(e.target.checked)} style={{ accentColor: '#4da2ff', width: 16, height: 16 }} />
+          Apply Excess Force
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#d1d5db', fontSize: 14 }}>
+          Excess Force Scale
+          <input type="range" min={0} max={2} step={0.01} value={excessForceScale} onChange={(e) => setExcessForceScale(parseFloat(e.target.value))} style={{ flex: 1 }} />
+          <span style={{ color: '#9ca3af', width: 60, textAlign: 'right' }}>{excessForceScale.toFixed(2)}×</span>
+        </label>
+      </div>
       <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#d1d5db', fontSize: 14 }}>
         Gravity
         <input type="range" min={-30} max={-0.5} step={0.5} value={gravity} onChange={(e) => setGravity(parseFloat(e.target.value))} style={{ flex: 1 }} />
@@ -544,6 +581,12 @@ export default function Page() {
   const [bondsZEnabled, setBondsZEnabled] = useState(true);
   const structures = STRESS_PRESET_METADATA;
   const currentStructure = structures.find((item) => item.id === structureId) ?? structures[0];
+  // Solver coupling controls
+  const [useSolverGravity, setUseSolverGravity] = useState(false);
+  const [useExcessForce, setUseExcessForce] = useState(true);
+  const [excessForceScale, setExcessForceScale] = useState(0.25);
+
+  // SolverControls removed; controls are inline in HtmlOverlay
   // Auto-spawn on first render disabled; click-to-spawn only.
   return (
     <div style={{ width: "100%", height: "100vh" }}>
@@ -591,6 +634,12 @@ export default function Page() {
         setStructureId={setStructureId}
         structures={structures}
         structureDescription={currentStructure?.description}
+        useSolverGravity={useSolverGravity}
+        setUseSolverGravity={setUseSolverGravity}
+        useExcessForce={useExcessForce}
+        setUseExcessForce={setUseExcessForce}
+        excessForceScale={excessForceScale}
+        setExcessForceScale={setExcessForceScale}
       />
       <Canvas shadows camera={{ position: [7, 5, 9], fov: 45 }}>
         <color attach="background" args={["#0e0e12"]} />
@@ -606,6 +655,9 @@ export default function Page() {
           projectileSpeed={projectileSpeed}
           projectileMass={projectileMass}
           materialScale={materialScale}
+          useSolverGravity={useSolverGravity}
+          useExcessForce={useExcessForce}
+          excessForceScale={excessForceScale}
           wallSpan={wallSpan}
           wallHeight={wallHeight}
           wallThickness={wallThickness}
