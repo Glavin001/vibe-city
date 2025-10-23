@@ -110,7 +110,7 @@ function Scene({ onDecalCountChange }: { onDecalCountChange: (count: number) => 
   return (
     <>
       {/* Performance stats */}
-      <StatsGl className="stats-gl fixed top-20 left-4" />
+      <StatsGl className="stats-gl" />
 
       {/* Lighting */}
       <ambientLight intensity={0.35} />
