@@ -2,180 +2,14 @@
 
 import { Canvas, useThree } from "@react-three/fiber";
 import { OrbitControls, StatsGl } from "@react-three/drei";
-import { useRef, useState, useCallback, useMemo, forwardRef, useImperativeHandle, useEffect } from "react";
+import { useRef, useState, useCallback, useMemo, useEffect } from "react";
 import * as THREE from "three";
 import { DecalGeometry } from "three/examples/jsm/geometries/DecalGeometry.js";
+import InstancedWalls from "@/components/decals/InstancedWalls";
+import DecalBatcher, { type DecalBatcherRef } from "@/components/decals/DecalBatcher";
+import { DECAL_SIZE, MAX_DECALS, WALL_COUNT_X, WALL_SPACING } from "@/components/decals/constants";
 
-/**
- * -----------------------------------------------------------------------------
- * Production-minded constants
- * -----------------------------------------------------------------------------
- */
-const WALL_COUNT_X = 20;
-const WALL_COUNT_Z = 10;
-const WALL_SPACING = 2.0;
-
-const MAX_DECALS = 2000;
-// Realistic bullet hole size: ~5cm diameter (walls are 1.5m x 1m, so 0.05 units = 5cm)
-const DECAL_SIZE = new THREE.Vector3(0.05, 0.05, 0.02);
-const DECAL_ALPHA_TEST = 0.5;
-const DECAL_POLY_OFFSET = -4;
-
-const AVG_VERTS_PER_DECAL = 128;
-const AVG_INDICES_PER_DECAL = 256;
-
-const VERT_BUDGET = MAX_DECALS * AVG_VERTS_PER_DECAL;
-const INDEX_BUDGET = MAX_DECALS * AVG_INDICES_PER_DECAL;
-
-const OPTIMIZE_EVERY = 50;
-
-/**
- * -----------------------------------------------------------------------------
- * InstancedWalls component - grid of wall boxes
- * -----------------------------------------------------------------------------
- */
-function InstancedWalls({ onWallsReady }: { onWallsReady: (mesh: THREE.InstancedMesh) => void }) {
-  const meshRef = useRef<THREE.InstancedMesh>(null);
-  const INSTANCE_COUNT = WALL_COUNT_X * WALL_COUNT_Z;
-
-  // Set up instance matrices after mesh is mounted
-  useEffect(() => {
-    if (!meshRef.current) return;
-
-    const tmpMat4 = new THREE.Matrix4();
-    let i = 0;
-    for (let ix = 0; ix < WALL_COUNT_X; ix++) {
-      for (let iz = 0; iz < WALL_COUNT_Z; iz++) {
-        tmpMat4.compose(
-          new THREE.Vector3(
-            ix * WALL_SPACING,
-            1.0 + Math.sin(ix * 0.35) * 0.5,
-            (iz - WALL_COUNT_Z * 0.5) * WALL_SPACING
-          ),
-          new THREE.Quaternion().setFromEuler(
-            new THREE.Euler(0, (ix * 0.15) % (Math.PI * 2), 0)
-          ),
-          new THREE.Vector3(1, 1, 1)
-        );
-        meshRef.current.setMatrixAt(i++, tmpMat4);
-      }
-    }
-    meshRef.current.instanceMatrix.needsUpdate = true;
-    meshRef.current.computeBoundingSphere();
-
-    onWallsReady(meshRef.current);
-  }, [onWallsReady]);
-
-  return (
-    <instancedMesh ref={meshRef} args={[undefined, undefined, INSTANCE_COUNT]}>
-      <boxGeometry args={[1.5, 1.0, 0.15]} />
-      <meshStandardMaterial color="#89919a" metalness={0.0} roughness={0.85} />
-    </instancedMesh>
-  );
-}
-
-/**
- * -----------------------------------------------------------------------------
- * DecalBatcher - manages BatchedMesh for all decals
- * -----------------------------------------------------------------------------
- */
-interface DecalRecord {
-  geometryId: number;
-}
-
-interface DecalBatcherRef {
-  addDecal: (geom: THREE.BufferGeometry) => void;
-}
-
-const DecalBatcher = forwardRef<DecalBatcherRef, { onDecalCountChange: (count: number) => void }>(
-  function DecalBatcher({ onDecalCountChange }, ref) {
-    const batchRef = useRef<THREE.BatchedMesh | null>(null);
-    const decalRingRef = useRef<DecalRecord[]>([]);
-    const removedSinceOptimizeRef = useRef(0);
-    const { gl } = useThree();
-
-    // Load bullet hole texture
-    const decalMaterial = useMemo(() => {
-      const textureLoader = new THREE.TextureLoader();
-      const bulletTex = textureLoader.load("/decals/bullet-hole.png");
-      bulletTex.colorSpace = THREE.SRGBColorSpace;
-      bulletTex.anisotropy = Math.min(16, gl.capabilities.getMaxAnisotropy());
-
-      return new THREE.MeshStandardMaterial({
-        map: bulletTex,
-        transparent: true,
-        depthTest: true,
-        depthWrite: false,
-        polygonOffset: true,
-        polygonOffsetFactor: DECAL_POLY_OFFSET,
-        alphaTest: DECAL_ALPHA_TEST,
-        metalness: 0.0,
-        roughness: 0.9,
-      });
-    }, [gl]);
-
-    // Create BatchedMesh
-    useMemo(() => {
-      if (batchRef.current) return batchRef.current;
-
-      const batch = new THREE.BatchedMesh(
-        MAX_DECALS,
-        VERT_BUDGET,
-        INDEX_BUDGET,
-        decalMaterial
-      );
-      // Disable frustum culling since decals are spread across the entire scene
-      // and dynamically added. The bounding sphere would need constant updating.
-      // Decals are cheap to render, so this is acceptable.
-      batch.frustumCulled = false;
-      batch.sortObjects = true;
-      batchRef.current = batch;
-
-      return batch;
-    }, [decalMaterial]);
-
-    // Expose method to add decals
-    const addDecal = useCallback(
-      (geom: THREE.BufferGeometry) => {
-        if (!batchRef.current) return;
-
-        const batch = batchRef.current;
-        const geoId = batch.addGeometry(geom);
-        const instId = batch.addInstance(geoId);
-
-        // DecalGeometry is in world space, so identity matrix
-        const identityMat = new THREE.Matrix4();
-        batch.setMatrixAt(instId, identityMat);
-
-        decalRingRef.current.push({ geometryId: geoId });
-
-        // Ring buffer enforcement
-        if (decalRingRef.current.length > MAX_DECALS) {
-          const oldest = decalRingRef.current.shift();
-          if (oldest) {
-            batch.deleteGeometry(oldest.geometryId);
-            removedSinceOptimizeRef.current++;
-
-            if (removedSinceOptimizeRef.current >= OPTIMIZE_EVERY) {
-              batch.optimize();
-              removedSinceOptimizeRef.current = 0;
-            }
-          }
-        }
-
-        onDecalCountChange(decalRingRef.current.length);
-      },
-      [onDecalCountChange]
-    );
-
-    // Expose addDecal method via ref
-    useImperativeHandle(ref, () => ({
-      addDecal,
-    }), [addDecal]);
-
-    return <primitive object={batchRef.current!} />;
-  }
-);
+/** Shared components imported */
 
 /**
  * -----------------------------------------------------------------------------
@@ -276,7 +110,7 @@ function Scene({ onDecalCountChange }: { onDecalCountChange: (count: number) => 
   return (
     <>
       {/* Performance stats */}
-      <StatsGl className="stats-gl" />
+      <StatsGl className="stats-gl fixed top-20 left-4" />
 
       {/* Lighting */}
       <ambientLight intensity={0.35} />

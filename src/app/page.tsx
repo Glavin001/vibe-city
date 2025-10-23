@@ -63,6 +63,12 @@ const demoCategories: DemoCategory[] = [
         description: "Click-to-place decals on instanced meshes with BatchedMesh for efficient rendering. Demonstrates raycasting, DecalGeometry, and ring buffer optimization with up to 2000 decals in a single draw call."
       },
       {
+        href: "/decals-csg-demo",
+        icon: "🕳️",
+        title: "Decals + CSG Holes",
+        description: "Shoot decals and subtract cylindrical holes via CSG. Proof-of-concept that combines surface decals with boolean subtraction on instanced geometry."
+      },
+      {
         href: "/gpu-rain",
         icon: "🌧️",
         title: "GPU Compute Particles Rain",
