@@ -41,19 +41,21 @@ export function WorldStatusPanel({
 
 export function ActionLog({ logs }: { logs: string[] }) {
   return (
-    <div className="mt-4 bg-gray-800 rounded-lg border border-gray-700 p-3 max-h-32 overflow-y-auto">
+    <div className="bg-gray-800 rounded-lg border border-gray-700 p-3 h-full flex flex-col">
       <div className="text-xs font-semibold text-gray-400 mb-2">Action Log</div>
-      {logs.length === 0 ? (
-        <div className="text-xs text-gray-500 italic">No actions yet...</div>
-      ) : (
-        <div className="space-y-1">
-          {logs.slice(-10).map((log, idx) => (
-            <div key={`log-${idx}-${log.slice(0, 20)}`} className="text-xs text-gray-300 font-mono">
-              {log}
-            </div>
-          ))}
-        </div>
-      )}
+      <div className="flex-1 overflow-y-auto">
+        {logs.length === 0 ? (
+          <div className="text-xs text-gray-500 italic">No actions yet...</div>
+        ) : (
+          <div className="space-y-1">
+            {logs.slice(-20).map((log, idx) => (
+              <div key={`log-${idx}-${log.slice(0, 20)}`} className="text-xs text-gray-300 font-mono">
+                {log}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   )
 }
@@ -74,6 +76,7 @@ export function ChatPanel({
     parts: Array<{
       type: string
       text?: string
+      input?: unknown
       output?: unknown
     }>
   }>
@@ -84,7 +87,7 @@ export function ChatPanel({
   onSendMessage: () => void
 }) {
   return (
-    <div className="bg-gray-800 rounded-lg border border-gray-700 flex flex-col h-64">
+    <div className="bg-gray-800 rounded-lg border border-gray-700 flex flex-col h-full">
       <div className="px-3 py-2 border-b border-gray-700">
         <h3 className="text-xs font-semibold text-white">AI Assistant</h3>
       </div>
@@ -116,11 +119,24 @@ export function ChatPanel({
                   </div>
                 )
               }
-              if (part.type.startsWith('tool-') && part.output) {
-                const output = part.output as Record<string, unknown>
+              if (part.type.startsWith('tool-')) {
+                const toolName = part.type.replace('tool-', '')
+                const hasInput = Object.prototype.hasOwnProperty.call(part, 'input')
+                const hasOutput = Object.prototype.hasOwnProperty.call(part, 'output')
                 return (
-                  <div key={partKey} className="text-xs bg-green-900/30 border border-green-700 rounded p-2 text-green-100">
-                    ✓ Tool result: {JSON.stringify(output?.message || output).slice(0, 100)}
+                  <div key={partKey} className="space-y-1">
+                    {hasInput && (
+                      <div className="text-xs bg-amber-900/30 border border-amber-700 rounded p-2 text-amber-100">
+                        <div className="font-semibold">↳ Tool call: {toolName}</div>
+                        <pre className="mt-1 whitespace-pre-wrap break-words">{JSON.stringify((part as any).input, null, 2)}</pre>
+                      </div>
+                    )}
+                    {hasOutput && (
+                      <div className="text-xs bg-green-900/30 border border-green-700 rounded p-2 text-green-100">
+                        <div className="font-semibold">✓ Tool result: {toolName}</div>
+                        <pre className="mt-1 whitespace-pre-wrap break-words">{JSON.stringify((part as any).output, null, 2)}</pre>
+                      </div>
+                    )}
                   </div>
                 )
               }

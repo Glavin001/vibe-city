@@ -40,6 +40,7 @@
     "public/**",
     "src/generated/**",
     // FIXME: generated types are invalid, property has no initializer.
-    "src/lib/planner/types/**"
+    "src/lib/planner/types/**",
+    "storybook-static/**"
   ]
 }

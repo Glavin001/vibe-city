@@ -173,7 +173,7 @@ const DecalBatcher = forwardRef<DecalBatcherRef, { onDecalCountChange: (count: n
       addDecal,
     }), [addDecal]);
 
-    return <primitive object={batchRef.current} />;
+    return <primitive object={batchRef.current!} />;
   }
 );
 

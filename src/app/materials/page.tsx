@@ -47,39 +47,40 @@ function GridPlane() {
   const material = useMemo(() => {
     const mat = new THREE.MeshBasicNodeMaterial();
 
-    // Grid function using TSL - matches three.js example
-    const gridXZ = TSL.Fn(([gridSize = TSL.float(1.0), dotWidth = TSL.float(0.1), lineWidth = TSL.float(0.02)]) => {
-      const coord = TSL.positionWorld.xz.div(gridSize);
-      const grid = TSL.fract(coord);
+    // Grid parameters
+    const gridSize = 1.0;
+    const dotWidth = 0.03;
+    const lineWidth = 0.005;
+    
+    // Grid calculation
+    const coord = TSL.positionWorld.xz.div(gridSize);
+    const grid = TSL.fract(coord);
 
-      // Screen-space derivative for automatic antialiasing
-      const fw = TSL.fwidth(coord);
-      const smoothing = TSL.max(fw.x, fw.y).mul(0.5);
+    // Screen-space derivative for automatic antialiasing
+    const fw = TSL.fwidth(coord);
+    const smoothing = TSL.max(fw.x, fw.y).mul(0.5);
 
-      // Create squares at cell centers
-      const squareDist = TSL.max(TSL.abs(grid.x.sub(0.5)), TSL.abs(grid.y.sub(0.5)));
-      const dots = TSL.smoothstep(dotWidth.add(smoothing), dotWidth.sub(smoothing), squareDist);
+    // Create squares at cell centers
+    const squareDist = TSL.max(TSL.abs(grid.x.sub(0.5)), TSL.abs(grid.y.sub(0.5)));
+    const dots = TSL.smoothstep(TSL.float(dotWidth).add(smoothing), TSL.float(dotWidth).sub(smoothing), squareDist);
 
-      // Create grid lines
-      const lineX = TSL.smoothstep(lineWidth.add(smoothing), lineWidth.sub(smoothing), TSL.abs(grid.x.sub(0.5)));
-      const lineZ = TSL.smoothstep(lineWidth.add(smoothing), lineWidth.sub(smoothing), TSL.abs(grid.y.sub(0.5)));
-      const lines = TSL.max(lineX, lineZ);
+    // Create grid lines
+    const lineX = TSL.smoothstep(TSL.float(lineWidth).add(smoothing), TSL.float(lineWidth).sub(smoothing), TSL.abs(grid.x.sub(0.5)));
+    const lineZ = TSL.smoothstep(TSL.float(lineWidth).add(smoothing), TSL.float(lineWidth).sub(smoothing), TSL.abs(grid.y.sub(0.5)));
+    const lines = TSL.max(lineX, lineZ);
+    
+    const gridPattern = TSL.max(dots, lines);
 
-      return TSL.max(dots, lines);
-    });
+    // Radial gradient parameters
+    const radius = 30.0;
+    const falloff = 20.0;
+    const radialGradient = TSL.smoothstep(TSL.float(radius), TSL.float(radius).sub(falloff), TSL.length(TSL.positionWorld));
 
-    // Radial gradient
-    const radialGradient = TSL.Fn(([radius = TSL.float(10.0), falloff = TSL.float(1.0)]) => {
-      return TSL.smoothstep(radius, radius.sub(falloff), TSL.length(TSL.positionWorld));
-    });
-
-    // Create grid pattern - call with plain numbers like in three.js example
-    const gridPattern = gridXZ(1.0, 0.03, 0.005);
     const baseColor = TSL.vec4(1.0, 1.0, 1.0, 0.0);
     const gridColor = TSL.vec4(0.5, 0.5, 0.5, 1.0);
 
     // Mix base color with grid lines and apply radial gradient
-    mat.colorNode = gridPattern.mix(baseColor, gridColor).mul(radialGradient(30.0, 20.0));
+    mat.colorNode = gridPattern.mix(baseColor, gridColor).mul(radialGradient);
     mat.transparent = true;
 
     return mat;

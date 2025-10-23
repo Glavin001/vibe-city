@@ -4,9 +4,141 @@ import type { World, EntityId } from './actions'
 
 export function createAITools(
   worldRef: React.MutableRefObject<World | null>,
-  addLog: (message: string) => void
+  addLog: (message: string) => void,
+  triggerWorldUpdate: () => void
 ) {
   return {
+    // ---- Granular tools (preferred) ----
+    move_to: tool({
+      description: "Move an NPC to a destination. Destinations: 'courtyard' | 'kitchen' | 'workshop' | 'player'",
+      inputSchema: z.object({
+        npc: z.string().describe("NPC name, e.g. 'Alice' or 'Bob'"),
+        destination: z.enum(['courtyard','kitchen','workshop','player']).describe("Where to move")
+      }),
+      execute: async ({ npc, destination }) => {
+        const world = worldRef.current
+        if (!world) return { success: false, message: 'World not initialized' }
+        let npcId: EntityId | null = null
+        for (const [id, agent] of world.agents.entries()) if (agent.name.toLowerCase() === npc.toLowerCase()) { npcId = id; break }
+        if (!npcId) return { success: false, message: `NPC ${npc} not found` }
+        const approxForRoom = (room: string): { x: number; y: number; z?: number; room: string } | null => {
+          if (room === 'courtyard') return { x: 0, y: 1, z: 0, room }
+          if (room === 'kitchen') return { x: -5, y: 1, z: -5, room }
+          if (room === 'workshop') return { x: 5, y: 1, z: 5, room }
+          return null
+        }
+        const moveToward = async (actor: EntityId, to: { x: number; y: number; z?: number; room?: string }) => {
+          const from = world.positions.get(actor)
+          if (!from) return false
+          const steps = 16
+          for (let i = 1; i <= steps; i++) {
+            const t = i / steps
+            world.positions.set(actor, { x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t, z: (from.z ?? 0) + ((to.z ?? 0) - (from.z ?? 0)) * t, room: to.room ?? from.room })
+            await new Promise(r => setTimeout(r, 60))
+          }
+          return true
+        }
+        let target: { x: number; y: number; z?: number; room: string } | null = null
+        if (destination === 'player') {
+          let playerId: EntityId | null = null
+          for (const [id, agent] of world.agents.entries()) if (agent.name.toLowerCase() === 'player') { playerId = id; break }
+          const p = playerId ? world.positions.get(playerId) : null
+          if (p) target = { x: p.x, y: p.y, z: p.z ?? 0, room: p.room ?? 'courtyard' }
+        } else {
+          target = approxForRoom(destination)
+        }
+        if (!target) return { success: false, message: `${npc}: destination not found` }
+        await moveToward(npcId, target)
+        addLog(`${npc} moved to ${destination}`)
+        return { success: true, message: `${npc} moved to ${destination}` }
+      }
+    }),
+
+    pick_up_object: tool({
+      description: "NPC picks up an item by name (fuzzy match) and removes it from the world",
+      inputSchema: z.object({
+        npc: z.string().describe("NPC name"),
+        item: z.string().describe("Item name, e.g. 'blue mug' or 'key'")
+      }),
+      execute: async ({ npc, item }) => {
+        const world = worldRef.current
+        if (!world) return { success: false, message: 'World not initialized' }
+        let npcId: EntityId | null = null
+        for (const [id, agent] of world.agents.entries()) if (agent.name.toLowerCase() === npc.toLowerCase()) { npcId = id; break }
+        if (!npcId) return { success: false, message: `NPC ${npc} not found` }
+        let itemId: EntityId | null = null
+        const q = item.toLowerCase()
+        for (const [id, it] of world.items.entries()) if (it.name.toLowerCase().includes(q)) { itemId = id; break }
+        if (!itemId) return { success: false, message: `${npc}: item '${item}' not found` }
+        const ip = world.positions.get(itemId)
+        if (ip) {
+          // move to item
+          const from = world.positions.get(npcId)
+          if (from) {
+            const steps = 12
+            for (let i = 1; i <= steps; i++) {
+              const t = i / steps
+              world.positions.set(npcId, { x: from.x + (ip.x - from.x) * t, y: from.y + (ip.y - from.y) * t, z: (from.z ?? 0) + ((ip.z ?? 0) - (from.z ?? 0)) * t, room: ip.room ?? from.room })
+              await new Promise(r => setTimeout(r, 60))
+            }
+          }
+        }
+        const inv = world.inventories.get(npcId)
+        if (!inv) return { success: false, message: `${npc}: no inventory` }
+        if (!inv.items.includes(itemId)) inv.items.push(itemId)
+        world.positions.delete(itemId)
+        triggerWorldUpdate() // Force 3D scene update
+        addLog(`${npc} picked up ${world.items.get(itemId)?.name}`)
+        return { success: true, message: `${npc} picked up ${world.items.get(itemId)?.name}` }
+      }
+    }),
+
+    give_object: tool({
+      description: "NPC gives an item they carry to a receiver (Player or another NPC)",
+      inputSchema: z.object({
+        npc: z.string().describe("NPC name"),
+        item: z.string().optional().describe("Item name if specified; otherwise first item"),
+        to: z.string().describe("Receiver: 'Player' | 'Alice' | 'Bob'")
+      }),
+      execute: async ({ npc, item, to }) => {
+        const world = worldRef.current
+        if (!world) return { success: false, message: 'World not initialized' }
+        const resolveAgentId = (name: string): EntityId | null => {
+          for (const [id, agent] of world.agents.entries()) if (agent.name.toLowerCase() === name.toLowerCase()) return id
+          return null
+        }
+        const npcId = resolveAgentId(npc)
+        const recvId = resolveAgentId(to)
+        if (!npcId || !recvId) return { success: false, message: 'Agent not found' }
+        const inv = world.inventories.get(npcId)
+        if (!inv || inv.items.length === 0) return { success: false, message: `${npc}: no items to give` }
+        let itemId = inv.items[0]
+        if (item) {
+          const q = item.toLowerCase()
+          const found = inv.items.find(id => world.items.get(id)?.name.toLowerCase().includes(q))
+          if (found) itemId = found
+        }
+        // move to receiver
+        const rp = world.positions.get(recvId)
+        if (rp) {
+          const from = world.positions.get(npcId)
+          if (from) {
+            const steps = 12
+            for (let i = 1; i <= steps; i++) {
+              const t = i / steps
+              world.positions.set(npcId, { x: from.x + (rp.x - from.x) * t, y: from.y + (rp.y - from.y) * t, z: (from.z ?? 0) + ((rp.z ?? 0) - (from.z ?? 0)) * t, room: rp.room ?? from.room })
+              await new Promise(r => setTimeout(r, 60))
+            }
+          }
+        }
+        inv.items = inv.items.filter(i => i !== itemId)
+        const rinv = world.inventories.get(recvId)
+        if (rinv && !rinv.items.includes(itemId)) rinv.items.push(itemId)
+        triggerWorldUpdate() // Force UI update
+        addLog(`${npc} gave ${world.items.get(itemId)?.name ?? 'item'} to ${to}`)
+        return { success: true, message: `${npc} gave ${world.items.get(itemId)?.name ?? 'item'} to ${to}` }
+      }
+    }),
     inspect_world: tool({
       description: "Get detailed information about the current world state, including all agents, items, machines, and their locations",
       inputSchema: z.object({}),
@@ -43,41 +175,6 @@ export function createAITools(
       }
     }),
     
-    command_npc: tool({
-      description: "Command an NPC to perform actions. Available actions: pick_up, give, go_to, use_machine_brew",
-      inputSchema: z.object({
-        npc_name: z.string().describe("Name of the NPC (e.g., 'Alice', 'Bob')"),
-        action: z.string().describe("Action to perform (e.g., 'pick up the red mug', 'go to kitchen')"),
-      }),
-      execute: async ({ npc_name, action }) => {
-        const world = worldRef.current
-        if (!world) return { success: false, message: "World not initialized" }
-        
-        // Find NPC
-        let npcId: EntityId | null = null
-        for (const [id, agent] of world.agents.entries()) {
-          if (agent.name.toLowerCase() === npc_name.toLowerCase()) {
-            npcId = id
-            break
-          }
-        }
-        
-        if (!npcId) {
-          return { success: false, message: `NPC ${npc_name} not found` }
-        }
-        
-        addLog(`${npc_name} received command: ${action}`)
-        
-        // Simple action parsing (this could be much more sophisticated)
-        // In a real implementation, you would parse the action and queue it for the NPC
-        
-        // For demo, just log and return success
-        return {
-          success: true,
-          message: `${npc_name} acknowledged: "${action}"`
-        }
-      }
-    }),
     
     check_inventory: tool({
       description: "Check the inventory of an agent (player or NPC)",

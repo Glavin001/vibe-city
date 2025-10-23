@@ -7,7 +7,7 @@ import { useEffect, useRef } from 'react';
  * @param deps - Dependencies array
  */
 export function useInterval(callback: () => void, delay: number | null, deps: unknown[] = []) {
-  const savedCallback = useRef<() => void>();
+  const savedCallback = useRef<() => void>(callback);
 
   // Remember the latest callback
   useEffect(() => {

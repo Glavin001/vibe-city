@@ -16,6 +16,14 @@ const nextConfig: NextConfig = {
       assert: require.resolve('assert'),
     };
 
+    // Add support for ?worker imports
+    config.module = config.module || {};
+    config.module.rules = config.module.rules || [];
+    config.module.rules.push({
+      test: /\.worker\.(js|ts)$/,
+      use: { loader: 'worker-loader' },
+    });
+
     // Provide globals for buffer/process if needed by deps
     config.plugins = config.plugins || [];
     const webpack = require('webpack');

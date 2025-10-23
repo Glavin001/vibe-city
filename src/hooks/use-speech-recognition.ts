@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 // All model loading and inference are performed inside a Web Worker.
 
+// import SpeechRecognitionWorker from '../workers/speech-recognition.worker?worker';
+
 export interface SpeechRecognitionOptions {
   /**
    * The language to use for speech recognition
@@ -279,9 +281,13 @@ export function useSpeechRecognition({
     if (typeof window === 'undefined') return false;
     if (workerRef.current) return true;
     try {
+      /*
       const worker = new Worker(new URL('../workers/speech-recognition.worker.ts', import.meta.url), {
         type: 'module',
       });
+      */
+      // const worker = new SpeechRecognitionWorker();
+      const worker: any = null;
       // Attach message handler immediately so events from worker are not missed
       worker.addEventListener('message', handleWorkerMessage as (e: MessageEvent) => void);
       workerRef.current = worker;

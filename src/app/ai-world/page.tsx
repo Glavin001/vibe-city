@@ -57,6 +57,7 @@ function AIWorldMain({ apiKey }: { apiKey: string }) {
   // World state
   const worldRef = useRef<World | null>(null)
   const [playerAgent, setPlayerAgent] = useState<string | null>(null)
+  const [worldVersion, setWorldVersion] = useState(0) // Force re-renders when world changes
   
   useEffect(() => {
     const { world, playerAgent: player } = createDemoWorld()
@@ -102,14 +103,32 @@ function AIWorldMain({ apiKey }: { apiKey: string }) {
     setActionLog(prev => [...prev, `[${new Date().toLocaleTimeString()}] ${message}`])
   }, [])
 
+  // Player interaction state
+  const [interactPrompt, setInteractPrompt] = useState<string>('')
+  const [interactTarget, setInteractTarget] = useState<[number, number, number] | null>(null)
+  const interactHandlerRef = useRef<() => void>(() => {})
+  
+  // Helper for distance checks
+  const distTo = useCallback((pos: [number, number, number]) => {
+    const p = playerPoseRef.current.position
+    const dx = p[0] - pos[0]
+    const dz = p[2] - pos[2]
+    return Math.hypot(dx, dz)
+  }, [])
+
+  // Trigger world update for 3D scene re-render
+  const triggerWorldUpdate = useCallback(() => {
+    setWorldVersion(v => v + 1)
+  }, [])
+
   // AI Tools - recreate when world is initialized
   const [tools, setTools] = useState<ReturnType<typeof createAITools> | undefined>(undefined)
   
   useEffect(() => {
     if (worldRef.current) {
-      setTools(createAITools(worldRef, addLog))
+      setTools(createAITools(worldRef, addLog, triggerWorldUpdate))
     }
-  }, [addLog]) // Recreate when addLog changes
+  }, [addLog, triggerWorldUpdate]) // Recreate when callbacks change
 
   const model = useMemo(() => google(WORLD_CONFIG.ai.model, { apiKey }), [apiKey])
   
@@ -127,20 +146,88 @@ function AIWorldMain({ apiKey }: { apiKey: string }) {
     setInput('')
   }, [input, sendMessage])
 
+  // Player interaction detection
+  useEffect(() => {
+    const id = setInterval(() => {
+      const world = worldRef.current
+      if (!world || !playerAgent) {
+        setInteractPrompt('')
+        setInteractTarget(null)
+        return
+      }
+
+      // Check each item for pickup
+      for (const [itemId, item] of world.items.entries()) {
+        const itemPos = world.positions.get(itemId)
+        if (!itemPos) continue
+        
+        // Check if already in someone's inventory
+        let inInventory = false
+        for (const [, inv] of world.inventories.entries()) {
+          if (inv.items.includes(itemId)) {
+            inInventory = true
+            break
+          }
+        }
+        if (inInventory) continue
+        
+        // Check distance
+        const dist = distTo([itemPos.x, itemPos.y, itemPos.z ?? 0])
+        if (dist <= 1.7) {
+          setInteractPrompt(`Press E to Pick up ${item.name}`)
+          setInteractTarget([itemPos.x, itemPos.y + 0.5, itemPos.z ?? 0])
+          interactHandlerRef.current = () => {
+            // Pick up item
+            const playerInv = world.inventories.get(playerAgent)
+            if (playerInv && !playerInv.items.includes(itemId)) {
+              playerInv.items.push(itemId)
+              world.positions.delete(itemId) // Remove from world
+              addLog(`Picked up ${item.name}`)
+              triggerWorldUpdate() // Force 3D scene update
+            }
+          }
+          return
+        }
+      }
+      
+      // No interactions available
+      setInteractPrompt('')
+      setInteractTarget(null)
+      interactHandlerRef.current = () => {}
+    }, 120)
+    return () => clearInterval(id)
+  }, [playerAgent, distTo, addLog, triggerWorldUpdate])
+
+  // Keyboard binding for player actions
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'e' || e.key === 'E') {
+        interactHandlerRef.current()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
   return (
     <div className="h-screen bg-gray-900 flex flex-col overflow-hidden">
-      <header className="flex-shrink-0 px-6 py-3 bg-gray-800 border-b border-gray-700">
-        <h1 className="text-2xl font-bold text-white mb-1">
-          AI World - Advanced Interactive 3D Environment
-        </h1>
-        <p className="text-sm text-gray-300">
-          Explore a physics-based 3D world with AI-powered NPCs. Click to lock pointer, WASD to move, mouse to look.
-        </p>
+      <header className="flex-shrink-0 px-4 py-2 bg-gray-800 border-b border-gray-700 flex items-center justify-between">
+        <div className="flex-1">
+          <h1 className="text-xl font-bold text-white">
+            AI World - Advanced Interactive 3D Environment
+          </h1>
+        </div>
+        <a 
+          href="/" 
+          className="ml-4 bg-blue-600 hover:bg-blue-700 text-white font-medium py-1.5 px-3 rounded-lg transition-colors text-sm whitespace-nowrap"
+        >
+          ← Back to Home
+        </a>
       </header>
 
-      <div className="flex-1 flex gap-4 p-4 overflow-hidden">
-        {/* Left: 3D Scene */}
-        <div className="flex-1 flex flex-col gap-4 min-w-0">
+      <div className="flex-1 flex gap-3 p-3 overflow-hidden">
+        {/* Left: 3D Scene + Bottom Panel (World State + Action Log) */}
+        <div className="flex-1 flex flex-col gap-3 min-w-0">
           <div className="flex-1 bg-black rounded-lg overflow-hidden relative">
             {worldRef.current && (
               <KeyboardControls map={CONTROLS_MAP}>
@@ -150,9 +237,13 @@ function AIWorldMain({ apiKey }: { apiKey: string }) {
                     <BuildingColliders config={BUILDINGS.STORAGE} />
                     <BuildingColliders config={BUILDINGS.BUNKER} />
                     <Scene
+                      key={worldVersion}
                       world={worldRef.current}
                       playerPoseRef={playerPoseRef}
                       playerSpawn={SPAWN_POSITION}
+                      interactPrompt={interactPrompt}
+                      interactTarget={interactTarget}
+                      interactHandlerRef={interactHandlerRef}
                       onLock={handleLock}
                       onUnlock={handleUnlock}
                     />
@@ -171,23 +262,25 @@ function AIWorldMain({ apiKey }: { apiKey: string }) {
               </div>
             </div>
           </div>
-            
-          <ActionLog logs={actionLog} />
+          
+          {/* Bottom Panel: World State (2/3) + Action Log (1/3) */}
+          <div className="flex-shrink-0 h-64 flex gap-3">
+            <div className="flex-1 basis-2/3 overflow-y-auto">
+              <DetailedWorldState world={worldRef.current} />
+            </div>
+            <div className="flex-1 basis-1/3 overflow-hidden">
+              <ActionLog logs={actionLog} />
+            </div>
+          </div>
         </div>
 
-        {/* Right: Controls, World State & Chat */}
+        {/* Right: Controls & Chat */}
         <div className="w-96 flex flex-col gap-3 overflow-hidden">
           <WorldCapabilities />
           
           <ControlsHelp isLocked={isLocked} />
           
-          <div className="flex-1 overflow-y-auto">
-              <DetailedWorldState 
-                world={worldRef.current}
-              />
-          </div>
-          
-          <div className="flex-shrink-0">
+          <div className="flex-1 min-h-0">
             <ChatPanel
               messages={messages}
               status={status}
@@ -199,15 +292,6 @@ function AIWorldMain({ apiKey }: { apiKey: string }) {
           </div>
         </div>
       </div>
-
-      <footer className="flex-shrink-0 px-6 py-3 bg-gray-800 border-t border-gray-700">
-        <a 
-          href="/" 
-          className="inline-block bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg transition-colors text-sm"
-        >
-          ← Back to Home
-        </a>
-      </footer>
     </div>
   )
 }

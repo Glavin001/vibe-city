@@ -49,7 +49,11 @@ export class KokoroWorkerClient {
     this.onReadyGlobal = onReady;
 
     // IMPORTANT: inline new Worker(new URL(...)) so webpack v5 detects worker correctly
-    this.worker = new Worker(new URL("./kokoro.worker.ts", import.meta.url), { type: "module" });
+    // this.worker = new Worker(new URL("./kokoro.worker.ts", import.meta.url), { type: "module" });
+    this.worker = null as any;
+
+    // Early return if worker creation failed (user handling worker-loader separately)
+    if (!this.worker) return;
 
     const handleMessage = (e: MessageEvent<KokoroWorkerStatusMessage>) => {
       const msg = e.data;

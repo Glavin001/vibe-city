@@ -37,13 +37,21 @@ export const Agent = forwardRef<CrowdAgent | undefined, AgentProps>(({ initialPo
       ...(crowdAgentParams ?? {}),
     });
 
-    setAgent(agent);
+    // Use a small delay to ensure agent is fully added to crowd system
+    // before making it available via ref
+    setTimeout(() => {
+      setAgent(agent);
+    }, 50);
 
     return () => {
       setAgent(undefined);
 
       crowd.removeAgent(agent);
     };
+    // We intentionally only create the agent once when crowd is available
+    // initialPosition and crowdAgentParams are captured from props at creation time
+    // If these need to change, the component should be remounted with a new key
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [crowd, setAgent]);
 
   return null;

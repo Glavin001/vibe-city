@@ -1,21 +1,104 @@
-import type { Meta } from '@storybook/react';
-import { RigidBody, CuboidCollider, CylinderCollider, BallCollider, Physics } from '@react-three/rapier';
+import type { Meta, StoryObj } from '@storybook/react';
+import { RigidBody, CuboidCollider, CylinderCollider, BallCollider, Physics, RapierRigidBody } from '@react-three/rapier';
 import { Canvas } from '@react-three/fiber';
-import { OrbitControls, Box, Sphere, Cylinder, Grid, Environment } from '@react-three/drei';
+import { OrbitControls, Box, Sphere, Cylinder, Grid, Environment, Line } from '@react-three/drei';
 import { init as initRecast } from 'recast-navigation';
-import React, { Suspense, useRef, useState, useEffect, useMemo, useCallback, useImperativeHandle } from 'react';
-import { useControls } from 'leva';
+import React, { useRef, useState, useEffect, useMemo, useCallback, useImperativeHandle } from 'react';
 import * as THREE from 'three';
 import { useFrame } from '@react-three/fiber';
 import { useRapierNavMesh } from '../../lib/navigation/useRapierNavMesh';
 import { NavMeshDebug } from '../../lib/navigation/navigation';
+import { Agent } from '../../lib/navigation/crowd-agent';
+import { useNavigation } from '../../lib/navigation/useNavigation';
+import type { CrowdAgent, NavMeshQuery } from 'recast-navigation';
+import { Entity } from '../../store/ecs';
 
 export default {
   title: 'Scenes/RapierNavMesh',
   parameters: {
     layout: 'fullscreen',
   },
+  argTypes: {
+    showDebug: {
+      control: 'boolean',
+      description: 'Show NavMesh Debug visualization',
+    },
+    showCrowd: {
+      control: 'boolean',
+      description: 'Show crowd agents',
+    },
+    crowdAgentCount: {
+      control: { type: 'range', min: 1, max: 50, step: 1 },
+      description: 'Number of crowd agents',
+    },
+    showMovingBoxes: {
+      control: 'boolean',
+      description: 'Show moving boxes',
+    },
+    showBouncingBalls: {
+      control: 'boolean',
+      description: 'Show bouncing balls',
+    },
+    showRamps: {
+      control: 'boolean',
+      description: 'Show ramps',
+    },
+    showFloor: {
+      control: 'boolean',
+      description: 'Show floor',
+    },
+    showWalls: {
+      control: 'boolean',
+      description: 'Show walls',
+    },
+    showStaticObstacles: {
+      control: 'boolean',
+      description: 'Show static obstacles',
+    },
+    showDynamicStack: {
+      control: 'boolean',
+      description: 'Show dynamic stack',
+    },
+    showStressTest: {
+      control: 'boolean',
+      description: 'Show stress test objects',
+    },
+    stressTestCount: {
+      control: { type: 'range', min: 10, max: 300, step: 10 },
+      description: 'Number of stress test objects',
+    },
+    resetInterval: {
+      control: { type: 'range', min: 1000, max: 10000, step: 1000 },
+      description: 'Reset interval in milliseconds',
+    },
+    showBallPit: {
+      control: 'boolean',
+      description: 'Show ball pit',
+    },
+    showAgentPaths: {
+      control: 'boolean',
+      description: 'Show agent paths to target',
+    },
+  },
 } as Meta;
+
+interface RapierNavMeshDemoProps {
+  showDebug?: boolean;
+  showCrowd?: boolean;
+  crowdAgentCount?: number;
+  showMovingBoxes?: boolean;
+  showBouncingBalls?: boolean;
+  showRamps?: boolean;
+  showFloor?: boolean;
+  showWalls?: boolean;
+  showStaticObstacles?: boolean;
+  showDynamicStack?: boolean;
+  showStressTest?: boolean;
+  stressTestCount?: number;
+  resetInterval?: number;
+  showBallPit?: boolean;
+  showAgentPaths?: boolean;
+}
 
 interface MovingBoxProps {
   position: [number, number, number];
@@ -57,7 +140,7 @@ interface BouncingBallProps {
 }
 
 const BouncingBall: React.FC<BouncingBallProps> = ({ position, radius = 0.5, color = 'red' }) => {
-  const rigidBodyRef = useRef(null);
+  const rigidBodyRef = useRef<RapierRigidBody>(null);
 
   useFrame(() => {
     // Apply small upward impulse periodically to keep the ball bouncing
@@ -475,7 +558,7 @@ const generateRandomObjectConfigs = (count: number): RandomObjectConfig[] => {
 const RandomPhysicsObject = React.forwardRef<any, { config: RandomObjectConfig; index: number }>(
   ({ config, index }, ref) => {
     const { type, position, rotation, size, color, mass, isMetallic, roughness } = config;
-    const rigidBodyRef = useRef(null);
+    const rigidBodyRef = useRef<RapierRigidBody>(null);
     const initialImpulse = useMemo(() => {
       return new THREE.Vector3((Math.random() - 0.5) * 10, Math.random() * 5, (Math.random() - 0.5) * 10);
     }, []);
@@ -485,11 +568,12 @@ const RandomPhysicsObject = React.forwardRef<any, { config: RandomObjectConfig; 
 
     // Apply initial impulse when the object is created
     useEffect(() => {
-      if (rigidBodyRef.current) {
+      const body = rigidBodyRef.current;
+      if (body) {
         // Small delay to ensure physics is initialized
         const timeoutId = setTimeout(() => {
-          rigidBodyRef.current.applyImpulse(initialImpulse, true);
-          rigidBodyRef.current.applyTorqueImpulse(
+          body.applyImpulse(initialImpulse, true);
+          body.applyTorqueImpulse(
             {
               x: (Math.random() - 0.5) * 5,
               y: (Math.random() - 0.5) * 5,
@@ -650,7 +734,23 @@ const recastInitPromise = (async () => {
   }
 })();
 
-export const RapierNavMeshDemo: React.FC = () => {
+const RapierNavMeshDemoComponent: React.FC<RapierNavMeshDemoProps> = ({
+  showDebug = true,
+  showCrowd = true,
+  crowdAgentCount = 10,
+  showMovingBoxes = true,
+  showBouncingBalls = true,
+  showRamps = true,
+  showFloor = true,
+  showWalls = true,
+  showStaticObstacles = true,
+  showDynamicStack = true,
+  showStressTest = false,
+  stressTestCount = 100,
+  resetInterval = 5000,
+  showBallPit = true,
+  showAgentPaths = true,
+}) => {
   const [isReady, setIsReady] = useState(recastInitialized);
 
   useEffect(() => {
@@ -664,76 +764,6 @@ export const RapierNavMeshDemo: React.FC = () => {
       Loading Recast Navigation...
     </div>;
   }
-
-  const {
-    showDebug,
-    showMovingBoxes,
-    showBouncingBalls,
-    showRamps,
-    showFloor,
-    showWalls,
-    showStaticObstacles,
-    showDynamicStack,
-    showStressTest,
-    stressTestCount,
-    resetInterval,
-    showBallPit,
-  } = useControls({
-    showDebug: {
-      value: true,
-      label: 'Show NavMesh Debug',
-    },
-    showMovingBoxes: {
-      value: true,
-      label: 'Show Moving Boxes',
-    },
-    showBouncingBalls: {
-      value: true,
-      label: 'Show Bouncing Balls',
-    },
-    showRamps: {
-      value: true,
-      label: 'Show Ramps',
-    },
-    showFloor: {
-      value: true,
-      label: 'Show Floor',
-    },
-    showWalls: {
-      value: true,
-      label: 'Show Walls',
-    },
-    showStaticObstacles: {
-      value: true,
-      label: 'Show Static Obstacles',
-    },
-    showDynamicStack: {
-      value: true,
-      label: 'Show Dynamic Stack',
-    },
-    showStressTest: {
-      value: false,
-      label: 'Show Stress Test',
-    },
-    stressTestCount: {
-      value: 100,
-      min: 10,
-      max: 300,
-      step: 10,
-      label: 'Stress Test Object Count',
-    },
-    resetInterval: {
-      value: 5000,
-      min: 1000,
-      max: 10000,
-      step: 1000,
-      label: 'Reset Interval (ms)',
-    },
-    showBallPit: {
-      value: true,
-      label: 'Show Ball Pit',
-    },
-  });
 
   return (
     <div style={{ width: '100%', height: '100vh', position: 'relative' }}>
@@ -774,7 +804,7 @@ export const RapierNavMeshDemo: React.FC = () => {
             showBallPit={showBallPit}
           />
 
-          <PhysicsNavMeshScene showDebug={showDebug} />
+          <PhysicsNavMeshScene showDebug={showDebug} showCrowd={showCrowd} crowdAgentCount={crowdAgentCount} showAgentPaths={showAgentPaths} />
         </Physics>
 
         <OrbitControls />
@@ -783,15 +813,301 @@ export const RapierNavMeshDemo: React.FC = () => {
   );
 };
 
+export const RapierNavMeshDemo: StoryObj<RapierNavMeshDemoProps> = {
+  render: (args) => <RapierNavMeshDemoComponent {...args} />,
+  args: {
+    showDebug: true,
+    showCrowd: true,
+    crowdAgentCount: 10,
+    showMovingBoxes: true,
+    showBouncingBalls: true,
+    showRamps: true,
+    showFloor: true,
+    showWalls: true,
+    showStaticObstacles: true,
+    showDynamicStack: true,
+    showStressTest: false,
+    stressTestCount: 100,
+    resetInterval: 5000,
+    showBallPit: true,
+    showAgentPaths: true,
+  },
+};
+
 interface PhysicsNavMeshSceneProps {
   showDebug: boolean;
+  showCrowd: boolean;
+  crowdAgentCount: number;
+  showAgentPaths: boolean;
 }
 
-const PhysicsNavMeshScene: React.FC<PhysicsNavMeshSceneProps> = ({ showDebug }) => {
+const PhysicsNavMeshScene: React.FC<PhysicsNavMeshSceneProps> = ({ showDebug, showCrowd, crowdAgentCount, showAgentPaths }) => {
   // Use the hook to generate the navmesh from physics colliders
   useRapierNavMesh({
     navMeshUpdateThrottle: 300,
   });
 
-  return <NavMeshDebug enabled={showDebug} />;
+  return (
+    <>
+      <NavMeshDebug enabled={showDebug} />
+      {showCrowd && <CrowdAgents agentCount={crowdAgentCount} showPaths={showAgentPaths} />}
+    </>
+  );
+};
+
+// Component to manage crowd agents and moving target
+const CrowdAgents: React.FC<{ agentCount: number; showPaths: boolean }> = ({ agentCount, showPaths }) => {
+  const { navMeshQuery, crowd } = useNavigation();
+  const [targetPosition, setTargetPosition] = useState<THREE.Vector3 | null>(null);
+  const agentRefs = useRef<(CrowdAgent | undefined)[]>([]);
+  const [agentPositions, setAgentPositions] = useState<THREE.Vector3[]>([]);
+  const lastAgentCountRef = useRef(agentCount);
+  const targetPositionRef = useRef<THREE.Vector3 | null>(null);
+
+  // Keep target position in ref for agent creation
+  useEffect(() => {
+    targetPositionRef.current = targetPosition;
+  }, [targetPosition]);
+
+  // Initialize agents with random positions within the walls
+  // Only reinitialize if agentCount changes
+  useEffect(() => {
+    if (!navMeshQuery || !crowd) return;
+
+    // Only regenerate positions if agentCount has changed
+    if (lastAgentCountRef.current === agentCount && agentPositions.length > 0) {
+      return;
+    }
+
+    // Small delay to ensure navmesh is fully ready
+    const timeoutId = setTimeout(() => {
+      const positions: THREE.Vector3[] = [];
+      for (let i = 0; i < agentCount; i++) {
+        // Random position within walls (-40 to 40 to stay away from walls at -50/50)
+        const x = (Math.random() - 0.5) * 80;
+        const z = (Math.random() - 0.5) * 80;
+        
+        const { point } = navMeshQuery.findClosestPoint({ x, y: 0, z });
+        positions.push(new THREE.Vector3(point.x, point.y, point.z));
+      }
+      setAgentPositions(positions);
+      lastAgentCountRef.current = agentCount;
+    }, 100);
+
+    return () => clearTimeout(timeoutId);
+  }, [navMeshQuery, crowd, agentCount, agentPositions.length]);
+
+  // Update target position every 10 seconds
+  useEffect(() => {
+    if (!navMeshQuery || !crowd) return;
+
+    const updateTarget = () => {
+      // Random position within walls (-40 to 40)
+      const x = (Math.random() - 0.5) * 80;
+      const z = (Math.random() - 0.5) * 80;
+      
+      const { point } = navMeshQuery.findClosestPoint({ x, y: 0, z });
+      setTargetPosition(new THREE.Vector3(point.x, point.y, point.z));
+    };
+
+    // Set initial target after a small delay to ensure agents are created
+    const initialTimeoutId = setTimeout(updateTarget, 200);
+
+    // Update target every 10 seconds
+    const intervalId = setInterval(updateTarget, 10000);
+
+    return () => {
+      clearTimeout(initialTimeoutId);
+      clearInterval(intervalId);
+    };
+  }, [navMeshQuery, crowd]);
+
+  // Request agents to move to target when it changes or when agents change
+  useEffect(() => {
+    if (!targetPosition || !crowd) return;
+
+    // Send move command to all agents
+    agentRefs.current.forEach((agent) => {
+      if (agent) {
+        agent.requestMoveTarget(targetPosition);
+      }
+    });
+  }, [targetPosition, crowd]);
+  
+  // Periodically check and resend move commands to ensure all agents are moving
+  useEffect(() => {
+    if (!crowd || !targetPosition) return;
+
+    const intervalId = setInterval(() => {
+      agentRefs.current.forEach((agent) => {
+        if (agent && targetPositionRef.current) {
+          // Check if agent is idle (not moving)
+          const velocity = agent.velocity();
+          const speed = Math.sqrt(velocity.x * velocity.x + velocity.z * velocity.z);
+          
+          // If agent is basically stopped and we have a target, resend the command
+          if (speed < 0.01) {
+            agent.requestMoveTarget(targetPositionRef.current);
+          }
+        }
+      });
+    }, 500); // Check every 500ms
+
+    return () => clearInterval(intervalId);
+  }, [crowd, targetPosition]);
+  
+  // Callback to handle new agents - send them to target immediately
+  const handleAgentRef = useCallback((index: number) => {
+    return (agent: CrowdAgent | undefined) => {
+      agentRefs.current[index] = agent;
+      
+      // If agent was just created and we have a target, send it there
+      if (agent && targetPositionRef.current) {
+        // Use setTimeout to ensure agent is fully initialized in the crowd system
+        setTimeout(() => {
+          if (agent && targetPositionRef.current) {
+            agent.requestMoveTarget(targetPositionRef.current);
+          }
+        }, 100);
+      }
+    };
+  }, []);
+
+  if (agentPositions.length === 0) return null;
+
+  return (
+    <>
+      {/* Render agents */}
+      {agentPositions.map((position, i) => (
+        <Entity key={`agent-${i}`}>
+          <Agent
+            ref={handleAgentRef(i)}
+            initialPosition={[position.x, position.y, position.z]}
+            radius={0.3}
+            height={1.8}
+            maxAcceleration={8.0}
+            maxSpeed={3.5}
+            collisionQueryRange={2.5}
+            pathOptimizationRange={0.0}
+            separationWeight={2.0}
+          />
+        </Entity>
+      ))}
+
+      {/* Visualize agents as cylinders */}
+      {agentRefs.current.map((agent, i) => {
+        if (!agent) return null;
+        return <AgentVisual key={`visual-${i}`} agent={agent} />;
+      })}
+
+      {/* Visualize agent paths */}
+      {showPaths && navMeshQuery && targetPosition && agentRefs.current.map((agent, i) => {
+        if (!agent) return null;
+        return <AgentPath key={`path-${i}`} agent={agent} target={targetPosition} navMeshQuery={navMeshQuery} />;
+      })}
+
+      {/* Visualize target */}
+      {targetPosition && (
+        <group position={targetPosition}>
+          {/* Main target sphere */}
+          <mesh position={[0, 0.5, 0]}>
+            <sphereGeometry args={[0.8, 32, 32]} />
+            <meshStandardMaterial color="lime" emissive="lime" emissiveIntensity={1.0} />
+          </mesh>
+          {/* Outer glow ring */}
+          <mesh position={[0, 0.1, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+            <ringGeometry args={[0.8, 1.5, 32]} />
+            <meshStandardMaterial 
+              color="yellow" 
+              emissive="yellow" 
+              emissiveIntensity={0.8} 
+              transparent 
+              opacity={0.6}
+            />
+          </mesh>
+          {/* Base marker */}
+          <mesh position={[0, 0.05, 0]}>
+            <cylinderGeometry args={[1.2, 1.5, 0.1, 32]} />
+            <meshStandardMaterial 
+              color="lime" 
+              emissive="lime" 
+              emissiveIntensity={0.5} 
+              transparent 
+              opacity={0.4}
+            />
+          </mesh>
+        </group>
+      )}
+    </>
+  );
+};
+
+// Component to visualize a single agent
+const AgentVisual: React.FC<{ agent: CrowdAgent }> = ({ agent }) => {
+  const meshRef = useRef<THREE.Mesh>(null);
+
+  useFrame(() => {
+    if (!meshRef.current) return;
+
+    const position = agent.position();
+    const velocity = agent.velocity();
+    
+    meshRef.current.position.set(position.x, position.y, position.z);
+
+    // Rotate agent to face movement direction
+    if (velocity.x !== 0 || velocity.z !== 0) {
+      const angle = Math.atan2(velocity.x, velocity.z);
+      meshRef.current.rotation.y = angle;
+    }
+  });
+
+  return (
+    <mesh ref={meshRef}>
+      <cylinderGeometry args={[0.3, 0.3, 1.8, 16]} />
+      <meshStandardMaterial color="red" />
+    </mesh>
+  );
+};
+
+// Component to visualize an agent's path to target
+const AgentPath: React.FC<{ 
+  agent: CrowdAgent; 
+  target: THREE.Vector3; 
+  navMeshQuery: NavMeshQuery;
+}> = ({ agent, target, navMeshQuery }) => {
+  const [pathPoints, setPathPoints] = useState<THREE.Vector3[]>([]);
+
+  useFrame(() => {
+    const agentPos = agent.position();
+    const start = { x: agentPos.x, y: agentPos.y, z: agentPos.z };
+    const end = { x: target.x, y: target.y, z: target.z };
+
+    try {
+      const { path } = navMeshQuery.computePath(start, end);
+      
+      if (path && path.length > 0) {
+        const points = path.map((p: { x: number; y: number; z: number }) => 
+          new THREE.Vector3(p.x, p.y + 0.2, p.z)
+        );
+        setPathPoints(points);
+      } else {
+        setPathPoints([]);
+      }
+    } catch {
+      // Path computation can fail if positions are invalid
+      setPathPoints([]);
+    }
+  });
+
+  if (pathPoints.length < 2) return null;
+
+  return (
+    <Line
+      points={pathPoints}
+      color="red"
+      lineWidth={2}
+      transparent
+      opacity={0.6}
+    />
+  );
 };

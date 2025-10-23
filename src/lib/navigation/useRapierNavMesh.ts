@@ -188,6 +188,7 @@ export const useRapierNavMesh = ({ navMeshUpdateThrottle = NAVMESH_UPDATE_THROTT
 
         if (!previousHandles.current.has(handle)) {
           // New rigid body added
+          // @ts-expect-error - Duplicate RigidBody types from nested @dimforge/rapier3d-compat dependencies
           const data = processRigidBody(body);
 
           if (isStatic) {
@@ -219,6 +220,7 @@ export const useRapierNavMesh = ({ navMeshUpdateThrottle = NAVMESH_UPDATE_THROTT
 
             if (!cached.position.equals(currentPosition) || cached.isAwake !== isAwake) {
               // Body has moved or changed state; recompute
+              // @ts-expect-error - Duplicate RigidBody types from nested @dimforge/rapier3d-compat dependencies
               const data = processRigidBody(body);
               dynamicToMerge.push(data);
 
