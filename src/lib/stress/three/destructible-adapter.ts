@@ -95,3 +95,68 @@ export function updateProjectileMeshes(core: DestructibleCore, root: THREE.Group
 }
 
 
+export function computeWorldDebugLines(
+  core: DestructibleCore,
+  lines: Array<{ p0: { x:number; y:number; z:number }; p1: { x:number; y:number; z:number }; color0: number; color1: number }>
+) {
+  // Build nodeIndex -> actorIndex map from solver
+  const nodeToActor = new Map<number, number>();
+  try {
+    const actors = (core.solver as unknown as { actors: () => Array<{ actorIndex:number; nodes:number[] }> }).actors?.() ?? [];
+    for (const a of actors) {
+      const nodes = Array.isArray(a.nodes) ? a.nodes : [];
+      for (const n of nodes) nodeToActor.set(n, a.actorIndex);
+    }
+  } catch {}
+
+  // Prepare actorIndex -> {t, q} transform lookup
+  const actorPose = new Map<number, { t: THREE.Vector3; q: THREE.Quaternion }>();
+  for (const [actorIndex, { bodyHandle }] of Array.from(core.actorMap.entries())) {
+    const body = core.world.getRigidBody(bodyHandle);
+    if (!body) continue;
+    const tr = body.translation();
+    const rot = body.rotation();
+    actorPose.set(
+      actorIndex,
+      { t: new THREE.Vector3(tr.x, tr.y, tr.z), q: new THREE.Quaternion(rot.x, rot.y, rot.z, rot.w) }
+    );
+  }
+  // Fallback root pose if actor pose missing
+  const rootBody = core.world.getRigidBody(core.rootBodyHandle);
+  const rootPose = rootBody
+    ? { t: new THREE.Vector3(rootBody.translation().x, rootBody.translation().y, rootBody.translation().z), q: new THREE.Quaternion(rootBody.rotation().x, rootBody.rotation().y, rootBody.rotation().z, rootBody.rotation().w) }
+    : { t: new THREE.Vector3(), q: new THREE.Quaternion() };
+
+  // Helper: determine owning actor for a line by nearest node to its midpoint
+  function owningActorIndexForLine(p0: {x:number;y:number;z:number}, p1: {x:number;y:number;z:number}): number | undefined {
+    const mx = (p0.x + p1.x) * 0.5;
+    const my = (p0.y + p1.y) * 0.5;
+    const mz = (p0.z + p1.z) * 0.5;
+    let bestNode = -1;
+    let bestD2 = Infinity;
+    for (let i = 0; i < core.chunks.length; i++) {
+      const c = core.chunks[i];
+      const dx = c.baseLocalOffset.x - mx;
+      const dy = c.baseLocalOffset.y - my;
+      const dz = c.baseLocalOffset.z - mz;
+      const d2 = dx * dx + dy * dy + dz * dz;
+      if (d2 < bestD2) { bestD2 = d2; bestNode = i; }
+    }
+    if (bestNode < 0) return undefined;
+    return nodeToActor.get(bestNode);
+  }
+
+  // Transform each line by its owning actor pose (fallback to root)
+  const out: Array<{ p0:{x:number;y:number;z:number}; p1:{x:number;y:number;z:number}; color0:number; color1:number }> = [];
+  for (const line of lines) {
+    const idx = owningActorIndexForLine(line.p0, line.p1);
+    const pose = (idx != null && actorPose.get(idx)) || rootPose;
+
+    const v0 = new THREE.Vector3(line.p0.x, line.p0.y, line.p0.z).applyQuaternion(pose.q).add(pose.t);
+    const v1 = new THREE.Vector3(line.p1.x, line.p1.y, line.p1.z).applyQuaternion(pose.q).add(pose.t);
+    out.push({ p0: { x: v0.x, y: v0.y, z: v0.z }, p1: { x: v1.x, y: v1.y, z: v1.z }, color0: line.color0, color1: line.color1 });
+  }
+  return out;
+}
+
+

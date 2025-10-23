@@ -14,7 +14,7 @@ import {
   buildTowerScenario,
   type StressPresetId,
 } from "@/lib/stress/scenarios/structurePresets";
-import { buildChunkMeshes, buildSolverDebugHelper, updateChunkMeshes, updateProjectileMeshes } from "@/lib/stress/three/destructible-adapter";
+import { buildChunkMeshes, buildSolverDebugHelper, updateChunkMeshes, updateProjectileMeshes, computeWorldDebugLines } from "@/lib/stress/three/destructible-adapter";
 import RapierDebugRenderer from "@/lib/rapier/rapier-debug-renderer";
 
 function Ground() {
@@ -325,16 +325,7 @@ function Scene({ debug, physicsWireframe, gravity, iteration, structureId, projT
     if (groupRef.current) updateProjectileMeshes(core, groupRef.current);
     if (debug && debugHelperRef.current) {
       const lines = core.getSolverDebugLines();
-      // Transform lines from root-local to world for display
-      const body = core.world.getRigidBody(core.rootBodyHandle);
-      const tr = body.translation(); const rot = body.rotation();
-      const q = new THREE.Quaternion(rot.x, rot.y, rot.z, rot.w);
-      const t = new THREE.Vector3(tr.x, tr.y, tr.z);
-      const worldLines = lines.map((line) => {
-        const p0 = new THREE.Vector3(line.p0.x, line.p0.y, line.p0.z).applyQuaternion(q).add(t);
-        const p1 = new THREE.Vector3(line.p1.x, line.p1.y, line.p1.z).applyQuaternion(q).add(t);
-        return { p0: { x: p0.x, y: p0.y, z: p0.z }, p1: { x: p1.x, y: p1.y, z: p1.z }, color0: line.color0, color1: line.color1 };
-      });
+      const worldLines = computeWorldDebugLines(core, lines);
       debugHelperRef.current.update(worldLines, showAllDebugLines);
     } else if (debugHelperRef.current) {
       debugHelperRef.current.update([], false);
