@@ -5,6 +5,11 @@ import * as THREE from 'three'
 import { RigidBody, useRapier } from '@react-three/rapier'
 import type { CollisionEnterPayload, ContactForcePayload, RapierRigidBody } from '@react-three/rapier'
 import { fracture, FractureOptions } from '@dgreenheck/three-pinata'
+import {
+  loadStressSolver,
+  ExtForceMode,
+  ExtDebugMode,
+} from 'blast-stress-solver';
 
 const IDENTITY_QUATERNION = { w: 1, x: 0, y: 0, z: 0 } as const
 
@@ -551,6 +556,14 @@ export function DestructibleWall({
 
   const fragments = useMemo(() => buildFragments(spec), [spec])
   const candidates = useMemo(() => computeJointCandidates(spec, fragments), [spec, fragments])
+
+  // TODO: THis can be removed/change/etc, just testing that the import and loadStressSolver() works at all
+  // const [stressSolverRuntime] = useState(async () => {
+  //   // Load stress solver runtime FIRST
+  //   const stressSolverRuntime = await loadStressSolver();
+  //   console.log('stressSolverRuntime', stressSolverRuntime)
+  //   return stressSolverRuntime;
+  // })
 
   useEffect(() => {
     return () => {

@@ -36,6 +36,7 @@
     "@types/three": "^0.180.0",
     "ai": "^5.0.44",
     "assert": "^2.1.0",
+    "blast-stress-solver": "^0.1.1",
     "buffer": "^6.0.3",
     "crypto-browserify": "^3.12.0",
     "encoding": "^0.1.13",

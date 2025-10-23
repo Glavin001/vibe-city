@@ -122,6 +122,12 @@ const demoCategories: DemoCategory[] = [
         description: "Breakable wall system with realistic destruction. Uses physics constraints and fracture patterns."
       }
       ,{
+        href: "/destructible-stress",
+        icon: "🧱",
+        title: "Destructible (Stress Solver)",
+        description: "Single-body colliders + Blast Stress Solver with safe-frame splitting and debug lines."
+      }
+      ,{
         href: "/shockwave-demo",
         icon: "💣",
         title: "Shockwave Demo",
