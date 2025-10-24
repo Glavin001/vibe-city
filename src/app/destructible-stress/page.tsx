@@ -331,6 +331,7 @@ function Scene({
     const core = coreRef.current;
     if (core) core.setGravity(gravity);
   }, [gravity]);
+
   // Toggle whether gravity is applied to the solver without recreating the scene
   useEffect(() => {
     const core = coreRef.current;
@@ -342,6 +343,7 @@ function Scene({
   useEffect(() => {
     const canvas = document.querySelector("canvas") as HTMLCanvasElement | null;
     if (!canvas) return;
+
     const handle = (ev: MouseEvent) => {
       const core = coreRef.current; if (!core) return;
       const rect = (ev.target as HTMLElement).getBoundingClientRect();
@@ -422,9 +424,9 @@ function Scene({
           if (body) {
             const bt = body.translation();
             const r = new THREE.Vector3(hit.point.x - bt.x, hit.point.y - bt.y, hit.point.z - bt.z);
-            const torque = new THREE.Vector3().copy(r).cross(force);
+            // const torque = new THREE.Vector3().copy(r).cross(force);
             body.addForce({ x: force.x, y: force.y, z: force.z }, true);
-            body.addTorque({ x: torque.x, y: torque.y, z: torque.z }, true);
+            // body.addTorque({ x: torque.x, y: torque.y, z: torque.z }, true);
           }
         }
         // Mirror to solver only (solver consumes and clears per-frame)
@@ -436,12 +438,21 @@ function Scene({
     return () => canvas.removeEventListener('pointerdown', handle);
   }, [mode, pushForce, projType, camera, projectileSpeed, projectileMass, placeClickMarker]);
 
+  const hasCrashed = useRef(false);
   useFrame(() => {
+    if (hasCrashed.current) return;
+
     const core = coreRef.current; if (!core) return;
-    core.step();
-    // Update scene meshes first, then debug renderers to avoid Rapier aliasing issues
-    if (chunkMeshesRef.current) updateChunkMeshes(core, chunkMeshesRef.current);
-    if (groupRef.current) updateProjectileMeshes(core, groupRef.current);
+    try {
+      core.step();
+      // Update scene meshes first, then debug renderers to avoid Rapier aliasing issues
+      if (chunkMeshesRef.current) updateChunkMeshes(core, chunkMeshesRef.current);
+      if (groupRef.current) updateProjectileMeshes(core, groupRef.current);
+    } catch (e) {
+      console.error(e);
+      hasCrashed.current = true;
+    }
+
     // Update Rapier wireframe last
     if (rapierDebugRef.current) rapierDebugRef.current.update();
     if (debug && debugHelperRef.current) {
@@ -534,7 +545,8 @@ function HtmlOverlay({ debug, setDebug, physicsWireframe, setPhysicsWireframe, g
       <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#d1d5db', fontSize: 14 }}>
         Strength Scale
         {/* <input type="range" min={0.05} max={5} step={0.05} value={materialScale} onChange={(e) => setMaterialScale(parseFloat(e.target.value))} style={{ flex: 1 }} /> */}
-        <input type="range" min={0.5} max={5_000_000} step={0.5} value={materialScale} onChange={(e) => setMaterialScale(parseFloat(e.target.value))} style={{ flex: 1 }} />
+        {/* <input type="range" min={0.5} max={5_000_000} step={0.5} value={materialScale} onChange={(e) => setMaterialScale(parseFloat(e.target.value))} style={{ flex: 1 }} /> */}
+        <input type="range" min={1} max={5_000_000} step={10} value={materialScale} onChange={(e) => setMaterialScale(parseFloat(e.target.value))} style={{ flex: 1 }} />
         <span style={{ color: '#9ca3af', width: 60, textAlign: 'right' }}>{materialScale.toFixed(2)}×</span>
       </label>
       <div style={{ display: 'flex', gap: 8, color: '#d1d5db', fontSize: 14 }}>

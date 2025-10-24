@@ -85,6 +85,17 @@ export async function buildDestructibleCore({
   const colliderToNode = new Map<number, number>();
   const activeContactColliders = new Set<number>();
   const actorMap = new Map<number, { bodyHandle: number }>();
+  // Track which actor currently owns each node (updated on splits)
+  const nodeToActor = new Map<number, number>();
+  for (let i = 0; i < scenario.nodes.length; i += 1) nodeToActor.set(i, 0);
+
+  function actorBodyForNode(nodeIndex: number) {
+    const actorIndex = nodeToActor.get(nodeIndex) ?? 0;
+    const entry = actorMap.get(actorIndex);
+    const bodyHandle = entry?.bodyHandle ?? rootBody.handle;
+    const body = world.getRigidBody(bodyHandle);
+    return { actorIndex, bodyHandle, body };
+  }
 
   // const spacing = scenario.spacing ?? { x: 0.5, y: 0.5, z: 0.5 };
 
@@ -94,7 +105,8 @@ export async function buildDestructibleCore({
     const halfY = Math.max(0.05, size.y * 0.5);
     const halfZ = Math.max(0.05, size.z * 0.5);
 
-    const isSupport = (node.mass ?? 0) === 0;
+    const nodeMass = node.mass ?? 1;
+    const isSupport = nodeMass === 0;
     const chunk: ChunkData = {
       nodeIndex,
       size: { x: size.x, y: size.y, z: size.z },
@@ -109,6 +121,7 @@ export async function buildDestructibleCore({
 
     const col = world.createCollider(
       RAPIER.ColliderDesc.cuboid(halfX, halfY, halfZ)
+        .setMass(nodeMass)
         .setTranslation(chunk.localOffset.x, chunk.localOffset.y, chunk.localOffset.z)
         .setFriction(friction)
         .setRestitution(restitution)
@@ -183,26 +196,35 @@ export async function buildDestructibleCore({
   function setSolverGravityEnabled(v: boolean) { solverGravityEnabled = !!v; }
 
   function addForceForCollider(handle: number, direction: number, totalForce: { x:number; y:number; z:number }, worldPoint: { x:number; y:number; z:number }) {
-    // console.log('addForceForCollider', handle, direction, totalForce, worldPoint);
-
     if (!colliderToNode.has(handle)) return;
     const nodeIndex = colliderToNode.get(handle);
     if (nodeIndex == null) return;
 
-    // Transform world force/point into root-local space
-    const rb = world.getRigidBody(rootBody.handle);
-    const rot = rb.rotation();
-    // For unit quaternions from Rapier, the inverse is the conjugate
-    const qInv = { x: -rot.x, y: -rot.y, z: -rot.z, w: rot.w };
+    // Transform world force/point into the owning actor's local space
+    const { body } = actorBodyForNode(nodeIndex);
+    const rb = body ?? world.getRigidBody(rootBody.handle);
+    if (!rb) {
+      console.warn('addForceForCollider', 'body is null', handle, nodeIndex);
+      return;
+    }
+    const bt = rb.translation();
+    const br = rb.rotation();
+    const qInv = { x: -br.x, y: -br.y, z: -br.z, w: br.w };
 
-    const f = { x: (totalForce.x ?? 0) * direction, y: (totalForce.y ?? 0) * direction, z: (totalForce.z ?? 0) * direction };
-    const p = { x: worldPoint.x ?? 0, y: worldPoint.y ?? 0, z: worldPoint.z ?? 0 };
+    const fWorld = { x: (totalForce.x ?? 0) * direction, y: (totalForce.y ?? 0) * direction, z: (totalForce.z ?? 0) * direction };
+    const pRel = { x: (worldPoint.x ?? 0) - (bt.x ?? 0), y: (worldPoint.y ?? 0) - (bt.y ?? 0), z: (worldPoint.z ?? 0) - (bt.z ?? 0) };
 
-    const localForce = applyQuatToVec3(f, qInv);
-    const localPoint = applyQuatToVec3(p, qInv);
+    const localForce = applyQuatToVec3(fWorld, qInv);
+    const localPoint = applyQuatToVec3(pRel, qInv);
 
-    solver.addForce(nodeIndex, { x: localPoint.x, y: localPoint.y, z: localPoint.z }, { x: localForce.x, y: localForce.y, z: localForce.z }, runtime.ExtForceMode.Force);
-    // console.log('addForce', nodeIndex, localPoint, localForce);
+    solver.addForce(
+      nodeIndex,
+      { x: localPoint.x, y: localPoint.y, z: localPoint.z },
+      // undefined,
+      { x: localForce.x, y: localForce.y, z: localForce.z },
+      // undefined,
+      runtime.ExtForceMode.Force
+    );
   }
 
   function stepEventful() {
@@ -255,19 +277,15 @@ export async function buildDestructibleCore({
       // }
 
       if (h1 != null) {
-        if (node1 && !node2) {
+        if (node1 != null && node2 == null) {
           addForceForCollider(h1, +1, tf, p1 ?? p2);
-        } else {
-          // Part of the same stress solving body
         }
       } else {
         console.warn('drainContactForceEvents', ev, 'h1 is null');
       }
       if (h2 != null) {
-        if (node2 && !node1) {
+        if (node2 != null && node1 == null) {
           addForceForCollider(h2, -1, tf, p2 ?? p1);
-        } else {
-          // Part of the same stress solving body
         }
       } else {
         console.warn('drainContactForceEvents', ev, 'h2 is null');
@@ -278,19 +296,37 @@ export async function buildDestructibleCore({
     const hasExternalForces = pendingExternalForces.length > 0;
     if (hasExternalForces) {
       try {
-        const rb = world.getRigidBody(rootBody.handle);
-        const rot = rb.rotation();
-        const qInv = { x: -rot.x, y: -rot.y, z: -rot.z, w: rot.w };
         for (const ef of pendingExternalForces) {
+          const { body } = actorBodyForNode(ef.nodeIndex);
+          const rb = body ?? world.getRigidBody(rootBody.handle);
+          if (!rb) {
+            console.warn('addForceForCollider', 'body is null', ef.nodeIndex);
+            continue;
+          }
+
+          const t = rb.translation();
+          const r = rb.rotation();
+          const qInv = { x: -r.x, y: -r.y, z: -r.z, w: r.w };
+
+          const pRel = { x: ef.point.x - t.x, y: ef.point.y - t.y, z: ef.point.z - t.z };
+          const localPoint = applyQuatToVec3(pRel, qInv);
           const localForce = applyQuatToVec3(ef.force, qInv);
-          const localPoint = applyQuatToVec3(ef.point, qInv);
-          solver.addForce(ef.nodeIndex, { x: localPoint.x, y: localPoint.y, z: localPoint.z }, { x: localForce.x, y: localForce.y, z: localForce.z }, runtime.ExtForceMode.Force);
+
+          solver.addForce(
+            ef.nodeIndex,
+            { x: localPoint.x, y: localPoint.y, z: localPoint.z },
+            // undefined,
+            { x: localForce.x, y: localForce.y, z: localForce.z },
+            // undefined,
+            runtime.ExtForceMode.Force
+          );
         }
       } catch (e) {
         if (isDev) console.error('[Core] addForceForCollider failed', e);
+      } finally {
+        // Clear queue after injection
+        pendingExternalForces.splice(0, pendingExternalForces.length);
       }
-      // Clear queue after injection
-      pendingExternalForces.splice(0, pendingExternalForces.length);
     }
 
     // Gravity and solver update
@@ -339,7 +375,8 @@ export async function buildDestructibleCore({
       const parentBodyHandle = parentEntry?.bodyHandle ?? rootBody.handle;
       for (const child of children) {
         if (!child || !Array.isArray(child.nodes) || child.nodes.length === 0) continue;
-
+        // Update ownership: all nodes listed now belong to this child actor
+        for (const n of child.nodes) nodeToActor.set(n, child.actorIndex);
         const isActorSupport = child.nodes.some((n: number) => chunks[n]?.isSupport);
         if (child.actorIndex === parentActorIndex) {
           actorMap.set(child.actorIndex, { bodyHandle: parentBodyHandle });
@@ -429,11 +466,18 @@ export async function buildDestructibleCore({
         const halfZ = seg.size.z * 0.5;
         const body = world.getRigidBody(mig.targetBodyHandle);
         if (!body) continue;
+
         const tx = seg.isSupport && seg.baseWorldPosition ? seg.baseWorldPosition.x : seg.baseLocalOffset.x;
         const ty = seg.isSupport && seg.baseWorldPosition ? seg.baseWorldPosition.y : seg.baseLocalOffset.y;
         const tz = seg.isSupport && seg.baseWorldPosition ? seg.baseWorldPosition.z : seg.baseLocalOffset.z;
+
+        const node = scenario.nodes[mig.nodeIndex];
+        const nodeMass = node.mass ?? 1;
+        // const isSupport = nodeMass === 0;
+
         const col = world.createCollider(
           RAPIER.ColliderDesc.cuboid(halfX, halfY, halfZ)
+            .setMass(nodeMass)
             .setTranslation(tx, ty, tz)
             .setActiveEvents(RAPIER.ActiveEvents.CONTACT_FORCE_EVENTS)
             .setContactForceEventThreshold(0.0)

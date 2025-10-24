@@ -352,7 +352,7 @@ export function debugPrintSolver(
   console.log('Graph Nodes:', nodes);
   console.log('Bond Capacity:', bonds);
   console.log('Overstressed Bonds:', overstressed);
-  console.log('Stress Error:', `lin=${err.lin.toFixed(6)} ang=${err.ang.toFixed(6)}`, converged ? '(converged)' : '');
+  console.log('Stress Error:', `lin=${err.lin.toFixed(6)} ang=${err.ang.toFixed(6)}`, converged ? '(converged)' : '(not converged)');
 //   if (settings) console.log('Settings:', settings);
   console.log('Debug Lines (for overlay):', debugLines?.length ?? 0);
 

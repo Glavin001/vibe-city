@@ -51,7 +51,11 @@ export function updateChunkMeshes(core: DestructibleCore, meshes: THREE.Mesh[]) 
       continue;
     }
     const body = core.world.getRigidBody(handle);
-    if (!body) continue;
+    if (!body) {
+      if (process.env.NODE_ENV !== 'production') console.warn('[Adapter] Missing body for chunk', { chunkIndex: i });
+      continue;
+    }
+
     const t = body.translation();
     const r = body.rotation();
     mesh.position.set(t.x, t.y, t.z);

@@ -26,6 +26,7 @@ export function buildWallScenario({
   spanSegments = 12,
   heightSegments = 6,
   layers = 1,
+  // deckMass = 10_000.0,
   deckMass = 10_000.0,
   areaScale = 0.05,
   addDiagonals = false,
