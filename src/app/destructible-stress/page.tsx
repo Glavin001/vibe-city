@@ -8,6 +8,7 @@ import { buildDestructibleCore } from "@/lib/stress/core/destructible-core";
 import type { DestructibleCore } from "@/lib/stress/core/types";
 import { buildWallScenario } from "@/lib/stress/scenarios/wallScenario";
 import { buildFracturedWallScenario } from "@/lib/stress/scenarios/fracturedWallScenario";
+import { buildBeamBridgeScenario } from "@/lib/stress/scenarios/beamBridgeScenario";
 import {
   STRESS_PRESET_METADATA,
   buildBridgeScenario,
@@ -95,6 +96,8 @@ const SCENARIO_BUILDERS: Record<StressPresetId, (params: ScenarioBuilderParams) 
     buildHutScenario({ bondsX: bondsXEnabled, bondsY: bondsYEnabled, bondsZ: bondsZEnabled }),
   bridge: ({ bondsXEnabled, bondsYEnabled, bondsZEnabled }) =>
     buildBridgeScenario({ bondsX: bondsXEnabled, bondsY: bondsYEnabled, bondsZ: bondsZEnabled }),
+  beamBridge: ({ bondsXEnabled, bondsYEnabled, bondsZEnabled }) =>
+    buildBeamBridgeScenario({ bondsX: bondsXEnabled, bondsY: bondsYEnabled, bondsZ: bondsZEnabled }),
   tower: ({ bondsXEnabled, bondsYEnabled, bondsZEnabled }) =>
     buildTowerScenario({ bondsX: bondsXEnabled, bondsY: bondsYEnabled, bondsZ: bondsZEnabled }),
   fracturedWall: ({ wallSpan, wallHeight, wallThickness }) =>
@@ -126,7 +129,7 @@ function Scene({
 
   useEffect(() => {
     // Expose debug helpers globally
-    (window as any).debugStressSolver = {
+    (window as unknown as { debugStressSolver?: { printSolver: () => unknown; coreRef: typeof coreRef } }).debugStressSolver = {
       // printHierarchy: () => printWorldHierarchy(),
       // captureSnapshot: () => captureWorldSnapshot(),
       printSolver: () => {
@@ -416,17 +419,15 @@ function Scene({
         const nodeIndex = (hit.object as THREE.Object3D & { userData?: Record<string, unknown> }).userData.nodeIndex as number;
         const dirWorld = raycaster.ray.direction.clone().normalize();
         const force = dirWorld.multiplyScalar(pushForce);
-        // Apply to Rapier directly at the body's current pose
+        // Apply to Rapier as a one-shot impulse at the hit point
         const seg = core.chunks[nodeIndex];
         const handle = seg?.bodyHandle;
         if (handle != null) {
           const body = core.world.getRigidBody(handle);
           if (body) {
-            const bt = body.translation();
-            const r = new THREE.Vector3(hit.point.x - bt.x, hit.point.y - bt.y, hit.point.z - bt.z);
-            // const torque = new THREE.Vector3().copy(r).cross(force);
-            body.addForce({ x: force.x, y: force.y, z: force.z }, true);
-            // body.addTorque({ x: torque.x, y: torque.y, z: torque.z }, true);
+            const dt = core.world.timestep ?? core.world.integrationParameters?.dt ?? (1 / 60);
+            const impulse = new THREE.Vector3(force.x * dt, force.y * dt, force.z * dt);
+            body.applyImpulseAtPoint({ x: impulse.x, y: impulse.y, z: impulse.z }, { x: hit.point.x, y: hit.point.y, z: hit.point.z }, true);
           }
         }
         // Mirror to solver only (solver consumes and clears per-frame)
@@ -522,7 +523,7 @@ function HtmlOverlay({ debug, setDebug, physicsWireframe, setPhysicsWireframe, g
       <div style={{ color: '#9ca3af', fontSize: 13 }}>Push</div>
       <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#d1d5db', fontSize: 14 }}>
         Force (N)
-        <input type="range" min={100} max={1_000_000} step={100} value={pushForce} onChange={(e) => setPushForce(parseFloat(e.target.value))} style={{ flex: 1 }} />
+        <input type="range" min={100} max={100_000_000} step={100} value={pushForce} onChange={(e) => setPushForce(parseFloat(e.target.value))} style={{ flex: 1 }} />
         <span style={{ color: '#9ca3af', width: 80, textAlign: 'right' }}>{Math.round(pushForce).toLocaleString()}</span>
       </label>
       <div style={{ color: '#9ca3af', fontSize: 13 }}>Projectile</div>

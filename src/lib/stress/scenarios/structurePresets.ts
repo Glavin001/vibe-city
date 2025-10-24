@@ -284,7 +284,7 @@ export function buildTowerScenario({ bondsX = true, bondsY = true, bondsZ = true
   return buildRectilinearScenario({
     size: makeVec(6.8, 9.2, 6.8),
     segments,
-    deckMass: 28_000,
+    deckMass: 280_000,
     areaScale: 0.055,
     addDiagonals: true,
     diagScale: 0.65,
@@ -313,7 +313,7 @@ export function buildTowerScenario({ bondsX = true, bondsY = true, bondsZ = true
   });
 }
 
-export type StressPresetId = "wall" | "hut" | "bridge" | "tower" | "fracturedWall";
+export type StressPresetId = "wall" | "hut" | "bridge" | "beamBridge" | "tower" | "fracturedWall";
 
 export const STRESS_PRESET_METADATA: Array<{
   id: StressPresetId;
@@ -334,6 +334,11 @@ export const STRESS_PRESET_METADATA: Array<{
     id: "bridge",
     label: "Suspension footbridge",
     description: "Slender deck with towers and cable arcs to demonstrate tension and support failures.",
+  },
+  {
+    id: "beamBridge",
+    label: "Beam bridge",
+    description: "Deck on end posts with massless footings; rectilinear blocks bonded as a slab.",
   },
   {
     id: "tower",

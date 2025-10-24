@@ -71,11 +71,11 @@ export async function buildDestructibleCore({
   // Root fixed body
   const rootBody = world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(0, 0, 0));
 
-  // Ground collider (fixed body), wide plane just below y=0 so top sits at y=0
+  // Ground collider (fixed body), wide plane with top aligned to y=0
   const groundBody = world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(0, 0, 0));
   world.createCollider(
-    RAPIER.ColliderDesc.cuboid(100, 0.05, 100)
-      .setTranslation(0, -0.05, 0)
+    RAPIER.ColliderDesc.cuboid(100, 0.025, 100)
+      .setTranslation(0, -0.025, 0)
       .setFriction(0.9),
     groundBody
   );
@@ -120,7 +120,7 @@ export async function buildDestructibleCore({
     };
 
     const col = world.createCollider(
-      RAPIER.ColliderDesc.cuboid(halfX, halfY, halfZ)
+      RAPIER.ColliderDesc.cuboid(halfX * (isSupport ? 0.999 : 1), halfY * (isSupport ? 0.999 : 1), halfZ * (isSupport ? 0.999 : 1))
         .setMass(nodeMass)
         .setTranslation(chunk.localOffset.x, chunk.localOffset.y, chunk.localOffset.z)
         .setFriction(friction)
@@ -292,10 +292,13 @@ export async function buildDestructibleCore({
       }
     });
 
-    // Inject external (non-contact) forces into solver at node space
+    // Inject external (non-contact) forces into solver at node space (single-frame)
     const hasExternalForces = pendingExternalForces.length > 0;
     if (hasExternalForces) {
       try {
+        const dt = (world as unknown as { timestep?: number; integrationParameters?: { dt?: number } }).timestep
+          ?? (world as unknown as { integrationParameters?: { dt?: number } }).integrationParameters?.dt
+          ?? (1 / 60);
         for (const ef of pendingExternalForces) {
           const { body } = actorBodyForNode(ef.nodeIndex);
           const rb = body ?? world.getRigidBody(rootBody.handle);
@@ -310,14 +313,14 @@ export async function buildDestructibleCore({
 
           const pRel = { x: ef.point.x - t.x, y: ef.point.y - t.y, z: ef.point.z - t.z };
           const localPoint = applyQuatToVec3(pRel, qInv);
-          const localForce = applyQuatToVec3(ef.force, qInv);
+          // Scale by dt so effect is one-shot and not frame-rate dependent
+          const scaledForce = { x: ef.force.x * dt, y: ef.force.y * dt, z: ef.force.z * dt };
+          const localForce = applyQuatToVec3(scaledForce, qInv);
 
           solver.addForce(
             ef.nodeIndex,
             { x: localPoint.x, y: localPoint.y, z: localPoint.z },
-            // undefined,
             { x: localForce.x, y: localForce.y, z: localForce.z },
-            // undefined,
             runtime.ExtForceMode.Force
           );
         }
@@ -339,8 +342,8 @@ export async function buildDestructibleCore({
       } catch {}
     }
     solver.update();
-    if (hasExternalForces) {
-      (window as any)?.debugStressSolver?.printSolver?.();
+    if (hasExternalForces && process.env.NODE_ENV !== 'production') {
+      try { ((window as unknown as { debugStressSolver?: { printSolver?: () => unknown } }).debugStressSolver)?.printSolver?.(); } catch {}
     }
 
     if (solver.overstressedBondCount() > 0) {
@@ -356,6 +359,33 @@ export async function buildDestructibleCore({
 
   function stepSafe() {
     try { world.step(); } catch {}
+    // Drain any queued external forces even in safe mode
+    if (pendingExternalForces.length > 0) {
+      try {
+        const dt = (world as unknown as { timestep?: number; integrationParameters?: { dt?: number } }).timestep
+          ?? (world as unknown as { integrationParameters?: { dt?: number } }).integrationParameters?.dt
+          ?? (1 / 60);
+        for (const ef of pendingExternalForces) {
+          const { body } = actorBodyForNode(ef.nodeIndex);
+          const rb = body ?? world.getRigidBody(rootBody.handle);
+          if (!rb) continue;
+          const t = rb.translation();
+          const r = rb.rotation();
+          const qInv = { x: -r.x, y: -r.y, z: -r.z, w: r.w };
+          const pRel = { x: ef.point.x - t.x, y: ef.point.y - t.y, z: ef.point.z - t.z };
+          const localPoint = applyQuatToVec3(pRel, qInv);
+          const scaledForce = { x: ef.force.x * dt, y: ef.force.y * dt, z: ef.force.z * dt };
+          const localForce = applyQuatToVec3(scaledForce, qInv);
+          solver.addForce(
+            ef.nodeIndex,
+            { x: localPoint.x, y: localPoint.y, z: localPoint.z },
+            { x: localForce.x, y: localForce.y, z: localForce.z },
+            runtime.ExtForceMode.Force
+          );
+        }
+      } catch {}
+      pendingExternalForces.splice(0, pendingExternalForces.length);
+    }
     applyPendingSpawns();
     applyPendingMigrations();
     removeDisabledHandles();
@@ -379,8 +409,12 @@ export async function buildDestructibleCore({
         for (const n of child.nodes) nodeToActor.set(n, child.actorIndex);
         const isActorSupport = child.nodes.some((n: number) => chunks[n]?.isSupport);
         if (child.actorIndex === parentActorIndex) {
+          // If the parent portion no longer contains supports, migrate it to a NEW dynamic body.
+          if (!isActorSupport) {
+            pendingBodiesToCreate.push({ actorIndex: child.actorIndex, inheritFromBodyHandle: parentBodyHandle, nodes: child.nodes.slice(), isSupport: false });
+          }
           actorMap.set(child.actorIndex, { bodyHandle: parentBodyHandle });
-          console.log('queueSplitResults', child.actorIndex, parentBodyHandle, isActorSupport);
+          console.log('queueSplitResults(parent)', child.actorIndex, parentBodyHandle, isActorSupport);
           continue;
         }
 
