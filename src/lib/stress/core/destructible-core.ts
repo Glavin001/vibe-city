@@ -11,6 +11,8 @@ type BuildCoreOptions = {
   restitution?: number;
 };
 
+const isDev = true; //process.env.NODE_ENV !== 'production';
+
 export async function buildDestructibleCore({ scenario, nodeSize, gravity = -9.81, friction = 0.25, restitution = 0.0 }: BuildCoreOptions): Promise<DestructibleCore> {
   await RAPIER.init();
   const runtime = await loadStressSolver();
@@ -120,6 +122,7 @@ export async function buildDestructibleCore({ scenario, nodeSize, gravity = -9.8
 
   let safeFrames = 0;
   let warnedColliderMapEmptyOnce = false;
+  let solverGravityEnabled = true;
 
   // Rebuild the collider → node mapping from current chunk state
   function rebuildColliderToNodeFromChunks() {
@@ -141,7 +144,16 @@ export async function buildDestructibleCore({ scenario, nodeSize, gravity = -9.8
     safeFrames = Math.max(safeFrames, 1);
   }
 
-  function setGravity(g: number) { world.gravity = { x: 0, y: g, z: 0 } as RAPIER.Vector; }
+  function setGravity(g: number) {
+    try {
+      const grav = world.gravity as unknown as { x:number; y:number; z:number };
+      grav.x = 0; grav.y = g; grav.z = 0;
+      world.gravity = grav as unknown as RAPIER.Vector;
+    } catch {
+      world.gravity = { x: 0, y: g, z: 0 } as unknown as RAPIER.Vector;
+    }
+  }
+  function setSolverGravityEnabled(v: boolean) { solverGravityEnabled = !!v; }
 
   function addForceForCollider(handle: number, direction: number, totalForce: { x:number; y:number; z:number }, worldPoint: { x:number; y:number; z:number }) {
     // console.log('addForceForCollider', handle, direction, totalForce, worldPoint);
@@ -222,18 +234,28 @@ export async function buildDestructibleCore({ scenario, nodeSize, gravity = -9.8
           const localPoint = applyQuatToVec3(ef.point, qInv);
           solver.addForce(ef.nodeIndex, { x: localPoint.x, y: localPoint.y, z: localPoint.z }, { x: localForce.x, y: localForce.y, z: localForce.z }, runtime.ExtForceMode.Force);
         }
-      } catch {}
+      } catch (e) {
+        if (isDev) console.error('[Core] addForceForCollider failed', e);
+      }
       // Clear queue after injection
       pendingExternalForces.splice(0, pendingExternalForces.length);
     }
 
     // Gravity and solver update
-    // solver.addGravity(world.gravity);
+    if (solverGravityEnabled) {
+      try {
+        const g = world.gravity as unknown as { x:number; y:number; z:number };
+        const g2 = { x: g.x ?? 0, y: g.y ?? 0, z: g.z ?? 0 };
+        // console.log('addGravity', g2);
+        solver.addGravity(g2);
+      } catch {}
+    }
     solver.update();
 
     if (solver.overstressedBondCount() > 0) {
       const perActor = solver.generateFractureCommandsPerActor();
       const splitEvents = solver.applyFractureCommands(perActor);
+      // console.log('applyFractureCommands', solver.overstressedBondCount(), perActor.length, perActor[0]?.fractures?.length, perActor[0]?.fractures, splitEvents);
       if (Array.isArray(splitEvents) && splitEvents.length > 0) {
         queueSplitResults(splitEvents);
         safeFrames = Math.max(safeFrames, 2);
@@ -262,11 +284,14 @@ export async function buildDestructibleCore({ scenario, nodeSize, gravity = -9.8
       const parentBodyHandle = parentEntry?.bodyHandle ?? rootBody.handle;
       for (const child of children) {
         if (!child || !Array.isArray(child.nodes) || child.nodes.length === 0) continue;
+
+        const isActorSupport = child.nodes.some((n: number) => chunks[n]?.isSupport);
         if (child.actorIndex === parentActorIndex) {
           actorMap.set(child.actorIndex, { bodyHandle: parentBodyHandle });
+          console.log('queueSplitResults', child.actorIndex, parentBodyHandle, isActorSupport);
           continue;
         }
-        const isActorSupport = child.nodes.some((n: number) => chunks[n]?.isSupport);
+
         pendingBodiesToCreate.push({ actorIndex: child.actorIndex, inheritFromBodyHandle: parentBodyHandle, nodes: child.nodes.slice(), isSupport: isActorSupport });
         actorMap.set(child.actorIndex, { bodyHandle: parentBodyHandle });
       }
@@ -309,6 +334,8 @@ export async function buildDestructibleCore({ scenario, nodeSize, gravity = -9.8
   }
 
   function applyPendingMigrations() {
+    console.log('applyPendingMigrations', pendingBodiesToCreate.length, pendingColliderMigrations.length);
+
     // Create child bodies
     if (pendingBodiesToCreate.length > 0) {
       const list = pendingBodiesToCreate.splice(0, pendingBodiesToCreate.length);
@@ -475,6 +502,7 @@ export async function buildDestructibleCore({ scenario, nodeSize, gravity = -9.8
     stepEventful,
     stepSafe,
     setGravity,
+    setSolverGravityEnabled,
     getSolverDebugLines,
     getNodeBonds,
     cutBond,

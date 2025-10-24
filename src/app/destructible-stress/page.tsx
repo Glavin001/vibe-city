@@ -7,6 +7,7 @@ import { OrbitControls, StatsGl } from "@react-three/drei";
 import { buildDestructibleCore } from "@/lib/stress/core/destructible-core";
 import type { DestructibleCore } from "@/lib/stress/core/types";
 import { buildWallScenario } from "@/lib/stress/scenarios/wallScenario";
+import { buildFracturedWallScenario } from "@/lib/stress/scenarios/fracturedWallScenario";
 import {
   STRESS_PRESET_METADATA,
   buildBridgeScenario,
@@ -14,7 +15,7 @@ import {
   buildTowerScenario,
   type StressPresetId,
 } from "@/lib/stress/scenarios/structurePresets";
-import { buildChunkMeshes, buildSolverDebugHelper, updateChunkMeshes, updateProjectileMeshes, computeWorldDebugLines } from "@/lib/stress/three/destructible-adapter";
+import { buildChunkMeshes, buildChunkMeshesFromGeometries, buildSolverDebugHelper, updateChunkMeshes, updateProjectileMeshes, computeWorldDebugLines } from "@/lib/stress/three/destructible-adapter";
 import RapierDebugRenderer from "@/lib/rapier/rapier-debug-renderer";
 
 function Ground() {
@@ -32,6 +33,7 @@ type SceneProps = {
   debug: boolean;
   physicsWireframe: boolean;
   gravity: number;
+  solverGravityEnabled: boolean;
   iteration: number;
   structureId: StressPresetId;
   mode: 'projectile' | 'cutter' | 'push';
@@ -94,9 +96,11 @@ const SCENARIO_BUILDERS: Record<StressPresetId, (params: ScenarioBuilderParams) 
     buildBridgeScenario({ bondsX: bondsXEnabled, bondsY: bondsYEnabled, bondsZ: bondsZEnabled }),
   tower: ({ bondsXEnabled, bondsYEnabled, bondsZEnabled }) =>
     buildTowerScenario({ bondsX: bondsXEnabled, bondsY: bondsYEnabled, bondsZ: bondsZEnabled }),
+  fracturedWall: ({ wallSpan, wallHeight, wallThickness }) =>
+    buildFracturedWallScenario({ span: wallSpan, height: wallHeight, thickness: wallThickness, fragmentCount: 120 }),
 };
 
-function Scene({ debug, physicsWireframe, gravity, iteration, structureId, mode, pushForce, projType, projectileSpeed, projectileMass, materialScale, wallSpan, wallHeight, wallThickness, wallSpanSeg, wallHeightSeg, wallLayers, showAllDebugLines, bondsXEnabled, bondsYEnabled, bondsZEnabled, onReset: _onReset }: SceneProps) {
+function Scene({ debug, physicsWireframe, gravity, solverGravityEnabled, iteration, structureId, mode, pushForce, projType, projectileSpeed, projectileMass, materialScale, wallSpan, wallHeight, wallThickness, wallSpanSeg, wallHeightSeg, wallLayers, showAllDebugLines, bondsXEnabled, bondsYEnabled, bondsZEnabled, onReset: _onReset }: SceneProps) {
   const coreRef = useRef<DestructibleCore | null>(null);
   const debugHelperRef = useRef<ReturnType<typeof buildSolverDebugHelper> | null>(null);
   const chunkMeshesRef = useRef<THREE.Mesh[] | null>(null);
@@ -105,6 +109,10 @@ function Scene({ debug, physicsWireframe, gravity, iteration, structureId, mode,
   const scene = useThree((s) => s.scene as THREE.Scene);
   const rapierDebugRef = useRef<RapierDebugRenderer | null>(null);
   const physicsWireframeStateRef = useRef<boolean>(physicsWireframe);
+  const buildGravityRef = useRef<number>(gravity);
+  useEffect(() => { buildGravityRef.current = gravity; }, [gravity]);
+  const solverGravityRef = useRef<boolean>(solverGravityEnabled);
+  useEffect(() => { solverGravityRef.current = solverGravityEnabled; }, [solverGravityEnabled]);
   const isDev = true; //process.env.NODE_ENV !== 'production';
   useEffect(() => {
     physicsWireframeStateRef.current = physicsWireframe;
@@ -146,16 +154,24 @@ function Scene({ debug, physicsWireframe, gravity, iteration, structureId, mode,
       });
       const core = await buildDestructibleCore({
         scenario,
-        nodeSize: (_index, scen) => {
+        nodeSize: (index, scen) => {
+          const sizes = (scen.parameters as unknown as { fragmentSizes?: Array<{ x:number; y:number; z:number }> } | undefined)?.fragmentSizes;
+          const sz = sizes?.[index];
+          if (sz) return sz;
           const sp = scen.spacing ?? { x: 0.5, y: 0.5, z: 0.32 };
           return { x: sp.x, y: sp.y, z: sp.z };
         },
-        gravity,
+        gravity: buildGravityRef.current,
       });
       if (!mounted) { core.dispose(); return; }
       coreRef.current = core;
 
-      const { objects } = buildChunkMeshes(core);
+      try { core.setSolverGravityEnabled(solverGravityRef.current); } catch {}
+
+      const params = scenario.parameters as unknown as { fragmentGeometries?: THREE.BufferGeometry[] } | undefined;
+      const { objects } = params?.fragmentGeometries?.length
+        ? buildChunkMeshesFromGeometries(core, params.fragmentGeometries)
+        : buildChunkMeshes(core);
       chunkMeshesRef.current = objects;
       for (const o of objects) groupRef.current?.add(o);
 
@@ -172,7 +188,7 @@ function Scene({ debug, physicsWireframe, gravity, iteration, structureId, mode,
         // Initialize with current wireframe state stored in ref; further changes handled by separate effect
         rapierDebugRef.current = new RapierDebugRenderer(scene, core.world, { enabled: physicsWireframeStateRef.current });
       } catch {}
-      if (isDev) console.debug('[Page] Initialized destructible core', { iteration, gravity, structureId });
+      if (isDev) console.debug('[Page] Initialized destructible core', { iteration, structureId });
     })();
     return () => {
       mounted = false;
@@ -204,7 +220,7 @@ function Scene({ debug, physicsWireframe, gravity, iteration, structureId, mode,
       if (coreRef.current) coreRef.current.dispose();
       coreRef.current = null;
     };
-  }, [iteration, gravity, structureId, wallSpan, wallHeight, wallThickness, wallSpanSeg, wallHeightSeg, wallLayers, bondsXEnabled, bondsYEnabled, bondsZEnabled, scene]);
+  }, [iteration, structureId, wallSpan, wallHeight, wallThickness, wallSpanSeg, wallHeightSeg, wallLayers, bondsXEnabled, bondsYEnabled, bondsZEnabled, scene]);
 
   // Listen for a one-time test projectile spawn request; depends on speed/mass only
   useEffect(() => {
@@ -240,11 +256,14 @@ function Scene({ debug, physicsWireframe, gravity, iteration, structureId, mode,
       const scaled: Record<string, number> = { ...defaults } as unknown as Record<string, number>;
       // Apply baseline overrides (concrete-ish) and scale by materialScale
       const baseCompressionElastic = 0.009;
-      const baseCompressionFatal = 0.027;
+      // const baseCompressionFatal = 0.027;
+      const baseCompressionFatal = 0.27;
       const baseTensionElastic = 0.0009;
-      const baseTensionFatal = 0.0027;
+      // const baseTensionFatal = 0.0027;
+      const baseTensionFatal = 0.27;
       const baseShearElastic = 0.0012;
-      const baseShearFatal = 0.0036;
+      // const baseShearFatal = 0.0036;
+      const baseShearFatal = 0.36;
 
       scaled.compressionElasticLimit = baseCompressionElastic * materialScale;
       scaled.compressionFatalLimit = baseCompressionFatal * materialScale;
@@ -267,6 +286,12 @@ function Scene({ debug, physicsWireframe, gravity, iteration, structureId, mode,
     const core = coreRef.current;
     if (core) core.setGravity(gravity);
   }, [gravity]);
+  // Toggle whether gravity is applied to the solver without recreating the scene
+  useEffect(() => {
+    const core = coreRef.current;
+    if (!core) return;
+    try { (core as unknown as { setSolverGravityEnabled?: (v:boolean) => void }).setSolverGravityEnabled?.(solverGravityEnabled); } catch {}
+  }, [solverGravityEnabled]);
 
   // Click: spawn projectile, cut bonds, or push chunk depending on mode
   useEffect(() => {
@@ -394,8 +419,8 @@ function Scene({ debug, physicsWireframe, gravity, iteration, structureId, mode,
   );
 }
 
-function HtmlOverlay({ debug, setDebug, physicsWireframe, setPhysicsWireframe, gravity, setGravity, mode, setMode, projType, setProjType, reset, projectileSpeed, setProjectileSpeed, projectileMass, setProjectileMass, materialScale, setMaterialScale, wallSpan, setWallSpan, wallHeight, setWallHeight, wallThickness, setWallThickness, wallSpanSeg, setWallSpanSeg, wallHeightSeg, setWallHeightSeg, wallLayers, setWallLayers, showAllDebugLines, setShowAllDebugLines, bondsXEnabled, setBondsXEnabled, bondsYEnabled, setBondsYEnabled, bondsZEnabled, setBondsZEnabled, structureId, setStructureId, structures, structureDescription, pushForce, setPushForce, }: { debug: boolean; setDebug: (v: boolean) => void; physicsWireframe: boolean; setPhysicsWireframe: (v: boolean) => void; gravity: number; setGravity: (v: number) => void; mode: 'projectile' | 'cutter' | 'push'; setMode: (v: 'projectile' | 'cutter' | 'push') => void; projType: 'ball' | 'box'; setProjType: (v: 'ball' | 'box') => void; reset: () => void; projectileSpeed: number; setProjectileSpeed: (v: number) => void; projectileMass: number; setProjectileMass: (v: number) => void; materialScale: number; setMaterialScale: (v: number) => void; wallSpan: number; setWallSpan: (v: number) => void; wallHeight: number; setWallHeight: (v: number) => void; wallThickness: number; setWallThickness: (v: number) => void; wallSpanSeg: number; setWallSpanSeg: (v: number) => void; wallHeightSeg: number; setWallHeightSeg: (v: number) => void; wallLayers: number; setWallLayers: (v: number) => void; showAllDebugLines: boolean; setShowAllDebugLines: (v: boolean) => void; bondsXEnabled: boolean; setBondsXEnabled: (v: boolean) => void; bondsYEnabled: boolean; setBondsYEnabled: (v: boolean) => void; bondsZEnabled: boolean; setBondsZEnabled: (v: boolean) => void; structureId: StressPresetId; setStructureId: (v: StressPresetId) => void; structures: typeof STRESS_PRESET_METADATA; structureDescription?: string; pushForce: number; setPushForce: (v: number) => void }) {
-  const isWallStructure = structureId === "wall";
+function HtmlOverlay({ debug, setDebug, physicsWireframe, setPhysicsWireframe, gravity, setGravity, solverGravityEnabled, setSolverGravityEnabled, mode, setMode, projType, setProjType, reset, projectileSpeed, setProjectileSpeed, projectileMass, setProjectileMass, materialScale, setMaterialScale, wallSpan, setWallSpan, wallHeight, setWallHeight, wallThickness, setWallThickness, wallSpanSeg, setWallSpanSeg, wallHeightSeg, setWallHeightSeg, wallLayers, setWallLayers, showAllDebugLines, setShowAllDebugLines, bondsXEnabled, setBondsXEnabled, bondsYEnabled, setBondsYEnabled, bondsZEnabled, setBondsZEnabled, structureId, setStructureId, structures, structureDescription, pushForce, setPushForce, }: { debug: boolean; setDebug: (v: boolean) => void; physicsWireframe: boolean; setPhysicsWireframe: (v: boolean) => void; gravity: number; setGravity: (v: number) => void; solverGravityEnabled: boolean; setSolverGravityEnabled: (v: boolean) => void; mode: 'projectile' | 'cutter' | 'push'; setMode: (v: 'projectile' | 'cutter' | 'push') => void; projType: 'ball' | 'box'; setProjType: (v: 'ball' | 'box') => void; reset: () => void; projectileSpeed: number; setProjectileSpeed: (v: number) => void; projectileMass: number; setProjectileMass: (v: number) => void; materialScale: number; setMaterialScale: (v: number) => void; wallSpan: number; setWallSpan: (v: number) => void; wallHeight: number; setWallHeight: (v: number) => void; wallThickness: number; setWallThickness: (v: number) => void; wallSpanSeg: number; setWallSpanSeg: (v: number) => void; wallHeightSeg: number; setWallHeightSeg: (v: number) => void; wallLayers: number; setWallLayers: (v: number) => void; showAllDebugLines: boolean; setShowAllDebugLines: (v: boolean) => void; bondsXEnabled: boolean; setBondsXEnabled: (v: boolean) => void; bondsYEnabled: boolean; setBondsYEnabled: (v: boolean) => void; bondsZEnabled: boolean; setBondsZEnabled: (v: boolean) => void; structureId: StressPresetId; setStructureId: (v: StressPresetId) => void; structures: typeof STRESS_PRESET_METADATA; structureDescription?: string; pushForce: number; setPushForce: (v: number) => void }) {
+  const isWallStructure = structureId === "wall" || structureId === "fracturedWall";
   return (
     <div style={{ position: 'absolute', top: 110, left: 16, zIndex: 10, display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 360 }}>
       <div style={{ display: 'flex', gap: 8 }}>
@@ -430,8 +455,12 @@ function HtmlOverlay({ debug, setDebug, physicsWireframe, setPhysicsWireframe, g
       </label>
       <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#d1d5db', fontSize: 14 }}>
         Gravity
-        <input type="range" min={-30} max={-0.5} step={0.5} value={gravity} onChange={(e) => setGravity(parseFloat(e.target.value))} style={{ flex: 1 }} />
+        <input type="range" min={-30} max={0.0} step={0.5} value={gravity} onChange={(e) => setGravity(parseFloat(e.target.value))} style={{ flex: 1 }} />
         <span style={{ color: '#9ca3af', width: 60, textAlign: 'right' }}>{gravity.toFixed(2)}</span>
+      </label>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#d1d5db', fontSize: 14 }}>
+        <input type="checkbox" checked={solverGravityEnabled} onChange={(e) => setSolverGravityEnabled(e.target.checked)} style={{ accentColor: '#4da2ff', width: 16, height: 16 }} />
+        Apply gravity to solver
       </label>
       <div style={{ height: 8 }} />
       <div style={{ color: '#9ca3af', fontSize: 13 }}>Push</div>
@@ -524,6 +553,7 @@ export default function Page() {
   const [debug, setDebug] = useState(false);
   const [physicsWireframe, setPhysicsWireframe] = useState(false);
   const [gravity, setGravity] = useState(-9.81);
+  const [solverGravityEnabled, setSolverGravityEnabled] = useState(true);
   const [iteration, setIteration] = useState(0);
   const [mode, setMode] = useState<'projectile' | 'cutter' | 'push'>('projectile');
   const [structureId, setStructureId] = useState<StressPresetId>('hut');
@@ -554,6 +584,8 @@ export default function Page() {
         setPhysicsWireframe={setPhysicsWireframe}
         gravity={gravity}
         setGravity={setGravity}
+        solverGravityEnabled={solverGravityEnabled}
+        setSolverGravityEnabled={setSolverGravityEnabled}
         mode={mode}
         setMode={setMode}
         pushForce={pushForce}
@@ -598,6 +630,7 @@ export default function Page() {
           debug={debug}
           physicsWireframe={physicsWireframe}
           gravity={gravity}
+          solverGravityEnabled={solverGravityEnabled}
           iteration={iteration}
           structureId={structureId}
           mode={mode}

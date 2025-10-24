@@ -15,6 +15,25 @@ export function buildChunkMeshes(core: DestructibleCore, materials?: { deck?: TH
   return { objects: meshes };
 }
 
+export function buildChunkMeshesFromGeometries(core: DestructibleCore, geometries: THREE.BufferGeometry[], materials?: { deck?: THREE.Material; support?: THREE.Material }) {
+  const deckMat = (materials?.deck ?? new THREE.MeshStandardMaterial({ color: 0xbababa, roughness: 0.62, metalness: 0.05 }));
+  const supportMat = (materials?.support ?? new THREE.MeshStandardMaterial({ color: 0x7a889a, roughness: 0.7, metalness: 0.15 }));
+  const meshes: THREE.Mesh[] = [];
+  for (let i = 0; i < core.chunks.length; i++) {
+    const chunk = core.chunks[i];
+    // Render supports as simple boxes; fragments use real geometries. Use a SINGLE material to avoid
+    // raycast crashes when geometry has no groups (Three expects a material per group otherwise).
+    const geom = chunk.isSupport ? new THREE.BoxGeometry(chunk.size.x, chunk.size.y, chunk.size.z) : (geometries[i] ?? new THREE.BoxGeometry(chunk.size.x, chunk.size.y, chunk.size.z));
+    try { (geom as THREE.BufferGeometry).clearGroups(); } catch {}
+    const mat = chunk.isSupport ? supportMat.clone() : deckMat.clone();
+    const mesh = new THREE.Mesh(geom, mat);
+    mesh.userData.nodeIndex = chunk.nodeIndex;
+    mesh.castShadow = true; mesh.receiveShadow = true;
+    meshes.push(mesh);
+  }
+  return { objects: meshes };
+}
+
 export function updateChunkMeshes(core: DestructibleCore, meshes: THREE.Mesh[]) {
   const tmp = new THREE.Vector3();
   const quat = new THREE.Quaternion();
@@ -40,6 +59,26 @@ export function updateChunkMeshes(core: DestructibleCore, meshes: THREE.Mesh[]) 
     mesh.quaternion.copy(quat);
     tmp.set(chunk.baseLocalOffset.x, chunk.baseLocalOffset.y, chunk.baseLocalOffset.z).applyQuaternion(mesh.quaternion);
     mesh.position.add(tmp);
+
+    // Set mesh color based on type of rigid body: fixed (gray), kinematic (blue), dynamic (orange)
+    // Use MeshStandardMaterial color for clarity; this affects the mesh's material but preserves shadows/etc
+    if (body) {
+      let color = 0xbababa; // default: gray for fixed
+      if (body.isKinematic()) {
+        color = 0x2a6ddb; // blue for kinematic
+      } else if (body.isDynamic()) {
+        color = 0xff9147; // orange for dynamic
+      } else if (body.isFixed()) {
+        color = 0xbababa; // gray for fixed
+      }
+      if (
+        mesh.material &&
+        mesh.material instanceof THREE.MeshStandardMaterial &&
+        (mesh.material.color.getHex() !== color)
+      ) {
+        mesh.material.color.setHex(color);
+      }
+    }
   }
 }
 

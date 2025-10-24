@@ -313,7 +313,7 @@ export function buildTowerScenario({ bondsX = true, bondsY = true, bondsZ = true
   });
 }
 
-export type StressPresetId = "wall" | "hut" | "bridge" | "tower";
+export type StressPresetId = "wall" | "hut" | "bridge" | "tower" | "fracturedWall";
 
 export const STRESS_PRESET_METADATA: Array<{
   id: StressPresetId;
@@ -339,6 +339,11 @@ export const STRESS_PRESET_METADATA: Array<{
     id: "tower",
     label: "Multi-storey frame tower",
     description: "Tall frame with interior columns and floor plates for progressive collapse testing.",
+  },
+  {
+    id: "fracturedWall",
+    label: "Fractured wall",
+    description: "Wall built from irregular fracture pieces (three-pinata) instead of a uniform grid.",
   },
 ];
 
