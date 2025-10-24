@@ -313,7 +313,254 @@ export function buildTowerScenario({ bondsX = true, bondsY = true, bondsZ = true
   });
 }
 
-export type StressPresetId = "wall" | "hut" | "bridge" | "beamBridge" | "tower" | "fracturedWall";
+export function buildTownhouseScenario({ bondsX = true, bondsY = true, bondsZ = true }: PresetOptions = {}): ScenarioDesc {
+  const segments = { x: 26, y: 18, z: 16 };
+  const midFloor = Math.floor(segments.y * 0.45);
+  const roofStart = Math.floor(segments.y * 0.66);
+  const doorCenter = Math.floor(segments.z * 0.5);
+  const doorHalf = Math.floor(segments.z * 0.12);
+  const doorHeight = Math.floor(segments.y * 0.35);
+  const windowRow = Math.floor(segments.y * 0.58);
+  const sideWindowRow = Math.floor(segments.y * 0.42);
+  const windowWidth = Math.floor(segments.z * 0.16);
+  const windowInset = Math.floor(segments.z * 0.15);
+  const patioSpanStart = Math.floor(segments.z * 0.28);
+  const patioSpanEnd = segments.z - patioSpanStart;
+  const patioLintel = Math.floor(segments.y * 0.32);
+
+  return buildRectilinearScenario({
+    size: makeVec(9.0, 5.8, 5.5),
+    segments,
+    deckMass: 210_000,
+    areaScale: 0.052,
+    addDiagonals: true,
+    diagScale: 0.6,
+    normalizeAreas: true,
+    bondsX,
+    bondsY,
+    bondsZ,
+    includeNode: ({ ix, iy, iz, segments: seg }) => {
+      const onFront = ix === 0;
+      const onBack = ix === seg.x - 1;
+      const onSide = iz === 0 || iz === seg.z - 1;
+      const isFloor = iy === 0 || iy === midFloor;
+      const interiorDivider =
+        iz === Math.floor(seg.z * 0.5) &&
+        ix > Math.floor(seg.x * 0.2) &&
+        ix < Math.floor(seg.x * 0.8) &&
+        iy <= midFloor;
+
+      if (iy === 0) return true;
+      if (isFloor) return true;
+      if (interiorDivider) return true;
+
+      if (iy >= roofStart) {
+        const level = iy - roofStart;
+        const inset = Math.min(level * 2 + 1, Math.floor(seg.x * 0.3));
+        const minX = inset;
+        const maxX = seg.x - 1 - inset;
+        if (ix < minX || ix > maxX) return false;
+        const roofEdge = ix === minX || ix === maxX;
+        const ridge = iy === seg.y - 1;
+        if (roofEdge && (iz === 0 || iz === seg.z - 1)) return true;
+        if (ridge) {
+          const ridgeBand = Math.floor(seg.z * 0.2);
+          return iz >= ridgeBand && iz <= seg.z - 1 - ridgeBand;
+        }
+        return iz === 0 || iz === seg.z - 1;
+      }
+
+      if (onFront) {
+        const inDoorway = iz >= doorCenter - doorHalf && iz <= doorCenter + doorHalf && iy <= doorHeight;
+        if (inDoorway) {
+          return iy === doorHeight || iz === doorCenter - doorHalf || iz === doorCenter + doorHalf;
+        }
+        const leftWindowStart = windowInset;
+        const leftWindowEnd = windowInset + windowWidth;
+        const rightWindowStart = seg.z - windowInset - windowWidth;
+        const rightWindowEnd = seg.z - windowInset;
+        if (iy === windowRow && iz >= leftWindowStart && iz <= leftWindowEnd) {
+          return iz === leftWindowStart || iz === leftWindowEnd;
+        }
+        if (iy === windowRow + 1 && iz >= leftWindowStart && iz <= leftWindowEnd) {
+          return true;
+        }
+        if (iy === windowRow && iz >= rightWindowStart && iz <= rightWindowEnd) {
+          return iz === rightWindowStart || iz === rightWindowEnd;
+        }
+        if (iy === windowRow + 1 && iz >= rightWindowStart && iz <= rightWindowEnd) {
+          return true;
+        }
+        return true;
+      }
+
+      if (onBack) {
+        const backWindowStart = Math.floor(seg.z * 0.2);
+        const backWindowEnd = seg.z - backWindowStart;
+        const row = windowRow - 1;
+        if (iy === row && iz >= backWindowStart && iz <= backWindowEnd) {
+          return iz === backWindowStart || iz === backWindowEnd;
+        }
+        if (iy === row + 1 && iz >= backWindowStart && iz <= backWindowEnd) {
+          return true;
+        }
+        const patioHeight = patioLintel;
+        if (iy <= patioHeight && iz >= patioSpanStart && iz <= patioSpanEnd) {
+          return iy === patioHeight || iz === patioSpanStart || iz === patioSpanEnd;
+        }
+        return true;
+      }
+
+      if (onSide) {
+        const sideWindowStart = Math.floor(seg.x * 0.3);
+        const sideWindowEnd = seg.x - 1 - sideWindowStart;
+        if (iy === sideWindowRow && ix >= sideWindowStart && ix <= sideWindowEnd) {
+          return ix === sideWindowStart || ix === sideWindowEnd;
+        }
+        if (iy === sideWindowRow + 1 && ix >= sideWindowStart && ix <= sideWindowEnd) {
+          return true;
+        }
+        return true;
+      }
+
+      return false;
+    },
+  });
+}
+
+export function buildCourtyardHouseScenario({ bondsX = true, bondsY = true, bondsZ = true }: PresetOptions = {}): ScenarioDesc {
+  const segments = { x: 28, y: 14, z: 28 };
+  const courtyardMinX = Math.floor(segments.x * 0.28);
+  const courtyardMaxX = segments.x - courtyardMinX - 1;
+  const courtyardMinZ = Math.floor(segments.z * 0.28);
+  const courtyardMaxZ = segments.z - courtyardMinZ - 1;
+  const skylightRow = Math.floor(segments.y * 0.85);
+  const lintelRow = Math.floor(segments.y * 0.45);
+
+  return buildRectilinearScenario({
+    size: makeVec(12.5, 4.4, 12.5),
+    segments,
+    deckMass: 260_000,
+    areaScale: 0.054,
+    addDiagonals: true,
+    diagScale: 0.58,
+    normalizeAreas: true,
+    bondsX,
+    bondsY,
+    bondsZ,
+    includeNode: ({ ix, iy, iz, segments: seg }) => {
+      const onOuterShell = ix === 0 || ix === seg.x - 1 || iz === 0 || iz === seg.z - 1;
+      const onCourtyardRing =
+        ix === courtyardMinX ||
+        ix === courtyardMaxX ||
+        iz === courtyardMinZ ||
+        iz === courtyardMaxZ;
+      const inCourtyardVoid = ix > courtyardMinX && ix < courtyardMaxX && iz > courtyardMinZ && iz < courtyardMaxZ;
+      const galleryBand = iy === Math.floor(seg.y * 0.32);
+
+      if (iy === 0) return true; // slab
+      if (galleryBand && onCourtyardRing) return true;
+      if (onOuterShell) {
+        const doorSpanStart = Math.floor(seg.z * 0.4);
+        const doorSpanEnd = Math.floor(seg.z * 0.6);
+        const doorHeight = Math.floor(seg.y * 0.35);
+        if (ix === 0 && iz >= doorSpanStart && iz <= doorSpanEnd && iy <= doorHeight) {
+          return iy === doorHeight || iz === doorSpanStart || iz === doorSpanEnd;
+        }
+        if (iy === lintelRow && (ix === 0 || ix === seg.x - 1)) {
+          return true;
+        }
+        return true;
+      }
+
+      if (onCourtyardRing) {
+        if (iy >= Math.floor(seg.y * 0.6)) {
+          return false; // open clerestory around courtyard
+        }
+        if (iy === Math.floor(seg.y * 0.25)) {
+          return true; // waist-high garden wall
+        }
+        return iy <= Math.floor(seg.y * 0.5);
+      }
+
+      if (inCourtyardVoid) {
+        return iy === skylightRow && (ix - courtyardMinX) % 3 === 0 && (iz - courtyardMinZ) % 3 === 0;
+      }
+
+      return false;
+    },
+  });
+}
+
+export function buildVaultedLoftScenario({ bondsX = true, bondsY = true, bondsZ = true }: PresetOptions = {}): ScenarioDesc {
+  const segments = { x: 24, y: 18, z: 14 };
+  const mezzanineRow = Math.floor(segments.y * 0.4);
+  const roofStart = Math.floor(segments.y * 0.55);
+  const centerZ = (segments.z - 1) / 2;
+
+  return buildRectilinearScenario({
+    size: makeVec(10.5, 6.2, 5.2),
+    segments,
+    deckMass: 240_000,
+    areaScale: 0.053,
+    addDiagonals: true,
+    diagScale: 0.6,
+    normalizeAreas: true,
+    bondsX,
+    bondsY,
+    bondsZ,
+    includeNode: ({ ix, iy, iz, segments: seg }) => {
+      const onShell = ix === 0 || ix === seg.x - 1 || iz === 0 || iz === seg.z - 1;
+      const isFloor = iy === 0;
+      const isMezzanine = iy === mezzanineRow && ix >= Math.floor(seg.x * 0.45);
+
+      if (isFloor) return true;
+      if (isMezzanine) return true;
+
+      if (iy >= roofStart) {
+        const normalizedHeight = (iy - roofStart) / Math.max(1, seg.y - roofStart - 1);
+        const allowed = Math.cos(normalizedHeight * Math.PI * 0.5) * (seg.z * 0.5 - 1);
+        if (Math.abs(iz - centerZ) > allowed) return false;
+        const ribSpacing = 2;
+        const isRib = ix % ribSpacing === 0;
+        const onEdge = ix === 0 || ix === seg.x - 1;
+        return (onEdge || isRib) && Math.abs(iz - centerZ) >= allowed - 1;
+      }
+
+      if (onShell) {
+        const clerestoryRow = Math.floor(seg.y * 0.48);
+        if ((ix === 0 || ix === seg.x - 1) && iy === clerestoryRow) {
+          return (iz + clerestoryRow) % 3 === 0;
+        }
+        if (iz === 0 || iz === seg.z - 1) {
+          const garageDoorStart = Math.floor(seg.x * 0.15);
+          const garageDoorEnd = Math.floor(seg.x * 0.55);
+          const doorHeight = Math.floor(seg.y * 0.35);
+          if (iz === 0 && ix >= garageDoorStart && ix <= garageDoorEnd && iy <= doorHeight) {
+            return iy === doorHeight || ix === garageDoorStart || ix === garageDoorEnd;
+          }
+        }
+        return true;
+      }
+
+      const stairCore = ix === Math.floor(seg.x * 0.4) && iz >= Math.floor(seg.z * 0.3) && iz <= Math.floor(seg.z * 0.7);
+      if (stairCore && iy <= mezzanineRow) return true;
+
+      return false;
+    },
+  });
+}
+
+export type StressPresetId =
+  | "wall"
+  | "hut"
+  | "bridge"
+  | "beamBridge"
+  | "tower"
+  | "fracturedWall"
+  | "townhouse"
+  | "courtyardHouse"
+  | "vaultedLoft";
 
 export const STRESS_PRESET_METADATA: Array<{
   id: StressPresetId;
@@ -349,6 +596,21 @@ export const STRESS_PRESET_METADATA: Array<{
     id: "fracturedWall",
     label: "Fractured wall",
     description: "Wall built from irregular fracture pieces (three-pinata) instead of a uniform grid.",
+  },
+  {
+    id: "townhouse",
+    label: "Two-storey townhouse",
+    description: "Residential shell with an interior divider, door and window cut-outs, and a stepped gable roof.",
+  },
+  {
+    id: "courtyardHouse",
+    label: "Courtyard bungalow",
+    description: "Low-rise home wrapping a central garden with breezeways, lintels, and clerestory openings.",
+  },
+  {
+    id: "vaultedLoft",
+    label: "Vaulted loft",
+    description: "Open-plan loft with barrel roof ribs, garage door opening, and mezzanine platform.",
   },
 ];
 
