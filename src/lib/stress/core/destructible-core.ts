@@ -9,23 +9,50 @@ type BuildCoreOptions = {
   gravity?: number;
   friction?: number;
   restitution?: number;
+  materialScale?: number;
 };
 
 const isDev = true; //process.env.NODE_ENV !== 'production';
 
-export async function buildDestructibleCore({ scenario, nodeSize, gravity = -9.81, friction = 0.25, restitution = 0.0 }: BuildCoreOptions): Promise<DestructibleCore> {
+export async function buildDestructibleCore({
+  scenario,
+  nodeSize,
+  gravity = -9.81,
+  friction = 0.25,
+  restitution = 0.0,
+  materialScale = 1.0,
+}: BuildCoreOptions): Promise<DestructibleCore> {
   await RAPIER.init();
   const runtime = await loadStressSolver();
 
   const settings = runtime.defaultExtSettings();
+  const scaledSettings = { ...settings };
+
   // Reasonable defaults; caller can adjust later if needed
-  settings.maxSolverIterationsPerFrame = 64;
+  // settings.maxSolverIterationsPerFrame = 64;
+  settings.maxSolverIterationsPerFrame = 24;
   settings.graphReductionLevel = 0;
+
+  const baseCompressionElastic = 0.0009;
+  const baseCompressionFatal = 0.0027;
+  const baseShearElastic = 0.0012;
+  const baseShearFatal = 0.0036;
+  const baseTensionElastic = 0.0009;
+  const baseTensionFatal = 0.0027;
+
+  scaledSettings.compressionElasticLimit = baseCompressionElastic * materialScale;
+  scaledSettings.compressionFatalLimit = baseCompressionFatal * materialScale;
+  scaledSettings.tensionElasticLimit = baseTensionElastic * materialScale;
+  scaledSettings.tensionFatalLimit = baseTensionFatal * materialScale;
+  scaledSettings.shearElasticLimit = baseShearElastic * materialScale;
+  scaledSettings.shearFatalLimit = baseShearFatal * materialScale;
 
   // Mark supports via mass=0
   const nodes = scenario.nodes.map((n) => ({ centroid: n.centroid, mass: n.mass, volume: n.volume }));
   const bonds = scenario.bonds.map((b) => ({ node0: b.node0, node1: b.node1, centroid: b.centroid, normal: b.normal, area: b.area }));
-  const solver = runtime.createExtSolver({ nodes, bonds, settings });
+
+  const solver = runtime.createExtSolver({ nodes, bonds, settings: scaledSettings });
+
   // Persist bond list with indices for cutting and adjacency
   const bondTable: Array<{ index:number; node0:number; node1:number; centroid:Vec3; normal:Vec3; area:number }> = scenario.bonds.map((b, i) => ({ index: i, node0: b.node0, node1: b.node1, centroid: b.centroid, normal: b.normal, area: b.area }));
   const bondsByNode = new Map<number, number[]>();
@@ -211,20 +238,45 @@ export async function buildDestructibleCore({ scenario, nodeSize, gravity = -9.8
       const wp2 = ev.worldContactPoint2 ? ev.worldContactPoint2() : undefined;
       const p1 = wp ?? wp2 ?? fallbackPoint(world, h1);
       const p2 = wp2 ?? wp ?? fallbackPoint(world, h2);
+
+      // Get optional nodes for each collider
+      const node1 = colliderToNode.has(h1) ? colliderToNode.get(h1) : undefined;
+      const node2 = colliderToNode.has(h2) ? colliderToNode.get(h2) : undefined;
+ 
+      // console.log('drainContactForceEvents', ev, h1, h2, p1, p2, node1, node2);
+    
+      // only inject EXTERNAL loads: exactly one side is bridge
+      // if (isBridge1 && !isBridge2) {
+      //   const p = ev.worldContactPoint?.() ?? ev.worldContactPoint2?.() ?? fallbackPoint(state.world, h1);
+      //   add(h1, +1, tf, p);     // always +1; we are adding an external load
+      // } else if (isBridge2 && !isBridge1) {
+      //   const p = ev.worldContactPoint2?.() ?? ev.worldContactPoint?.() ?? fallbackPoint(state.world, h2);
+      //   add(h2, +1, tf, p);
+      // }
+
       if (h1 != null) {
-        addForceForCollider(h1, +1, tf, p1 ?? p2);
+        if (node1 && !node2) {
+          addForceForCollider(h1, +1, tf, p1 ?? p2);
+        } else {
+          // Part of the same stress solving body
+        }
       } else {
         console.warn('drainContactForceEvents', ev, 'h1 is null');
       }
       if (h2 != null) {
-        addForceForCollider(h2, -1, tf, p2 ?? p1);
+        if (node2 && !node1) {
+          addForceForCollider(h2, -1, tf, p2 ?? p1);
+        } else {
+          // Part of the same stress solving body
+        }
       } else {
         console.warn('drainContactForceEvents', ev, 'h2 is null');
       }
     });
 
     // Inject external (non-contact) forces into solver at node space
-    if (pendingExternalForces.length > 0) {
+    const hasExternalForces = pendingExternalForces.length > 0;
+    if (hasExternalForces) {
       try {
         const rb = world.getRigidBody(rootBody.handle);
         const rot = rb.rotation();
@@ -251,6 +303,9 @@ export async function buildDestructibleCore({ scenario, nodeSize, gravity = -9.8
       } catch {}
     }
     solver.update();
+    if (hasExternalForces) {
+      (window as any)?.debugStressSolver?.printSolver?.();
+    }
 
     if (solver.overstressedBondCount() > 0) {
       const perActor = solver.generateFractureCommandsPerActor();
@@ -346,7 +401,9 @@ export async function buildDestructibleCore({ scenario, nodeSize, gravity = -9.8
           const pt = inherit.translation();
           const pq = inherit.rotation();
           const lv = inherit.linvel?.();
-          desc.setTranslation(pt.x, pt.y, pt.z).setRotation(pq).setLinvel(lv?.x ?? 0, lv?.y ?? 0, lv?.z ?? 0);
+          desc.setTranslation(pt.x, pt.y, pt.z)
+            .setRotation(pq)
+            .setLinvel(lv?.x ?? 0, lv?.y ?? 0, lv?.z ?? 0);
         }
         const body = world.createRigidBody(desc);
         actorMap.set(pb.actorIndex, { bodyHandle: body.handle });

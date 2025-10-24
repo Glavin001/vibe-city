@@ -17,6 +17,7 @@ import {
 } from "@/lib/stress/scenarios/structurePresets";
 import { buildChunkMeshes, buildChunkMeshesFromGeometries, buildSolverDebugHelper, updateChunkMeshes, updateProjectileMeshes, computeWorldDebugLines } from "@/lib/stress/three/destructible-adapter";
 import RapierDebugRenderer from "@/lib/rapier/rapier-debug-renderer";
+import { debugPrintSolver } from "@/lib/stress/core/printSolver";
 
 function Ground() {
   return (
@@ -100,7 +101,12 @@ const SCENARIO_BUILDERS: Record<StressPresetId, (params: ScenarioBuilderParams) 
     buildFracturedWallScenario({ span: wallSpan, height: wallHeight, thickness: wallThickness, fragmentCount: 120 }),
 };
 
-function Scene({ debug, physicsWireframe, gravity, solverGravityEnabled, iteration, structureId, mode, pushForce, projType, projectileSpeed, projectileMass, materialScale, wallSpan, wallHeight, wallThickness, wallSpanSeg, wallHeightSeg, wallLayers, showAllDebugLines, bondsXEnabled, bondsYEnabled, bondsZEnabled, onReset: _onReset }: SceneProps) {
+function Scene({
+  debug,
+  physicsWireframe,
+  gravity,
+  solverGravityEnabled, iteration, structureId, mode, pushForce, projType,projectileSpeed, projectileMass, materialScale, wallSpan, wallHeight, wallThickness, wallSpanSeg, wallHeightSeg, wallLayers, showAllDebugLines, bondsXEnabled, bondsYEnabled, bondsZEnabled, onReset: _onReset,
+}: SceneProps) {
   const coreRef = useRef<DestructibleCore | null>(null);
   const debugHelperRef = useRef<ReturnType<typeof buildSolverDebugHelper> | null>(null);
   const chunkMeshesRef = useRef<THREE.Mesh[] | null>(null);
@@ -118,6 +124,31 @@ function Scene({ debug, physicsWireframe, gravity, solverGravityEnabled, iterati
     physicsWireframeStateRef.current = physicsWireframe;
   }, [physicsWireframe]);
 
+  useEffect(() => {
+    // Expose debug helpers globally
+    (window as any).debugStressSolver = {
+      // printHierarchy: () => printWorldHierarchy(),
+      // captureSnapshot: () => captureWorldSnapshot(),
+      printSolver: () => {
+        const core = coreRef?.current;
+        if (!core || !core.solver) return null;
+        // Build a compact bondTable mapping bond index -> node pair using core API
+        const nodeCount = typeof core.solver.graphNodeCount === 'function' ? core.solver.graphNodeCount() : 0;
+        const seen = new Set<number>();
+        const bondTable: Array<{ index:number; node0:number; node1:number; area?: number }> = [];
+        for (let n = 0; n < nodeCount; n++) {
+          const bonds = core.getNodeBonds(n) || [];
+          for (const b of bonds) {
+            if (seen.has(b.index)) continue;
+            seen.add(b.index);
+            bondTable.push({ index: b.index, node0: b.node0, node1: b.node1, area: b.area });
+          }
+        }
+        return debugPrintSolver(core.solver, { runtime: core.runtime, bondTable, limit: 16 });
+      },
+      coreRef,
+    };
+  }, [])
 
   const placeClickMarker = useCallback((pos: THREE.Vector3) => {
     if (!groupRef.current) return;
@@ -162,6 +193,7 @@ function Scene({ debug, physicsWireframe, gravity, solverGravityEnabled, iterati
           return { x: sp.x, y: sp.y, z: sp.z };
         },
         gravity: buildGravityRef.current,
+        materialScale: materialScale,
       });
       if (!mounted) { core.dispose(); return; }
       coreRef.current = core;
@@ -220,7 +252,7 @@ function Scene({ debug, physicsWireframe, gravity, solverGravityEnabled, iterati
       if (coreRef.current) coreRef.current.dispose();
       coreRef.current = null;
     };
-  }, [iteration, structureId, wallSpan, wallHeight, wallThickness, wallSpanSeg, wallHeightSeg, wallLayers, bondsXEnabled, bondsYEnabled, bondsZEnabled, scene]);
+  }, [iteration, structureId, wallSpan, wallHeight, wallThickness, wallSpanSeg, wallHeightSeg, wallLayers, bondsXEnabled, bondsYEnabled, bondsZEnabled, scene, materialScale]);
 
   // Listen for a one-time test projectile spawn request; depends on speed/mass only
   useEffect(() => {
@@ -254,6 +286,7 @@ function Scene({ debug, physicsWireframe, gravity, solverGravityEnabled, iterati
     try {
       const defaults = core.runtime.defaultExtSettings();
       const scaled: Record<string, number> = { ...defaults } as unknown as Record<string, number>;
+      /*
       // Apply baseline overrides (concrete-ish) and scale by materialScale
       const baseCompressionElastic = 0.009;
       // const baseCompressionFatal = 0.027;
@@ -264,6 +297,17 @@ function Scene({ debug, physicsWireframe, gravity, solverGravityEnabled, iterati
       const baseShearElastic = 0.0012;
       // const baseShearFatal = 0.0036;
       const baseShearFatal = 0.36;
+      */
+
+      // tension elastic/fatal:   0.0009 / 0.0027
+      // shear   elastic/fatal:   0.0012 / 0.0036
+      // compress elastic/fatal:  0.0090 / 0.027
+      const baseCompressionElastic = 0.0009;
+      const baseCompressionFatal = 0.0027;
+      const baseShearElastic = 0.0012;
+      const baseShearFatal = 0.0036;
+      const baseTensionElastic = 0.0009;
+      const baseTensionFatal = 0.0027;
 
       scaled.compressionElasticLimit = baseCompressionElastic * materialScale;
       scaled.compressionFatalLimit = baseCompressionFatal * materialScale;
@@ -273,7 +317,8 @@ function Scene({ debug, physicsWireframe, gravity, solverGravityEnabled, iterati
       scaled.shearFatalLimit = baseShearFatal * materialScale;
 
       // Ensure iteration and reduction defaults align with desired config
-      scaled.maxSolverIterationsPerFrame = 64;
+      // scaled.maxSolverIterationsPerFrame = 64;
+      scaled.maxSolverIterationsPerFrame = 24;
       scaled.graphReductionLevel = 0;
       core.solver.setSettings(scaled);
       if (isDev) console.debug('[Page] Applied material scale', materialScale, scaled);
@@ -466,7 +511,7 @@ function HtmlOverlay({ debug, setDebug, physicsWireframe, setPhysicsWireframe, g
       <div style={{ color: '#9ca3af', fontSize: 13 }}>Push</div>
       <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#d1d5db', fontSize: 14 }}>
         Force (N)
-        <input type="range" min={100} max={100000} step={100} value={pushForce} onChange={(e) => setPushForce(parseFloat(e.target.value))} style={{ flex: 1 }} />
+        <input type="range" min={100} max={1_000_000} step={100} value={pushForce} onChange={(e) => setPushForce(parseFloat(e.target.value))} style={{ flex: 1 }} />
         <span style={{ color: '#9ca3af', width: 80, textAlign: 'right' }}>{Math.round(pushForce).toLocaleString()}</span>
       </label>
       <div style={{ color: '#9ca3af', fontSize: 13 }}>Projectile</div>
