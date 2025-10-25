@@ -1,6 +1,11 @@
 import type RAPIER from '@dimforge/rapier3d-compat';
+import type { ColliderDesc } from '@dimforge/rapier3d-compat';
 import type { ExtStressSolver, StressRuntime } from 'blast-stress-solver';
 export type Vec3 = { x: number; y: number; z: number };
+
+// Builder that returns a Rapier collider descriptor for a node.
+// Static Rapier import is required by callers; this type reuses Rapier's own types.
+export type ColliderDescBuilder = () => ColliderDesc | null;
 
 export type ScenarioNode = {
   centroid: Vec3;
@@ -22,6 +27,9 @@ export type ScenarioDesc = {
   gridCoordinates?: Array<{ ix: number; iy: number; iz: number }>;
   spacing?: Vec3;
   parameters?: Record<string, unknown>;
+  // Optional per-node collider descriptors (one entry per node index). If omitted or entry returns null,
+  // the core falls back to a box collider sized from the node (nodeSize).
+  colliderDescForNode?: Array<ColliderDescBuilder | null>;
 };
 
 export type ChunkData = {

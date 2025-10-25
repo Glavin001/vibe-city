@@ -1,4 +1,5 @@
-import type { ScenarioDesc, Vec3 } from "@/lib/stress/core/types";
+import type { ScenarioDesc, Vec3, ColliderDescBuilder } from "@/lib/stress/core/types";
+import RAPIER from '@dimforge/rapier3d-compat';
 
 const EPSILON = 1e-8;
 
@@ -81,6 +82,7 @@ export function buildRectilinearScenario({
 
   const nodes: ScenarioDesc["nodes"] = [];
   const gridCoordinates: Array<{ ix: number; iy: number; iz: number }> = [];
+  const colliderDescForNode: (ColliderDescBuilder | null)[] = [];
 
   const include = includeNode ?? (() => true);
   const support = supportPredicate ?? (({ iy }) => iy === 0);
@@ -101,6 +103,11 @@ export function buildRectilinearScenario({
         nodes.push({ centroid: position, mass: volume, volume });
         grid[ix][iy][iz] = nodeIndex;
         gridCoordinates[nodeIndex] = { ix, iy, iz };
+
+        const hx = cellX * 0.5;
+        const hy = cellY * 0.5;
+        const hz = cellZ * 0.5;
+        colliderDescForNode.push(() => RAPIER.ColliderDesc.cuboid(hx * (isSupport ? 0.999 : 1), hy * (isSupport ? 0.999 : 1), hz * (isSupport ? 0.999 : 1)));
       }
     }
   }
@@ -186,6 +193,7 @@ export function buildRectilinearScenario({
     gridCoordinates,
     spacing: makeVec(cellX, cellY, cellZ),
     parameters: { size, segments, deckMass, areaScale, addDiagonals },
+    colliderDescForNode,
   } satisfies ScenarioDesc;
 }
 

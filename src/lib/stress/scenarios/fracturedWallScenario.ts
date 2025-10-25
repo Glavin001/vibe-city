@@ -1,6 +1,7 @@
 import * as THREE from 'three';
+import RAPIER from '@dimforge/rapier3d-compat';
 import { FractureOptions, fracture } from '@dgreenheck/three-pinata';
-import type { ScenarioDesc, Vec3 } from '@/lib/stress/core/types';
+import type { ScenarioDesc, Vec3, ColliderDescBuilder } from '@/lib/stress/core/types';
 
 type FracturedWallOptions = {
   span?: number; // X
@@ -25,7 +26,13 @@ function buildFragments({ span, height, thickness, fragmentCount }: Required<Omi
   const pieces = fracture(geom, opts);
   geom.dispose();
 
-  const center = new THREE.Vector3(0, height * 0.5, 0); // bottom at y=0
+  // Place foundation slightly above the ground and lift the wall so it sits above the foundation with a tiny gap.
+  const foundationHeight = Math.min(0.08, height * 0.06);
+  const groundClearance = Math.max(0.001, foundationHeight * 0.05);
+  const foundationClearance = Math.max(0.001, foundationHeight * 0.05);
+  const wallLiftY = groundClearance + foundationHeight + foundationClearance;
+
+  const center = new THREE.Vector3(0, height * 0.5 + wallLiftY, 0); // bottom at y>0
 
   const fragments: FragmentInfo[] = pieces.map((g) => {
     g.computeBoundingBox();
@@ -45,12 +52,11 @@ function buildFragments({ span, height, thickness, fragmentCount }: Required<Omi
     };
   });
   // Add a thin foundation slab along X under the wall (support-only nodes)
-  const foundationHeight = Math.min(0.08, height * 0.06);
   const foundationSegmentsX = Math.max(6, Math.round(span / 0.5));
   const cellW = span / foundationSegmentsX;
   for (let ix = 0; ix < foundationSegmentsX; ix += 1) {
     const cx = -span * 0.5 + cellW * (ix + 0.5);
-    const cy = foundationHeight * 0.5; // sits on ground at y=0
+    const cy = groundClearance + foundationHeight * 0.5; // sits just above ground
     const cz = 0;
     const g = new THREE.BoxGeometry(cellW, foundationHeight, thickness);
     const worldPosition = new THREE.Vector3(cx, cy, cz);
@@ -152,11 +158,12 @@ export function buildFracturedWallScenario({
   const nodes: ScenarioDesc['nodes'] = [];
   const fragmentSizes: Vec3[] = [];
   const fragmentGeometries: THREE.BufferGeometry[] = [];
+  const colliderDescForNode: (ColliderDescBuilder | null)[] = [];
   let totalVolume = 0;
 
   const EPS = 1e-4;
 
-  frags.forEach((f) => {
+  frags.forEach((f, i) => {
     const hx = f.halfExtents.x;
     const hy = f.halfExtents.y;
     const hz = f.halfExtents.z;
@@ -168,6 +175,14 @@ export function buildFracturedWallScenario({
     nodes.push({ centroid: { x: f.worldPosition.x, y: f.worldPosition.y, z: f.worldPosition.z }, mass, volume });
     fragmentSizes.push(size);
     fragmentGeometries.push(f.geometry);
+
+    if (isSupport) {
+      colliderDescForNode[i] = () => RAPIER.ColliderDesc.cuboid(hx, hy, hz);
+    } else {
+      const pos = f.geometry.getAttribute('position') as THREE.BufferAttribute;
+      const points = pos?.array instanceof Float32Array ? pos.array : new Float32Array((pos?.array ?? []) as ArrayLike<number>);
+      colliderDescForNode[i] = () => RAPIER.ColliderDesc.convexHull(points);
+    }
   });
 
   // Scale masses so total matches deckMass
@@ -200,6 +215,7 @@ export function buildFracturedWallScenario({
       thickness,
       fragmentCount,
     },
+    colliderDescForNode,
   } satisfies ScenarioDesc;
 }
 

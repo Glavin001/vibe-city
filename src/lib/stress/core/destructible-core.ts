@@ -99,6 +99,17 @@ export async function buildDestructibleCore({
 
   // const spacing = scenario.spacing ?? { x: 0.5, y: 0.5, z: 0.5 };
 
+  function buildColliderDescForNode(args: { nodeIndex: number; halfX: number; halfY: number; halfZ: number; isSupport: boolean }) {
+    const { nodeIndex, halfX, halfY, halfZ, isSupport } = args;
+    const builder = (scenario.colliderDescForNode && Array.isArray(scenario.colliderDescForNode)) ? (scenario.colliderDescForNode[nodeIndex] ?? null) : null;
+    let desc = typeof builder === 'function' ? builder() : null;
+    if (!desc) {
+      const s = isSupport ? 0.999 : 1.0;
+      desc = RAPIER.ColliderDesc.cuboid(halfX * s, halfY * s, halfZ * s);
+    }
+    return desc;
+  }
+
   scenario.nodes.forEach((node, nodeIndex) => {
     const size = nodeSize(nodeIndex, scenario);
     const halfX = Math.max(0.05, size.x * 0.5);
@@ -119,16 +130,14 @@ export async function buildDestructibleCore({
       detached: false,
     };
 
-    const col = world.createCollider(
-      RAPIER.ColliderDesc.cuboid(halfX * (isSupport ? 0.999 : 1), halfY * (isSupport ? 0.999 : 1), halfZ * (isSupport ? 0.999 : 1))
-        .setMass(nodeMass)
-        .setTranslation(chunk.localOffset.x, chunk.localOffset.y, chunk.localOffset.z)
-        .setFriction(friction)
-        .setRestitution(restitution)
-        .setActiveEvents(RAPIER.ActiveEvents.CONTACT_FORCE_EVENTS)
-        .setContactForceEventThreshold(0.0),
-      rootBody
-    );
+    const desc = buildColliderDescForNode({ nodeIndex, halfX, halfY, halfZ, isSupport })
+      .setMass(nodeMass)
+      .setTranslation(chunk.localOffset.x, chunk.localOffset.y, chunk.localOffset.z)
+      .setFriction(friction)
+      .setRestitution(restitution)
+      .setActiveEvents(RAPIER.ActiveEvents.CONTACT_FORCE_EVENTS)
+      .setContactForceEventThreshold(0.0);
+    const col = world.createCollider(desc, rootBody);
     chunk.colliderHandle = col.handle;
     colliderToNode.set(col.handle, nodeIndex);
     activeContactColliders.add(col.handle);
@@ -509,16 +518,14 @@ export async function buildDestructibleCore({
         const nodeMass = node.mass ?? 1;
         // const isSupport = nodeMass === 0;
 
-        const col = world.createCollider(
-          RAPIER.ColliderDesc.cuboid(halfX, halfY, halfZ)
-            .setMass(nodeMass)
-            .setTranslation(tx, ty, tz)
-            .setActiveEvents(RAPIER.ActiveEvents.CONTACT_FORCE_EVENTS)
-            .setContactForceEventThreshold(0.0)
-            .setFriction(0.25)
-            .setRestitution(0.0),
-          body
-        );
+        const desc = buildColliderDescForNode({ nodeIndex: mig.nodeIndex, halfX, halfY, halfZ, isSupport: seg.isSupport })
+          .setMass(nodeMass)
+          .setTranslation(tx, ty, tz)
+          .setActiveEvents(RAPIER.ActiveEvents.CONTACT_FORCE_EVENTS)
+          .setContactForceEventThreshold(0.0)
+          .setFriction(0.25)
+          .setRestitution(0.0);
+        const col = world.createCollider(desc, body);
         seg.bodyHandle = body.handle;
         seg.colliderHandle = col.handle;
         seg.detached = true;

@@ -1,4 +1,5 @@
-import type { ScenarioDesc, Vec3 } from '@/lib/stress/core/types';
+import type { ScenarioDesc, Vec3, ColliderDescBuilder } from '@/lib/stress/core/types';
+import RAPIER from '@dimforge/rapier3d-compat';
 import { vec3 } from 'blast-stress-solver';
 
 type WallScenarioOptions = {
@@ -38,6 +39,7 @@ export function buildWallScenario({
 }: WallScenarioOptions = {}): ScenarioDesc {
   const nodes: Array<{ centroid: Vec3; mass: number; volume: number }> = [];
   const bonds: Array<{ node0: number; node1: number; centroid: Vec3; normal: Vec3; area: number }> = [];
+  const colliderDescForNode: (ColliderDescBuilder | null)[] = [];
 
   const cellX = span / Math.max(spanSegments, 1);
   const cellY = height / Math.max(heightSegments, 1);
@@ -73,6 +75,11 @@ export function buildWallScenario({
         nodes.push(node);
         index3D[ix][iy][iz] = index;
         gridCoordinates[index] = { ix, iy, iz };
+
+        const hx = cellX * 0.5;
+        const hy = cellY * 0.5;
+        const hz = cellZ * 0.5;
+        colliderDescForNode.push(() => RAPIER.ColliderDesc.cuboid(hx * (isSupport ? 0.999 : 1), hy * (isSupport ? 0.999 : 1), hz * (isSupport ? 0.999 : 1)));
       }
     }
   }
@@ -133,6 +140,7 @@ export function buildWallScenario({
     gridCoordinates,
     spacing: { x: cellX, y: cellY, z: cellZ },
     parameters: { span, height, thickness, spanSegments, heightSegments, layers, deckMass, areaScale },
+    colliderDescForNode,
   } satisfies ScenarioDesc;
 }
 
