@@ -143,6 +143,9 @@ export class VolumeTileSim {
     densUniforms.uEmitterRadiusMeters.value = opts.emitterRadiusMeters;
     densUniforms.uEmitterMassRateKgPerSec.value = opts.emitterMassRateKgPerSec;
 
+    densUniforms.tVelocity.value = this.getVelocityTexture();
+    velUniforms.tVelocity.value = this.getVelocityTexture();
+
     this.gpu.compute();
   }
 

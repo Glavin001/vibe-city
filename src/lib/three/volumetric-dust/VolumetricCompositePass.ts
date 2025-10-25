@@ -23,7 +23,7 @@ export class VolumetricCompositePass {
     const uniforms: Record<string, THREE.IUniform> = {
       tScene: { value: null },
       tDepth: { value: null },
-      tDensity: { value: opts.densityAtlas },
+      tDensity: { value: null },
       uGrid: { value: opts.grid },
       uTilesX: { value: tilesX },
       uTilesY: { value: tilesY },
@@ -57,6 +57,9 @@ export class VolumetricCompositePass {
       fragmentShader: volumetricCompositeShader,
     });
     (this.pass as unknown as { needsSwap: boolean }).needsSwap = true;
+
+    (this.pass.uniforms as Record<string, THREE.IUniform>).tDensity.value =
+      opts.densityAtlas;
   }
 
   setUniforms(u: {
