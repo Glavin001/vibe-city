@@ -9,6 +9,7 @@ import type { DestructibleCore } from "@/lib/stress/core/types";
 import { buildWallScenario } from "@/lib/stress/scenarios/wallScenario";
 import { buildFracturedWallScenario } from "@/lib/stress/scenarios/fracturedWallScenario";
 import { buildBeamBridgeScenario } from "@/lib/stress/scenarios/beamBridgeScenario";
+import { buildBrickWallScenario } from "@/lib/stress/scenarios/brickWallScenario";
 import {
   STRESS_PRESET_METADATA,
   buildBridgeScenario,
@@ -95,6 +96,30 @@ const SCENARIO_BUILDERS: Record<StressPresetId, (params: ScenarioBuilderParams) 
       bondsX: bondsXEnabled,
       bondsY: bondsYEnabled,
       bondsZ: bondsZEnabled,
+    }),
+  brickWall: ({
+    wallSpan,
+    wallHeight,
+    wallThickness,
+    wallSpanSeg,
+    wallHeightSeg,
+    wallLayers,
+    bondsXEnabled,
+    bondsYEnabled,
+    bondsZEnabled,
+  }) =>
+    buildBrickWallScenario({
+      span: wallSpan,
+      height: wallHeight,
+      thickness: wallThickness,
+      spanBricks: wallSpanSeg,
+      courses: wallHeightSeg,
+      layers: wallLayers,
+      bondsX: bondsXEnabled,
+      bondsY: bondsYEnabled,
+      bondsZ: bondsZEnabled,
+      includeHalfBricks: true,
+      clumpCount: 7,
     }),
   hut: ({ bondsXEnabled, bondsYEnabled, bondsZEnabled }) =>
     buildHutScenario({ bondsX: bondsXEnabled, bondsY: bondsYEnabled, bondsZ: bondsZEnabled }),
@@ -508,7 +533,7 @@ function Scene({
 }
 
 function HtmlOverlay({ debug, setDebug, physicsWireframe, setPhysicsWireframe, gravity, setGravity, solverGravityEnabled, setSolverGravityEnabled, limitSinglesCollisions, setLimitSinglesCollisions, mode, setMode, projType, setProjType, reset, projectileSpeed, setProjectileSpeed, projectileMass, setProjectileMass, materialScale, setMaterialScale, wallSpan, setWallSpan, wallHeight, setWallHeight, wallThickness, setWallThickness, wallSpanSeg, setWallSpanSeg, wallHeightSeg, setWallHeightSeg, wallLayers, setWallLayers, showAllDebugLines, setShowAllDebugLines, bondsXEnabled, setBondsXEnabled, bondsYEnabled, setBondsYEnabled, bondsZEnabled, setBondsZEnabled, structureId, setStructureId, structures, structureDescription, pushForce, setPushForce, }: { debug: boolean; setDebug: (v: boolean) => void; physicsWireframe: boolean; setPhysicsWireframe: (v: boolean) => void; gravity: number; setGravity: (v: number) => void; solverGravityEnabled: boolean; setSolverGravityEnabled: (v: boolean) => void; limitSinglesCollisions: boolean; setLimitSinglesCollisions: (v: boolean) => void; mode: 'projectile' | 'cutter' | 'push'; setMode: (v: 'projectile' | 'cutter' | 'push') => void; projType: 'ball' | 'box'; setProjType: (v: 'ball' | 'box') => void; reset: () => void; projectileSpeed: number; setProjectileSpeed: (v: number) => void; projectileMass: number; setProjectileMass: (v: number) => void; materialScale: number; setMaterialScale: (v: number) => void; wallSpan: number; setWallSpan: (v: number) => void; wallHeight: number; setWallHeight: (v: number) => void; wallThickness: number; setWallThickness: (v: number) => void; wallSpanSeg: number; setWallSpanSeg: (v: number) => void; wallHeightSeg: number; setWallHeightSeg: (v: number) => void; wallLayers: number; setWallLayers: (v: number) => void; showAllDebugLines: boolean; setShowAllDebugLines: (v: boolean) => void; bondsXEnabled: boolean; setBondsXEnabled: (v: boolean) => void; bondsYEnabled: boolean; setBondsYEnabled: (v: boolean) => void; bondsZEnabled: boolean; setBondsZEnabled: (v: boolean) => void; structureId: StressPresetId; setStructureId: (v: StressPresetId) => void; structures: typeof STRESS_PRESET_METADATA; structureDescription?: string; pushForce: number; setPushForce: (v: number) => void }) {
-  const isWallStructure = structureId === "wall" || structureId === "fracturedWall";
+  const isWallStructure = structureId === "wall" || structureId === "fracturedWall" || structureId === "brickWall";
   return (
     <div style={{ position: 'absolute', top: 110, left: 16, zIndex: 10, display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 360 }}>
       <div style={{ display: 'flex', gap: 8 }}>
@@ -618,7 +643,7 @@ function HtmlOverlay({ debug, setDebug, physicsWireframe, setPhysicsWireframe, g
       </label>
       <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#d1d5db', fontSize: 14 }}>
         Thickness (m)
-        <input type="range" min={0.1} max={1.0} step={0.02} value={wallThickness} onChange={(e) => setWallThickness(parseFloat(e.target.value))} style={{ flex: 1 }} disabled={!isWallStructure} />
+        <input type="range" min={0.1} max={10.0} step={0.02} value={wallThickness} onChange={(e) => setWallThickness(parseFloat(e.target.value))} style={{ flex: 1 }} disabled={!isWallStructure} />
         <span style={{ color: '#9ca3af', width: 60, textAlign: 'right' }}>{wallThickness.toFixed(2)}</span>
       </label>
       <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#d1d5db', fontSize: 14 }}>
