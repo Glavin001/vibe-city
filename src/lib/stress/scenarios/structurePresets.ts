@@ -519,12 +519,27 @@ export function buildVaultedLoftScenario({ bondsX = true, bondsY = true, bondsZ 
 
       if (iy >= roofStart) {
         const normalizedHeight = (iy - roofStart) / Math.max(1, seg.y - roofStart - 1);
-        const allowed = Math.cos(normalizedHeight * Math.PI * 0.5) * (seg.z * 0.5 - 1);
-        if (Math.abs(iz - centerZ) > allowed) return false;
-        const ribSpacing = 2;
-        const isRib = ix % ribSpacing === 0;
-        const onEdge = ix === 0 || ix === seg.x - 1;
-        return (onEdge || isRib) && Math.abs(iz - centerZ) >= allowed - 1;
+        const halfSpan = Math.cos(normalizedHeight * Math.PI * 0.5) * (seg.z * 0.5 - 1);
+        const distanceFromRidge = Math.abs(iz - centerZ);
+        const shellThickness = 2;
+        const shellLimit = Math.max(0, halfSpan - (shellThickness - 1));
+
+        if (distanceFromRidge >= shellLimit) {
+          return true;
+        }
+
+        const ridgeBand = 1;
+        if (distanceFromRidge <= ridgeBand && normalizedHeight >= 0.4) {
+          return true;
+        }
+
+        const purlinSpacing = 3;
+        const tieLayer = iy % 2 === 0;
+        if (tieLayer && ix % purlinSpacing === 0 && distanceFromRidge >= halfSpan * 0.5) {
+          return true;
+        }
+
+        return false;
       }
 
       if (onShell) {
