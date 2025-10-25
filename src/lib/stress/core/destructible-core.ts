@@ -562,8 +562,10 @@ export async function buildDestructibleCore({
   }
 
   function getSolverDebugLines(options?: { mode?: 'min' | 'max'; sampleStep?: number; maxLines?: number }) {
-    const modeEnum = options?.mode === 'min' ? runtime.ExtDebugMode.Min : runtime.ExtDebugMode.Max;
-    const modeKey = modeEnum ?? runtime.ExtDebugMode.Max;
+    const defaultMode = runtime.ExtDebugMode?.Max ?? 0;
+    const compressionMode = runtime.ExtDebugMode?.Compression ?? defaultMode;
+    const modeEnum = options?.mode === 'min' ? compressionMode : defaultMode;
+    const modeKey = modeEnum;
 
     let cached = solverDebugCache.get(modeKey);
     if (!cached || cached.generation !== solverDebugGeneration) {

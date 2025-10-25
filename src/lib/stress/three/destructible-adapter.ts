@@ -240,8 +240,6 @@ export function buildSolverDebugHelper() {
 
     if (list.length === 0) {
       geometry.setDrawRange(0, 0);
-      positionAttr.count = 0;
-      colorAttr.count = 0;
       positionAttr.needsUpdate = true;
       colorAttr.needsUpdate = true;
       object.visible = visible !== false && false;
@@ -261,8 +259,6 @@ export function buildSolverDebugHelper() {
 
     positionAttr.needsUpdate = true;
     colorAttr.needsUpdate = true;
-    positionAttr.count = list.length * 2;
-    colorAttr.count = list.length * 2;
     geometry.setDrawRange(0, list.length * 2);
     geometry.computeBoundingSphere();
     object.visible = visible !== false && list.length > 0;
