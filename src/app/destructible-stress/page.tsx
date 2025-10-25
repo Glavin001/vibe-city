@@ -40,6 +40,7 @@ type SceneProps = {
   gravity: number;
   solverGravityEnabled: boolean;
   limitSinglesCollisions: boolean;
+  applyExcessForces: boolean;
   iteration: number;
   structureId: StressPresetId;
   mode: 'projectile' | 'cutter' | 'push';
@@ -120,6 +121,7 @@ function Scene({
   gravity,
   solverGravityEnabled,
   limitSinglesCollisions,
+  applyExcessForces,
   iteration,
   structureId,
   mode,
@@ -145,6 +147,8 @@ function Scene({
   useEffect(() => { solverGravityRef.current = solverGravityEnabled; }, [solverGravityEnabled]);
   const limitSinglesRef = useRef<boolean>(limitSinglesCollisions);
   useEffect(() => { limitSinglesRef.current = limitSinglesCollisions; }, [limitSinglesCollisions]);
+  const applyExcessForcesRef = useRef<boolean>(applyExcessForces);
+  useEffect(() => { applyExcessForcesRef.current = applyExcessForces; }, [applyExcessForces]);
   const isDev = true; //process.env.NODE_ENV !== 'production';
   useEffect(() => {
     physicsWireframeStateRef.current = physicsWireframe;
@@ -220,12 +224,14 @@ function Scene({
         },
         gravity: buildGravityRef.current,
         materialScale: materialScale,
+        applyExcessForces: applyExcessForcesRef.current,
       });
       if (!mounted) { core.dispose(); return; }
       coreRef.current = core;
 
       try { core.setSolverGravityEnabled(solverGravityRef.current); } catch {}
       try { core.setLimitSinglesCollisions(limitSinglesRef.current); } catch {}
+      try { core.setApplyExcessForces(applyExcessForcesRef.current); } catch {}
 
       const params = scenario.parameters as unknown as { fragmentGeometries?: THREE.BufferGeometry[] } | undefined;
       const { objects } = params?.fragmentGeometries?.length
@@ -312,6 +318,12 @@ function Scene({
     if (!core) return;
     try { core.setLimitSinglesCollisions(limitSinglesCollisions); } catch {}
   }, [limitSinglesCollisions]);
+
+  useEffect(() => {
+    const core = coreRef.current;
+    if (!core) return;
+    try { core.setApplyExcessForces(applyExcessForces); } catch {}
+  }, [applyExcessForces]);
 
   // Apply material scale to solver anytime it changes
   useEffect(() => {
@@ -507,7 +519,7 @@ function Scene({
   );
 }
 
-function HtmlOverlay({ debug, setDebug, physicsWireframe, setPhysicsWireframe, gravity, setGravity, solverGravityEnabled, setSolverGravityEnabled, limitSinglesCollisions, setLimitSinglesCollisions, mode, setMode, projType, setProjType, reset, projectileSpeed, setProjectileSpeed, projectileMass, setProjectileMass, materialScale, setMaterialScale, wallSpan, setWallSpan, wallHeight, setWallHeight, wallThickness, setWallThickness, wallSpanSeg, setWallSpanSeg, wallHeightSeg, setWallHeightSeg, wallLayers, setWallLayers, showAllDebugLines, setShowAllDebugLines, bondsXEnabled, setBondsXEnabled, bondsYEnabled, setBondsYEnabled, bondsZEnabled, setBondsZEnabled, structureId, setStructureId, structures, structureDescription, pushForce, setPushForce, }: { debug: boolean; setDebug: (v: boolean) => void; physicsWireframe: boolean; setPhysicsWireframe: (v: boolean) => void; gravity: number; setGravity: (v: number) => void; solverGravityEnabled: boolean; setSolverGravityEnabled: (v: boolean) => void; limitSinglesCollisions: boolean; setLimitSinglesCollisions: (v: boolean) => void; mode: 'projectile' | 'cutter' | 'push'; setMode: (v: 'projectile' | 'cutter' | 'push') => void; projType: 'ball' | 'box'; setProjType: (v: 'ball' | 'box') => void; reset: () => void; projectileSpeed: number; setProjectileSpeed: (v: number) => void; projectileMass: number; setProjectileMass: (v: number) => void; materialScale: number; setMaterialScale: (v: number) => void; wallSpan: number; setWallSpan: (v: number) => void; wallHeight: number; setWallHeight: (v: number) => void; wallThickness: number; setWallThickness: (v: number) => void; wallSpanSeg: number; setWallSpanSeg: (v: number) => void; wallHeightSeg: number; setWallHeightSeg: (v: number) => void; wallLayers: number; setWallLayers: (v: number) => void; showAllDebugLines: boolean; setShowAllDebugLines: (v: boolean) => void; bondsXEnabled: boolean; setBondsXEnabled: (v: boolean) => void; bondsYEnabled: boolean; setBondsYEnabled: (v: boolean) => void; bondsZEnabled: boolean; setBondsZEnabled: (v: boolean) => void; structureId: StressPresetId; setStructureId: (v: StressPresetId) => void; structures: typeof STRESS_PRESET_METADATA; structureDescription?: string; pushForce: number; setPushForce: (v: number) => void }) {
+function HtmlOverlay({ debug, setDebug, physicsWireframe, setPhysicsWireframe, gravity, setGravity, solverGravityEnabled, setSolverGravityEnabled, limitSinglesCollisions, setLimitSinglesCollisions, applyExcessForces, setApplyExcessForces, mode, setMode, projType, setProjType, reset, projectileSpeed, setProjectileSpeed, projectileMass, setProjectileMass, materialScale, setMaterialScale, wallSpan, setWallSpan, wallHeight, setWallHeight, wallThickness, setWallThickness, wallSpanSeg, setWallSpanSeg, wallHeightSeg, setWallHeightSeg, wallLayers, setWallLayers, showAllDebugLines, setShowAllDebugLines, bondsXEnabled, setBondsXEnabled, bondsYEnabled, setBondsYEnabled, bondsZEnabled, setBondsZEnabled, structureId, setStructureId, structures, structureDescription, pushForce, setPushForce, }: { debug: boolean; setDebug: (v: boolean) => void; physicsWireframe: boolean; setPhysicsWireframe: (v: boolean) => void; gravity: number; setGravity: (v: number) => void; solverGravityEnabled: boolean; setSolverGravityEnabled: (v: boolean) => void; limitSinglesCollisions: boolean; setLimitSinglesCollisions: (v: boolean) => void; applyExcessForces: boolean; setApplyExcessForces: (v: boolean) => void; mode: 'projectile' | 'cutter' | 'push'; setMode: (v: 'projectile' | 'cutter' | 'push') => void; projType: 'ball' | 'box'; setProjType: (v: 'ball' | 'box') => void; reset: () => void; projectileSpeed: number; setProjectileSpeed: (v: number) => void; projectileMass: number; setProjectileMass: (v: number) => void; materialScale: number; setMaterialScale: (v: number) => void; wallSpan: number; setWallSpan: (v: number) => void; wallHeight: number; setWallHeight: (v: number) => void; wallThickness: number; setWallThickness: (v: number) => void; wallSpanSeg: number; setWallSpanSeg: (v: number) => void; wallHeightSeg: number; setWallHeightSeg: (v: number) => void; wallLayers: number; setWallLayers: (v: number) => void; showAllDebugLines: boolean; setShowAllDebugLines: (v: boolean) => void; bondsXEnabled: boolean; setBondsXEnabled: (v: boolean) => void; bondsYEnabled: boolean; setBondsYEnabled: (v: boolean) => void; bondsZEnabled: boolean; setBondsZEnabled: (v: boolean) => void; structureId: StressPresetId; setStructureId: (v: StressPresetId) => void; structures: typeof STRESS_PRESET_METADATA; structureDescription?: string; pushForce: number; setPushForce: (v: number) => void }) {
   const isWallStructure = structureId === "wall" || structureId === "fracturedWall";
   return (
     <div style={{ position: 'absolute', top: 110, left: 16, zIndex: 10, display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 360 }}>
@@ -553,6 +565,10 @@ function HtmlOverlay({ debug, setDebug, physicsWireframe, setPhysicsWireframe, g
       <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#d1d5db', fontSize: 14 }}>
         <input type="checkbox" checked={limitSinglesCollisions} onChange={(e) => setLimitSinglesCollisions(e.target.checked)} style={{ accentColor: '#4da2ff', width: 16, height: 16 }} />
         Limit singles collisions (no SINGLE↔SINGLE)
+      </label>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#d1d5db', fontSize: 14 }}>
+        <input type="checkbox" checked={applyExcessForces} onChange={(e) => setApplyExcessForces(e.target.checked)} style={{ accentColor: '#4da2ff', width: 16, height: 16 }} />
+        Apply excess fracture forces
       </label>
       <div style={{ height: 8 }} />
       <div style={{ color: '#9ca3af', fontSize: 13 }}>Push</div>
@@ -648,6 +664,7 @@ export default function Page() {
   const [gravity, setGravity] = useState(-9.81);
   const [solverGravityEnabled, setSolverGravityEnabled] = useState(true);
   const [limitSinglesCollisions, setLimitSinglesCollisions] = useState(false);
+  const [applyExcessForces, setApplyExcessForces] = useState(true);
   const [iteration, setIteration] = useState(0);
   const [mode, setMode] = useState<'projectile' | 'cutter' | 'push'>('projectile');
   const [structureId, setStructureId] = useState<StressPresetId>('hut');
@@ -682,6 +699,8 @@ export default function Page() {
         setSolverGravityEnabled={setSolverGravityEnabled}
         limitSinglesCollisions={limitSinglesCollisions}
         setLimitSinglesCollisions={setLimitSinglesCollisions}
+        applyExcessForces={applyExcessForces}
+        setApplyExcessForces={setApplyExcessForces}
         mode={mode}
         setMode={setMode}
         pushForce={pushForce}
@@ -728,6 +747,7 @@ export default function Page() {
           gravity={gravity}
           solverGravityEnabled={solverGravityEnabled}
           limitSinglesCollisions={limitSinglesCollisions}
+          applyExcessForces={applyExcessForces}
           iteration={iteration}
           structureId={structureId}
           mode={mode}

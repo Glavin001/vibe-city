@@ -11,6 +11,7 @@ type BuildCoreOptions = {
   restitution?: number;
   materialScale?: number;
   limitSinglesCollisions?: boolean;
+  applyExcessForces?: boolean;
 };
 
 const isDev = true; //process.env.NODE_ENV !== 'production';
@@ -23,6 +24,7 @@ export async function buildDestructibleCore({
   restitution = 0.0,
   materialScale = 1.0,
   limitSinglesCollisions = false,
+  applyExcessForces = false,
 }: BuildCoreOptions): Promise<DestructibleCore> {
   await RAPIER.init();
   const runtime = await loadStressSolver();
@@ -175,11 +177,13 @@ export async function buildDestructibleCore({
   const projectiles: Array<{ bodyHandle: number; radius: number; type: 'ball'|'box'; mesh?: unknown }> = [];
   const removedBondIndices = new Set<number>();
   const pendingExternalForces: Array<{ nodeIndex:number; point: Vec3; force: Vec3 }> = [];
+  const pendingActorExcessForces = new Map<number, Array<{ force: Vec3; torque: Vec3 }>>();
 
   let safeFrames = 0;
   let warnedColliderMapEmptyOnce = false;
   let solverGravityEnabled = true;
   let limitSinglesCollisionsEnabled = !!limitSinglesCollisions;
+  let applyExcessForcesEnabled = !!applyExcessForces;
 
   // Helper: determine if a set of nodes contains any supports (mass=0 or chunk flag)
   const actorNodesContainSupport = (nodesList: number[]): boolean => {
@@ -195,6 +199,55 @@ export async function buildDestructibleCore({
     }
     return false;
   };
+
+  function computeActorLocalCenter(nodesList: number[]): Vec3 {
+    let sx = 0;
+    let sy = 0;
+    let sz = 0;
+    let weightSum = 0;
+    for (const nodeIndex of nodesList) {
+      const chunk = chunks[nodeIndex];
+      if (!chunk) continue;
+      const nodeMass = scenario.nodes[nodeIndex]?.mass ?? 1;
+      const weight = nodeMass > 0 ? nodeMass : 1;
+      sx += chunk.baseLocalOffset.x * weight;
+      sy += chunk.baseLocalOffset.y * weight;
+      sz += chunk.baseLocalOffset.z * weight;
+      weightSum += weight;
+    }
+    if (weightSum <= 0) {
+      const fallback = nodesList.length > 0 ? chunks[nodesList[0]] : null;
+      if (fallback) return { x: fallback.baseLocalOffset.x, y: fallback.baseLocalOffset.y, z: fallback.baseLocalOffset.z };
+      return { x: 0, y: 0, z: 0 };
+    }
+    return { x: sx / weightSum, y: sy / weightSum, z: sz / weightSum };
+  }
+
+  const IDENTITY_QUAT: Quat = { x: 0, y: 0, z: 0, w: 1 };
+
+  function isFiniteVec3(v?: Vec3 | null) {
+    if (!v) return false;
+    return Number.isFinite(v.x) && Number.isFinite(v.y) && Number.isFinite(v.z);
+  }
+
+  function isVectorNearlyZero(v: Vec3) {
+    return Math.abs(v.x) + Math.abs(v.y) + Math.abs(v.z) < 1e-5;
+  }
+
+  function rotateVecByQuat(v: Vec3, q: Quat): Vec3 {
+    return applyQuatToVec3(v, q);
+  }
+
+  function queueActorExcessForce(actorIndex: number, force: Vec3, torque: Vec3) {
+    if (!applyExcessForcesEnabled) return;
+    if (!isFiniteVec3(force) && !isFiniteVec3(torque)) return;
+    const f = isFiniteVec3(force) ? force : { x: 0, y: 0, z: 0 };
+    const t = isFiniteVec3(torque) ? torque : { x: 0, y: 0, z: 0 };
+    if (isVectorNearlyZero(f) && isVectorNearlyZero(t)) return;
+    const existing = pendingActorExcessForces.get(actorIndex) ?? [];
+    existing.push({ force: { x: f.x, y: f.y, z: f.z }, torque: { x: t.x, y: t.y, z: t.z } });
+    pendingActorExcessForces.set(actorIndex, existing);
+  }
 
   // Rebuild the collider → node mapping from current chunk state
   function rebuildColliderToNodeFromChunks() {
@@ -439,11 +492,29 @@ export async function buildDestructibleCore({
       const children = Array.isArray(evt?.children) ? evt.children : [];
       const parentEntry = actorMap.get(parentActorIndex);
       const parentBodyHandle = parentEntry?.bodyHandle ?? rootBody.handle;
+      const parentBody = world.getRigidBody(parentBodyHandle);
+      const parentBodyRotation = parentBody?.rotation();
+      const parentRotation = parentBodyRotation
+        ? ({ x: parentBodyRotation.x, y: parentBodyRotation.y, z: parentBodyRotation.z, w: parentBodyRotation.w } as Quat)
+        : IDENTITY_QUAT;
       for (const child of children) {
         if (!child || !Array.isArray(child.nodes) || child.nodes.length === 0) continue;
         // Update ownership: all nodes listed now belong to this child actor
         for (const n of child.nodes) nodeToActor.set(n, child.actorIndex);
         const isActorSupport = actorNodesContainSupport(child.nodes);
+        if (applyExcessForcesEnabled) {
+          try {
+            const localCenter = computeActorLocalCenter(child.nodes);
+            const excess = solver.getExcessForces(child.actorIndex, localCenter);
+            if (excess) {
+              const worldForce = rotateVecByQuat(excess.force ?? { x: 0, y: 0, z: 0 }, parentRotation);
+              const worldTorque = rotateVecByQuat(excess.torque ?? { x: 0, y: 0, z: 0 }, parentRotation);
+              queueActorExcessForce(child.actorIndex, worldForce, worldTorque);
+            }
+          } catch (err) {
+            if (isDev) console.warn('[Core] Failed to queue excess force', err);
+          }
+        }
         if (child.actorIndex === parentActorIndex) {
           // If the parent portion no longer contains supports, migrate it to a NEW dynamic body.
           if (!isActorSupport) {
@@ -564,6 +635,33 @@ export async function buildDestructibleCore({
         try { if (limitSinglesCollisionsEnabled) applyCollisionGroupsForBody(body, { enabled: limitSinglesCollisionsEnabled, groundBodyHandle: groundBody.handle }); } catch {}
       }
     }
+    applyPendingExcessForces();
+  }
+
+  function applyPendingExcessForces() {
+    if (!applyExcessForcesEnabled) {
+      pendingActorExcessForces.clear();
+      return;
+    }
+    if (pendingActorExcessForces.size === 0) return;
+    for (const [actorIndex, entries] of Array.from(pendingActorExcessForces.entries())) {
+      const actorEntry = actorMap.get(actorIndex);
+      if (!actorEntry) {
+        pendingActorExcessForces.delete(actorIndex);
+        continue;
+      }
+      const body = world.getRigidBody(actorEntry.bodyHandle);
+      if (!body) continue;
+      for (const entry of entries) {
+        if (isFiniteVec3(entry.force) && !isVectorNearlyZero(entry.force)) {
+          try { body.applyImpulse({ x: entry.force.x, y: entry.force.y, z: entry.force.z }, true); } catch {}
+        }
+        if (isFiniteVec3(entry.torque) && !isVectorNearlyZero(entry.torque)) {
+          try { body.applyTorqueImpulse({ x: entry.torque.x, y: entry.torque.y, z: entry.torque.z }, true); } catch {}
+        }
+      }
+      pendingActorExcessForces.delete(actorIndex);
+    }
   }
 
   function removeDisabledHandles() {
@@ -678,6 +776,10 @@ export async function buildDestructibleCore({
     stepSafe,
     setGravity,
     setSolverGravityEnabled,
+    setApplyExcessForces: (v: boolean) => {
+      applyExcessForcesEnabled = !!v;
+      if (!applyExcessForcesEnabled) pendingActorExcessForces.clear();
+    },
     setLimitSinglesCollisions: (v: boolean) => {
       limitSinglesCollisionsEnabled = !!v;
       try {
