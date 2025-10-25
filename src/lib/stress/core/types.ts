@@ -42,6 +42,11 @@ export type ChunkData = {
   bodyHandle: number | null;
   active: boolean;
   detached: boolean;
+  // Damage/health tracking for damageable chunks feature
+  maxHealth?: number;
+  health?: number;
+  pendingDamage?: number;
+  destroyed?: boolean;
   baseWorldPosition?: Vec3;
 };
 
@@ -94,6 +99,10 @@ export type DestructibleCore = {
   cutNodeBonds: (nodeIndex: number) => boolean;
   // External force application (non-contact force injection)
   applyExternalForce: (nodeIndex: number, worldPoint: Vec3, worldForce: Vec3) => void;
+  // Damageable chunks API (present when damage is enabled)
+  applyNodeDamage?: (nodeIndex: number, amount: number, reason?: string) => void;
+  getNodeHealth?: (nodeIndex: number) => { health: number; maxHealth: number; destroyed: boolean } | null;
+  damageEnabled?: boolean;
   dispose: () => void;
 };
 

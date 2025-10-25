@@ -1,6 +1,7 @@
 import RAPIER from '@dimforge/rapier3d-compat';
 import { loadStressSolver } from 'blast-stress-solver';
 import type { DestructibleCore, ScenarioDesc, ChunkData, Vec3, ProjectileSpawn, BondRef } from './types';
+import { DestructibleDamageSystem, type DamageOptions } from './damage';
 
 type BuildCoreOptions = {
   scenario: ScenarioDesc;
@@ -11,6 +12,8 @@ type BuildCoreOptions = {
   restitution?: number;
   materialScale?: number;
   limitSinglesCollisions?: boolean;
+  damage?: DamageOptions & { autoDetachOnDestroy?: boolean; autoCleanupPhysics?: boolean };
+  onNodeDestroyed?: (e: { nodeIndex: number; actorIndex: number; reason: 'impact'|'manual' }) => void;
 };
 
 const isDev = true; //process.env.NODE_ENV !== 'production';
@@ -23,6 +26,8 @@ export async function buildDestructibleCore({
   restitution = 0.0,
   materialScale = 1.0,
   limitSinglesCollisions = false,
+  damage,
+  onNodeDestroyed,
 }: BuildCoreOptions): Promise<DestructibleCore> {
   await RAPIER.init();
   const runtime = await loadStressSolver();
@@ -180,6 +185,20 @@ export async function buildDestructibleCore({
   let warnedColliderMapEmptyOnce = false;
   let solverGravityEnabled = true;
   let limitSinglesCollisionsEnabled = !!limitSinglesCollisions;
+  const damageOptions: Required<DamageOptions & { autoDetachOnDestroy?: boolean; autoCleanupPhysics?: boolean }> = {
+    enabled: !!damage?.enabled,
+    strengthPerVolume: damage?.strengthPerVolume ?? 10000,
+    kImpact: damage?.kImpact ?? 0.002,
+    enableSupportsDamage: damage?.enableSupportsDamage ?? false,
+    autoDetachOnDestroy: damage?.autoDetachOnDestroy ?? true,
+    autoCleanupPhysics: damage?.autoCleanupPhysics ?? true,
+    contactDamageScale: damage?.contactDamageScale ?? 1.0,
+    minImpulseThreshold: damage?.minImpulseThreshold ?? 50,
+    contactCooldownMs: damage?.contactCooldownMs ?? 120,
+    internalContactScale: damage?.internalContactScale ?? 0.5,
+  } as const;
+
+  const damageSystem = new DestructibleDamageSystem({ chunks, scenario, materialScale, options: damageOptions });
 
   // Helper: determine if a set of nodes contains any supports (mass=0 or chunk flag)
   const actorNodesContainSupport = (nodesList: number[]): boolean => {
@@ -281,7 +300,7 @@ export async function buildDestructibleCore({
       return;
     }
 
-    // Drain contact forces → solver
+    // Drain contact forces → solver and damage
     eventQueue.drainContactForceEvents((ev: { totalForce: () => {x:number;y:number;z:number}; totalForceMagnitude: () => number; collider1: () => number; collider2: () => number; worldContactPoint?: () => {x:number;y:number;z:number}; worldContactPoint2?: () => {x:number;y:number;z:number} }) => {
       const tf = ev.totalForce?.();
       const mag = ev.totalForceMagnitude?.();
@@ -312,9 +331,15 @@ export async function buildDestructibleCore({
       //   add(h2, +1, tf, p);
       // }
 
+      // Impact damage for external contacts
+      const dt = world.timestep
+        ?? world.integrationParameters?.dt
+        ?? (1 / 60);
+
       if (h1 != null) {
         if (node1 != null && node2 == null) {
           addForceForCollider(h1, +1, tf, p1 ?? p2);
+          try { if (damageSystem.isEnabled()) damageSystem.onImpact(node1, mag ?? 0, dt); } catch {}
         }
       } else {
         console.warn('drainContactForceEvents', ev, 'h1 is null');
@@ -322,6 +347,11 @@ export async function buildDestructibleCore({
       if (h2 != null) {
         if (node2 != null && node1 == null) {
           addForceForCollider(h2, -1, tf, p2 ?? p1);
+          try { if (damageSystem.isEnabled()) damageSystem.onImpact(node2, mag ?? 0, dt); } catch {}
+        }
+        // Internal contacts: both sides are our structure
+        if (node1 != null && node2 != null) {
+          try { if (damageSystem.isEnabled()) damageSystem.onInternalImpact(node1, node2, mag ?? 0, dt); } catch {}
         }
       } else {
         console.warn('drainContactForceEvents', ev, 'h2 is null');
@@ -359,6 +389,14 @@ export async function buildDestructibleCore({
             { x: localForce.x, y: localForce.y, z: localForce.z },
             runtime.ExtForceMode.Force
           );
+
+          // Map external push impulse to damage as well
+          try {
+            if (damageSystem.isEnabled()) {
+              const fmag = Math.hypot(ef.force.x, ef.force.y, ef.force.z);
+              damageSystem.onImpact(ef.nodeIndex, fmag, dt);
+            }
+          } catch {}
         }
       } catch (e) {
         if (isDev) console.error('[Core] addForceForCollider failed', e);
@@ -391,10 +429,48 @@ export async function buildDestructibleCore({
         safeFrames = Math.max(safeFrames, 2);
       }
     }
+
+    // Apply accumulated damage and process destructions (after solver update)
+    if (damageSystem.isEnabled()) {
+      const dt = world.timestep
+        ?? world.integrationParameters?.dt
+        ?? (1 / 60);
+      damageSystem.tick(dt, (nodeIndex, reason) => {
+        try {
+          handleNodeDestroyed(nodeIndex, reason as 'impact'|'manual');
+        } catch (e) {
+          if (isDev) console.error('[Core] handleNodeDestroyed failed', e);
+        }
+      });
+    }
   }
 
   function stepSafe() {
-    try { world.step(); } catch {}
+    // Use eventQueue in safe step so we can still observe contact forces (for damage)
+    try { world.step(eventQueue); } catch {}
+    // Drain contact forces for damage in safe mode (skip solver external force injection)
+    try {
+      const dt = world.timestep
+        ?? world.integrationParameters?.dt
+        ?? (1 / 60);
+      eventQueue.drainContactForceEvents((ev: { totalForce: () => {x:number;y:number;z:number}; totalForceMagnitude: () => number; collider1: () => number; collider2: () => number; worldContactPoint?: () => {x:number;y:number;z:number}; worldContactPoint2?: () => {x:number;y:number;z:number} }) => {
+        const mag = ev.totalForceMagnitude?.();
+        if (!(mag > 0)) return;
+        const h1 = ev.collider1?.();
+        const h2 = ev.collider2?.();
+        const node1 = colliderToNode.has(h1) ? colliderToNode.get(h1) : undefined;
+        const node2 = colliderToNode.has(h2) ? colliderToNode.get(h2) : undefined;
+        if (damageSystem.isEnabled()) {
+          if (node1 != null && node2 == null) {
+            try { damageSystem.onImpact(node1, mag ?? 0, dt); } catch {}
+          } else if (node2 != null && node1 == null) {
+            try { damageSystem.onImpact(node2, mag ?? 0, dt); } catch {}
+          } else if (node1 != null && node2 != null) {
+            try { damageSystem.onInternalImpact(node1, node2, mag ?? 0, dt); } catch {}
+          }
+        }
+      });
+    } catch {}
     // Drain any queued external forces even in safe mode
     if (pendingExternalForces.length > 0) {
       try {
@@ -418,6 +494,14 @@ export async function buildDestructibleCore({
             { x: localForce.x, y: localForce.y, z: localForce.z },
             runtime.ExtForceMode.Force
           );
+
+          // Damage from push impulse in safe mode as well
+          try {
+            if (damageSystem.isEnabled()) {
+              const fmag = Math.hypot(ef.force.x, ef.force.y, ef.force.z);
+              damageSystem.onImpact(ef.nodeIndex, fmag, dt);
+            }
+          } catch {}
         }
       } catch {}
       pendingExternalForces.splice(0, pendingExternalForces.length);
@@ -425,6 +509,17 @@ export async function buildDestructibleCore({
     applyPendingSpawns();
     applyPendingMigrations();
     removeDisabledHandles();
+    // Apply damage in safe mode too to avoid missing destructions
+    if (damageSystem.isEnabled()) {
+      try {
+        const dt = world.timestep
+          ?? world.integrationParameters?.dt
+          ?? (1 / 60);
+        damageSystem.tick(dt, (nodeIndex, reason) => {
+          try { handleNodeDestroyed(nodeIndex, reason as 'impact'|'manual'); } catch {}
+        });
+      } catch {}
+    }
     if (safeFrames > 0) safeFrames -= 1;
   }
 
@@ -524,6 +619,7 @@ export async function buildDestructibleCore({
     // Migrate colliders to new bodies
     if (pendingColliderMigrations.length > 0) {
       const jobs = pendingColliderMigrations.splice(0, pendingColliderMigrations.length);
+      const createdCountByBody = new Map<number, number>();
       for (const mig of jobs) {
         const seg = chunks[mig.nodeIndex];
         if (!seg) continue;
@@ -534,6 +630,8 @@ export async function buildDestructibleCore({
           disabledCollidersToRemove.add(seg.colliderHandle);
           seg.colliderHandle = null;
         }
+        // Skip creating colliders for destroyed segments (standardized path)
+        if (seg.destroyed) continue;
         const halfX = seg.size.x * 0.5;
         const halfY = seg.size.y * 0.5;
         const halfZ = seg.size.z * 0.5;
@@ -560,9 +658,11 @@ export async function buildDestructibleCore({
         seg.colliderHandle = col.handle;
         seg.detached = true;
         colliderToNode.set(col.handle, seg.nodeIndex);
+        createdCountByBody.set(body.handle, (createdCountByBody.get(body.handle) ?? 0) + 1);
         // Update groups after migration; collider count may be 1
         try { if (limitSinglesCollisionsEnabled) applyCollisionGroupsForBody(body, { enabled: limitSinglesCollisionsEnabled, groundBodyHandle: groundBody.handle }); } catch {}
       }
+      // Do not proactively remove bodies here; allow existing sweeps to handle
     }
   }
 
@@ -660,6 +760,44 @@ export async function buildDestructibleCore({
     try { solver.destroy?.(); } catch {}
   }
 
+  function handleNodeDestroyed(nodeIndex: number, reason: 'impact'|'manual') {
+    const seg = chunks[nodeIndex];
+    if (!seg) return;
+    // Ensure flags
+    seg.destroyed = true;
+    if (seg.health != null) seg.health = 0;
+
+    // Detach bonds in solver
+    if (damageOptions.autoDetachOnDestroy) {
+      try { cutNodeBonds(nodeIndex); } catch {}
+    }
+
+    // Cleanup physics collider and possibly body
+    if (damageOptions.autoCleanupPhysics) {
+      try {
+        // Disable/remove collider (let existing cleanup pass remove it); DO NOT remove bodies here
+        if (seg.colliderHandle != null) {
+          const oldC = world.getCollider(seg.colliderHandle);
+          if (oldC) oldC.setEnabled(false);
+          colliderToNode.delete(seg.colliderHandle);
+          disabledCollidersToRemove.add(seg.colliderHandle);
+          seg.colliderHandle = null;
+        }
+      } catch (e) {
+        if (isDev) console.warn('[Core] cleanup on destroy failed', e);
+      }
+    }
+
+    // Notify
+    try {
+      const { actorIndex } = actorBodyForNode(nodeIndex);
+      onNodeDestroyed?.({ nodeIndex, actorIndex, reason });
+    } catch {}
+
+    // Step safely for a couple frames
+    safeFrames = Math.max(safeFrames, 2);
+  }
+
   return {
     world,
     eventQueue,
@@ -696,6 +834,12 @@ export async function buildDestructibleCore({
     cutBond,
     cutNodeBonds,
     applyExternalForce,
+    // Damage API
+    applyNodeDamage: damageSystem.isEnabled() ? (nodeIndex: number, amount: number) => { try { damageSystem.applyDirect(nodeIndex, amount); } catch {} } : undefined,
+    getNodeHealth: damageSystem.isEnabled() ? (nodeIndex: number) => {
+      try { return damageSystem.getHealth(nodeIndex); } catch { return null; }
+    } : undefined,
+    damageEnabled: damageSystem.isEnabled(),
     dispose,
   };
 }
