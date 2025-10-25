@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { GPUComputationRenderer } from "three/examples/jsm/misc/GPUComputationRenderer.js";
-import SimplexNoise from "simplex-noise";
+import { createNoise2D } from "simplex-noise";
 
 const SIM_SIZE = 512;
 const TERRAIN_SIZE = 180;
@@ -789,16 +789,16 @@ function makeHeightmap(
   worldHeight: number,
   heightScale: number,
 ) {
-  const simplex = new SimplexNoise("gpu-debris");
+  const noise2D = createNoise2D(makeSeededRandom("gpu-debris"));
   const data = new Float32Array(width * height);
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
       const nx = x / width - 0.5;
       const ny = y / height - 0.5;
       let e =
-        1.0 * simplex.noise2D(nx * 0.7, ny * 0.7) +
-        0.5 * simplex.noise2D(nx * 1.4 + 100.0, ny * 1.4 + 100.0) +
-        0.25 * simplex.noise2D(nx * 2.8 + 200.0, ny * 2.8 + 200.0);
+        1.0 * noise2D(nx * 0.7, ny * 0.7) +
+        0.5 * noise2D(nx * 1.4 + 100.0, ny * 1.4 + 100.0) +
+        0.25 * noise2D(nx * 2.8 + 200.0, ny * 2.8 + 200.0);
       e = e / (1.0 + 0.5 + 0.25);
       const heightValue = e * 0.5 + 0.5;
       data[x + y * width] = heightValue;
@@ -841,4 +841,22 @@ function applyHeightToPlane(
     }
   }
   pos.needsUpdate = true;
+}
+
+function makeSeededRandom(seed: string) {
+  let hash = 1779033703 ^ seed.length;
+  for (let i = 0; i < seed.length; i += 1) {
+    hash = Math.imul(hash ^ seed.charCodeAt(i), 3432918353);
+    hash = (hash << 13) | (hash >>> 19);
+  }
+  return mulberry32(hash >>> 0);
+}
+
+function mulberry32(seed: number) {
+  return function random() {
+    let t = (seed += 0x6d2b79f5);
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
 }
