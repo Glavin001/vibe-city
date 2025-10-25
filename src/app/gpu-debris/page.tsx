@@ -275,16 +275,16 @@ export default function GPUDebrisPage() {
 
       controls.update();
 
-      posUniforms.uSpawnCountA.value = 0;
-      posUniforms.uSpawnCountB.value = 0;
-      velUniforms.uSpawnCountA.value = 0;
-      velUniforms.uSpawnCountB.value = 0;
-
       velUniforms.uTime.value = now;
       velUniforms.uDelta.value = dt;
       posUniforms.uDelta.value = dt;
 
       gpu.compute();
+
+      posUniforms.uSpawnCountA.value = 0;
+      posUniforms.uSpawnCountB.value = 0;
+      velUniforms.uSpawnCountA.value = 0;
+      velUniforms.uSpawnCountB.value = 0;
 
       const currPos = gpu.getCurrentRenderTarget(posVar).texture;
       const currVel = gpu.getCurrentRenderTarget(velVar).texture;
