@@ -158,6 +158,14 @@ export async function buildDestructibleCore({
   const pendingBallSpawns: ProjectileSpawn[] = [];
   const projectiles: Array<{ bodyHandle: number; radius: number; type: 'ball'|'box'; mesh?: unknown }> = [];
   const removedBondIndices = new Set<number>();
+  type SolverDebugLine = { p0: Vec3; p1: Vec3; color0: number; color1: number };
+  let solverDebugGeneration = 0;
+  const solverDebugCache = new Map<number, { lines: SolverDebugLine[]; generation: number }>();
+
+  function bumpSolverDebugGeneration() {
+    solverDebugGeneration += 1;
+    solverDebugCache.clear();
+  }
   const pendingExternalForces: Array<{ nodeIndex:number; point: Vec3; force: Vec3 }> = [];
 
   let safeFrames = 0;
@@ -342,6 +350,7 @@ export async function buildDestructibleCore({
       } catch {}
     }
     solver.update();
+    bumpSolverDebugGeneration();
     if (hasExternalForces && process.env.NODE_ENV !== 'production') {
       try { ((window as unknown as { debugStressSolver?: { printSolver?: () => unknown } }).debugStressSolver)?.printSolver?.(); } catch {}
     }
@@ -354,6 +363,7 @@ export async function buildDestructibleCore({
         queueSplitResults(splitEvents);
         safeFrames = Math.max(safeFrames, 2);
       }
+      bumpSolverDebugGeneration();
     }
   }
 
@@ -422,6 +432,7 @@ export async function buildDestructibleCore({
         actorMap.set(child.actorIndex, { bodyHandle: parentBodyHandle });
       }
     }
+    bumpSolverDebugGeneration();
   }
 
   function applyPendingSpawns() {
@@ -550,9 +561,37 @@ export async function buildDestructibleCore({
     }
   }
 
-  function getSolverDebugLines() {
-    const lines = solver.fillDebugRender({ mode: runtime.ExtDebugMode.Max, scale: 1.0 }) || [];
-    return lines as Array<{ p0: Vec3; p1: Vec3; color0: number; color1: number }>;
+  function getSolverDebugLines(options?: { mode?: 'min' | 'max'; sampleStep?: number; maxLines?: number }) {
+    const modeEnum = options?.mode === 'min' ? runtime.ExtDebugMode.Min : runtime.ExtDebugMode.Max;
+    const modeKey = modeEnum ?? runtime.ExtDebugMode.Max;
+
+    let cached = solverDebugCache.get(modeKey);
+    if (!cached || cached.generation !== solverDebugGeneration) {
+      const lines = solver.fillDebugRender({ mode: modeKey, scale: 1.0 }) || [];
+      cached = {
+        lines: (lines as SolverDebugLine[]).slice(),
+        generation: solverDebugGeneration,
+      };
+      solverDebugCache.set(modeKey, cached);
+    }
+
+    const base = cached.lines;
+    const sampleStep = Math.max(1, Math.floor(options?.sampleStep ?? 1));
+    const maxLinesOption = options?.maxLines;
+    const maxLines = typeof maxLinesOption === 'number' && Number.isFinite(maxLinesOption) && maxLinesOption > 0
+      ? Math.floor(maxLinesOption)
+      : null;
+
+    if (sampleStep === 1 && (maxLines == null || maxLines >= base.length)) {
+      return base;
+    }
+
+    const filtered: SolverDebugLine[] = [];
+    const limit = maxLines ?? Number.POSITIVE_INFINITY;
+    for (let i = 0; i < base.length && filtered.length < limit; i += sampleStep) {
+      filtered.push(base[i]);
+    }
+    return filtered;
   }
 
   function applyExternalForce(nodeIndex: number, worldPoint: Vec3, worldForce: Vec3) {
@@ -603,6 +642,7 @@ export async function buildDestructibleCore({
         safeFrames = Math.max(safeFrames, 2);
       }
       applied = true;
+      bumpSolverDebugGeneration();
     } catch (e) {
       if (process.env.NODE_ENV !== 'production') console.warn('[Core] cutBond failed', bondIndex, e);
     }

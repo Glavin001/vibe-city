@@ -1,6 +1,122 @@
 import * as THREE from 'three';
 import type { DestructibleCore } from '@/lib/stress/core/types';
 
+type SolverDebugLine = {
+  p0: { x: number; y: number; z: number };
+  p1: { x: number; y: number; z: number };
+  color0: number;
+  color1: number;
+};
+
+type PoseData = {
+  tx: number;
+  ty: number;
+  tz: number;
+  qx: number;
+  qy: number;
+  qz: number;
+  qw: number;
+};
+
+type SpatialCacheEntry = {
+  cellSize: number;
+  nodePositions: Float32Array;
+  nodeActor: Int32Array;
+  nodeIndices: Int32Array;
+  chunkLookup: Map<string, number[]>;
+  candidateNodes: number[];
+};
+
+const spatialCache = new WeakMap<DestructibleCore, SpatialCacheEntry>();
+
+function quantizeIndex(value: number, cellSize: number) {
+  return Math.round(value / cellSize);
+}
+
+function makeSpatialKey(ix: number, iy: number, iz: number) {
+  return `${ix}|${iy}|${iz}`;
+}
+
+function spatialKeyFromVec(vec: { x: number; y: number; z: number }, cellSize: number) {
+  return makeSpatialKey(quantizeIndex(vec.x, cellSize), quantizeIndex(vec.y, cellSize), quantizeIndex(vec.z, cellSize));
+}
+
+function ensureSpatialCache(core: DestructibleCore): SpatialCacheEntry {
+  const chunkCount = core.chunks.length;
+  let maxNodeIndex = -1;
+  let minExtent = Infinity;
+  for (let i = 0; i < chunkCount; i += 1) {
+    const chunk = core.chunks[i];
+    if (!chunk) continue;
+    if (chunk.nodeIndex > maxNodeIndex) maxNodeIndex = chunk.nodeIndex;
+    const longestExtent = Math.max(chunk.size.x, chunk.size.y, chunk.size.z);
+    if (longestExtent > 0 && longestExtent < minExtent) minExtent = longestExtent;
+  }
+  const arrayLength = Math.max(maxNodeIndex + 1, chunkCount);
+  let entry = spatialCache.get(core);
+  if (!entry) {
+    entry = {
+      cellSize: 0.5,
+      nodePositions: new Float32Array(arrayLength * 3),
+      nodeActor: new Int32Array(arrayLength),
+      nodeIndices: new Int32Array(chunkCount),
+      chunkLookup: new Map<string, number[]>(),
+      candidateNodes: [],
+    };
+    spatialCache.set(core, entry);
+  }
+
+  if (entry.nodePositions.length !== arrayLength * 3) {
+    entry.nodePositions = new Float32Array(arrayLength * 3);
+  }
+  if (entry.nodeActor.length !== arrayLength) {
+    entry.nodeActor = new Int32Array(arrayLength);
+  }
+  if (entry.nodeIndices.length !== chunkCount) {
+    entry.nodeIndices = new Int32Array(chunkCount);
+  }
+
+  entry.nodeActor.fill(-1);
+  entry.chunkLookup.clear();
+  const cellSize = Math.max(0.1, Math.min(1.0, Number.isFinite(minExtent) ? minExtent * 0.5 : 0.5));
+  entry.cellSize = cellSize;
+  for (let i = 0; i < chunkCount; i += 1) {
+    const chunk = core.chunks[i];
+    if (!chunk) continue;
+    const nodeIndex = chunk.nodeIndex;
+    entry.nodeIndices[i] = nodeIndex;
+    const base = nodeIndex * 3;
+    entry.nodePositions[base] = chunk.baseLocalOffset.x;
+    entry.nodePositions[base + 1] = chunk.baseLocalOffset.y;
+    entry.nodePositions[base + 2] = chunk.baseLocalOffset.z;
+    const key = spatialKeyFromVec(chunk.baseLocalOffset, cellSize);
+    const bucket = entry.chunkLookup.get(key);
+    if (bucket) bucket.push(nodeIndex); else entry.chunkLookup.set(key, [nodeIndex]);
+  }
+
+  return entry;
+}
+
+function applyPose(point: { x: number; y: number; z: number }, pose: PoseData) {
+  const px = point.x;
+  const py = point.y;
+  const pz = point.z;
+  const { qx, qy, qz, qw, tx, ty, tz } = pose;
+  if (qx === 0 && qy === 0 && qz === 0) {
+    return { x: px + tx, y: py + ty, z: pz + tz };
+  }
+  const uvx = qy * pz - qz * py;
+  const uvy = qz * px - qx * pz;
+  const uvz = qx * py - qy * px;
+  const uuvx = qy * uvz - qz * uvy;
+  const uuvy = qz * uvx - qx * uvz;
+  const uuvz = qx * uvy - qy * uvx;
+  const rx = px + 2 * (qw * uvx + uuvx);
+  const ry = py + 2 * (qw * uvy + uuvy);
+  const rz = pz + 2 * (qw * uvz + uuvz);
+  return { x: rx + tx, y: ry + ty, z: rz + tz };
+}
+
 export function buildChunkMeshes(core: DestructibleCore, materials?: { deck?: THREE.Material; support?: THREE.Material }) {
   const deckMat = (materials?.deck ?? new THREE.MeshStandardMaterial({ color: 0x4b6fe8, roughness: 0.4, metalness: 0.45 }));
   const supportMat = (materials?.support ?? new THREE.MeshStandardMaterial({ color: 0x2f3e56, roughness: 0.6, metalness: 0.25 }));
@@ -88,29 +204,70 @@ export function updateChunkMeshes(core: DestructibleCore, meshes: THREE.Mesh[]) 
 
 export function buildSolverDebugHelper() {
   const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(0), 3));
-  geometry.setAttribute('color', new THREE.BufferAttribute(new Float32Array(0), 3));
+  let capacity = 0;
+  let positions = new Float32Array(0);
+  let colors = new Float32Array(0);
+  let positionAttr = new THREE.BufferAttribute(positions, 3);
+  let colorAttr = new THREE.BufferAttribute(colors, 3);
+  positionAttr.setUsage(THREE.DynamicDrawUsage);
+  colorAttr.setUsage(THREE.DynamicDrawUsage);
+  geometry.setAttribute('position', positionAttr);
+  geometry.setAttribute('color', colorAttr);
   const material = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.95, depthTest: false });
   const object = new THREE.LineSegments(geometry, material);
   object.visible = false;
-  function update(lines: Array<{ p0:{x:number;y:number;z:number}; p1:{x:number;y:number;z:number}; color0:number; color1:number }>, visible: boolean) {
+
+  function ensureCapacity(lineCount: number) {
+    const required = lineCount * 6;
+    if (required <= capacity) return;
+    let next = capacity > 0 ? capacity : 256;
+    while (next < required) next *= 2;
+    capacity = next;
+    positions = new Float32Array(capacity);
+    colors = new Float32Array(capacity);
+    positionAttr = new THREE.BufferAttribute(positions, 3);
+    positionAttr.setUsage(THREE.DynamicDrawUsage);
+    colorAttr = new THREE.BufferAttribute(colors, 3);
+    colorAttr.setUsage(THREE.DynamicDrawUsage);
+    geometry.setAttribute('position', positionAttr);
+    geometry.setAttribute('color', colorAttr);
+  }
+
+  function update(lines: SolverDebugLine[], visible: boolean) {
     const list = Array.isArray(lines) ? lines : [];
-    const positions = new Float32Array(list.length * 2 * 3);
-    const colors = new Float32Array(list.length * 2 * 3);
+    ensureCapacity(list.length);
     const colorFrom = (u24: number) => ({ r: ((u24 >> 16) & 0xff) / 255, g: ((u24 >> 8) & 0xff) / 255, b: (u24 & 0xff) / 255 });
-    list.forEach((line, index: number) => {
+
+    if (list.length === 0) {
+      geometry.setDrawRange(0, 0);
+      positionAttr.count = 0;
+      colorAttr.count = 0;
+      positionAttr.needsUpdate = true;
+      colorAttr.needsUpdate = true;
+      object.visible = visible !== false && false;
+      return;
+    }
+
+    for (let index = 0; index < list.length; index += 1) {
+      const line = list[index];
       const base = index * 6;
       positions[base] = line.p0.x; positions[base + 1] = line.p0.y; positions[base + 2] = line.p0.z;
       positions[base + 3] = line.p1.x; positions[base + 4] = line.p1.y; positions[base + 5] = line.p1.z;
-      const c0 = colorFrom(line.color0); const c1 = colorFrom(line.color1 ?? line.color0);
+      const c0 = colorFrom(line.color0);
+      const c1 = colorFrom(line.color1 ?? line.color0);
       colors[base] = c0.r; colors[base + 1] = c0.g; colors[base + 2] = c0.b;
       colors[base + 3] = c1.r; colors[base + 4] = c1.g; colors[base + 5] = c1.b;
-    });
-    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    }
+
+    positionAttr.needsUpdate = true;
+    colorAttr.needsUpdate = true;
+    positionAttr.count = list.length * 2;
+    colorAttr.count = list.length * 2;
+    geometry.setDrawRange(0, list.length * 2);
     geometry.computeBoundingSphere();
-    object.visible = visible !== false;
+    object.visible = visible !== false && list.length > 0;
   }
+
   return { object, update };
 }
 
@@ -141,64 +298,113 @@ export function updateProjectileMeshes(core: DestructibleCore, root: THREE.Group
 
 export function computeWorldDebugLines(
   core: DestructibleCore,
-  lines: Array<{ p0: { x:number; y:number; z:number }; p1: { x:number; y:number; z:number }; color0: number; color1: number }>
+  lines: SolverDebugLine[],
+  target: SolverDebugLine[] = []
 ) {
-  // Build nodeIndex -> actorIndex map from solver
-  const nodeToActor = new Map<number, number>();
+  const out = target;
+  out.length = 0;
+  if (!Array.isArray(lines) || lines.length === 0) {
+    return out;
+  }
+
+  const cache = ensureSpatialCache(core);
+  const { nodeActor, nodePositions, nodeIndices, chunkLookup, candidateNodes, cellSize } = cache;
+
   try {
-    const actors = (core.solver as unknown as { actors: () => Array<{ actorIndex:number; nodes:number[] }> }).actors?.() ?? [];
-    for (const a of actors) {
-      const nodes = Array.isArray(a.nodes) ? a.nodes : [];
-      for (const n of nodes) nodeToActor.set(n, a.actorIndex);
+    const actors = (core.solver as unknown as { actors: () => Array<{ actorIndex: number; nodes: number[] }> }).actors?.() ?? [];
+    for (const actor of actors) {
+      const nodes = Array.isArray(actor?.nodes) ? actor.nodes : [];
+      for (const nodeIndex of nodes) {
+        if (nodeIndex >= 0 && nodeIndex < nodeActor.length) {
+          nodeActor[nodeIndex] = actor.actorIndex;
+        }
+      }
     }
   } catch {}
 
-  // Prepare actorIndex -> {t, q} transform lookup
-  const actorPose = new Map<number, { t: THREE.Vector3; q: THREE.Quaternion }>();
+  const actorPose = new Map<number, PoseData>();
   for (const [actorIndex, { bodyHandle }] of Array.from(core.actorMap.entries())) {
     const body = core.world.getRigidBody(bodyHandle);
     if (!body) continue;
     const tr = body.translation();
     const rot = body.rotation();
-    actorPose.set(
-      actorIndex,
-      { t: new THREE.Vector3(tr.x, tr.y, tr.z), q: new THREE.Quaternion(rot.x, rot.y, rot.z, rot.w) }
-    );
+    actorPose.set(actorIndex, {
+      tx: tr.x,
+      ty: tr.y,
+      tz: tr.z,
+      qx: rot.x,
+      qy: rot.y,
+      qz: rot.z,
+      qw: rot.w,
+    });
   }
-  // Fallback root pose if actor pose missing
-  const rootBody = core.world.getRigidBody(core.rootBodyHandle);
-  const rootPose = rootBody
-    ? { t: new THREE.Vector3(rootBody.translation().x, rootBody.translation().y, rootBody.translation().z), q: new THREE.Quaternion(rootBody.rotation().x, rootBody.rotation().y, rootBody.rotation().z, rootBody.rotation().w) }
-    : { t: new THREE.Vector3(), q: new THREE.Quaternion() };
 
-  // Helper: determine owning actor for a line by nearest node to its midpoint
-  function owningActorIndexForLine(p0: {x:number;y:number;z:number}, p1: {x:number;y:number;z:number}): number | undefined {
+  const rootBody = core.world.getRigidBody(core.rootBodyHandle);
+  const rootPose: PoseData = rootBody
+    ? {
+        tx: rootBody.translation().x,
+        ty: rootBody.translation().y,
+        tz: rootBody.translation().z,
+        qx: rootBody.rotation().x,
+        qy: rootBody.rotation().y,
+        qz: rootBody.rotation().z,
+        qw: rootBody.rotation().w,
+      }
+    : { tx: 0, ty: 0, tz: 0, qx: 0, qy: 0, qz: 0, qw: 1 };
+
+  const nodePositionsArray = nodePositions;
+
+  function owningActorIndexForLine(p0: { x: number; y: number; z: number }, p1: { x: number; y: number; z: number }) {
     const mx = (p0.x + p1.x) * 0.5;
     const my = (p0.y + p1.y) * 0.5;
     const mz = (p0.z + p1.z) * 0.5;
+    candidateNodes.length = 0;
+    const ix = quantizeIndex(mx, cellSize);
+    const iy = quantizeIndex(my, cellSize);
+    const iz = quantizeIndex(mz, cellSize);
+    for (let dx = -1; dx <= 1; dx += 1) {
+      for (let dy = -1; dy <= 1; dy += 1) {
+        for (let dz = -1; dz <= 1; dz += 1) {
+          const key = makeSpatialKey(ix + dx, iy + dy, iz + dz);
+          const bucket = chunkLookup.get(key);
+          if (bucket) {
+            for (let i = 0; i < bucket.length; i += 1) candidateNodes.push(bucket[i]);
+          }
+        }
+      }
+    }
+    if (candidateNodes.length === 0) {
+      for (let i = 0; i < nodeIndices.length; i += 1) {
+        candidateNodes.push(nodeIndices[i]);
+      }
+    }
+
     let bestNode = -1;
     let bestD2 = Infinity;
-    for (let i = 0; i < core.chunks.length; i++) {
-      const c = core.chunks[i];
-      const dx = c.baseLocalOffset.x - mx;
-      const dy = c.baseLocalOffset.y - my;
-      const dz = c.baseLocalOffset.z - mz;
+    for (let i = 0; i < candidateNodes.length; i += 1) {
+      const nodeIndex = candidateNodes[i];
+      if (nodeIndex < 0 || nodeIndex * 3 + 2 >= nodePositionsArray.length) continue;
+      const base = nodeIndex * 3;
+      const dx = nodePositionsArray[base] - mx;
+      const dy = nodePositionsArray[base + 1] - my;
+      const dz = nodePositionsArray[base + 2] - mz;
       const d2 = dx * dx + dy * dy + dz * dz;
-      if (d2 < bestD2) { bestD2 = d2; bestNode = i; }
+      if (d2 < bestD2) {
+        bestD2 = d2;
+        bestNode = nodeIndex;
+      }
     }
     if (bestNode < 0) return undefined;
-    return nodeToActor.get(bestNode);
+    const actorIndex = nodeActor[bestNode];
+    return actorIndex >= 0 ? actorIndex : undefined;
   }
 
-  // Transform each line by its owning actor pose (fallback to root)
-  const out: Array<{ p0:{x:number;y:number;z:number}; p1:{x:number;y:number;z:number}; color0:number; color1:number }> = [];
   for (const line of lines) {
-    const idx = owningActorIndexForLine(line.p0, line.p1);
-    const pose = (idx != null && actorPose.get(idx)) || rootPose;
-
-    const v0 = new THREE.Vector3(line.p0.x, line.p0.y, line.p0.z).applyQuaternion(pose.q).add(pose.t);
-    const v1 = new THREE.Vector3(line.p1.x, line.p1.y, line.p1.z).applyQuaternion(pose.q).add(pose.t);
-    out.push({ p0: { x: v0.x, y: v0.y, z: v0.z }, p1: { x: v1.x, y: v1.y, z: v1.z }, color0: line.color0, color1: line.color1 });
+    const actorIndex = owningActorIndexForLine(line.p0, line.p1);
+    const pose = (actorIndex != null && actorPose.get(actorIndex)) || rootPose;
+    const p0 = applyPose(line.p0, pose);
+    const p1 = applyPose(line.p1, pose);
+    out.push({ p0, p1, color0: line.color0, color1: line.color1 });
   }
   return out;
 }

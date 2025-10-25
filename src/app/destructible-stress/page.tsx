@@ -36,6 +36,8 @@ type SceneProps = {
   physicsWireframe: boolean;
   gravity: number;
   solverGravityEnabled: boolean;
+  debugDetailLevel: 'critical' | 'reduced' | 'full';
+  debugUpdateIntervalMs: number;
   iteration: number;
   structureId: StressPresetId;
   mode: 'projectile' | 'cutter' | 'push';
@@ -108,12 +110,36 @@ function Scene({
   debug,
   physicsWireframe,
   gravity,
-  solverGravityEnabled, iteration, structureId, mode, pushForce, projType,projectileSpeed, projectileMass, materialScale, wallSpan, wallHeight, wallThickness, wallSpanSeg, wallHeightSeg, wallLayers, showAllDebugLines, bondsXEnabled, bondsYEnabled, bondsZEnabled, onReset: _onReset,
+  solverGravityEnabled,
+  debugDetailLevel,
+  debugUpdateIntervalMs,
+  iteration,
+  structureId,
+  mode,
+  pushForce,
+  projType,
+  projectileSpeed,
+  projectileMass,
+  materialScale,
+  wallSpan,
+  wallHeight,
+  wallThickness,
+  wallSpanSeg,
+  wallHeightSeg,
+  wallLayers,
+  showAllDebugLines,
+  bondsXEnabled,
+  bondsYEnabled,
+  bondsZEnabled,
+  onReset: _onReset,
 }: SceneProps) {
   const coreRef = useRef<DestructibleCore | null>(null);
   const debugHelperRef = useRef<ReturnType<typeof buildSolverDebugHelper> | null>(null);
   const chunkMeshesRef = useRef<THREE.Mesh[] | null>(null);
   const groupRef = useRef<THREE.Group>(null);
+  const lastSolverDebugSampleRef = useRef(0);
+  const solverDebugLinesRef = useRef<Array<{ p0: { x: number; y: number; z: number }; p1: { x: number; y: number; z: number }; color0: number; color1: number }>>([]);
+  const worldDebugLinesRef = useRef<Array<{ p0: { x: number; y: number; z: number }; p1: { x: number; y: number; z: number }; color0: number; color1: number }>>([]);
   const camera = useThree((s) => s.camera as THREE.Camera);
   const scene = useThree((s) => s.scene as THREE.Scene);
   const rapierDebugRef = useRef<RapierDebugRenderer | null>(null);
@@ -440,6 +466,16 @@ function Scene({
   }, [mode, pushForce, projType, camera, projectileSpeed, projectileMass, placeClickMarker]);
 
   const hasCrashed = useRef(false);
+  useEffect(() => {
+    if (!debug) {
+      solverDebugLinesRef.current = [];
+      worldDebugLinesRef.current.length = 0;
+      if (debugHelperRef.current) {
+        debugHelperRef.current.update(worldDebugLinesRef.current, false);
+      }
+    }
+  }, [debug]);
+
   useFrame(() => {
     if (hasCrashed.current) return;
 
@@ -457,11 +493,40 @@ function Scene({
     // Update Rapier wireframe last
     if (rapierDebugRef.current) rapierDebugRef.current.update();
     if (debug && debugHelperRef.current) {
-      const lines = core.getSolverDebugLines();
-      const worldLines = computeWorldDebugLines(core, lines);
-      debugHelperRef.current.update(worldLines, showAllDebugLines);
+      const interval = Math.max(16, debugUpdateIntervalMs);
+      const now = typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
+      const effectiveDetail = showAllDebugLines ? debugDetailLevel : 'critical';
+      const solverOptions: Parameters<DestructibleCore['getSolverDebugLines']>[0] = {
+        mode: effectiveDetail === 'critical' ? 'min' : 'max',
+        sampleStep: effectiveDetail === 'reduced' ? 2 : 1,
+      };
+      if (effectiveDetail === 'reduced') {
+        solverOptions.maxLines = 6000;
+      } else if (effectiveDetail === 'critical') {
+        solverOptions.maxLines = 4000;
+      } else {
+        solverOptions.maxLines = 12000;
+      }
+      if (!showAllDebugLines) {
+        solverOptions.mode = 'min';
+        const currentMax = solverOptions.maxLines ?? 4000;
+        solverOptions.maxLines = Math.min(currentMax, 4000);
+        solverOptions.sampleStep = 1;
+      }
+
+      const shouldRefresh =
+        solverDebugLinesRef.current.length === 0 || (now - lastSolverDebugSampleRef.current) >= interval;
+      if (shouldRefresh) {
+        solverDebugLinesRef.current = core.getSolverDebugLines(solverOptions);
+        lastSolverDebugSampleRef.current = now;
+      }
+
+      const worldLines = computeWorldDebugLines(core, solverDebugLinesRef.current, worldDebugLinesRef.current);
+      worldDebugLinesRef.current = worldLines;
+      debugHelperRef.current.update(worldLines, showAllDebugLines || solverDebugLinesRef.current.length > 0);
     } else if (debugHelperRef.current) {
-      debugHelperRef.current.update([], false);
+      worldDebugLinesRef.current.length = 0;
+      debugHelperRef.current.update(worldDebugLinesRef.current, false);
     }
   });
 
@@ -476,7 +541,7 @@ function Scene({
   );
 }
 
-function HtmlOverlay({ debug, setDebug, physicsWireframe, setPhysicsWireframe, gravity, setGravity, solverGravityEnabled, setSolverGravityEnabled, mode, setMode, projType, setProjType, reset, projectileSpeed, setProjectileSpeed, projectileMass, setProjectileMass, materialScale, setMaterialScale, wallSpan, setWallSpan, wallHeight, setWallHeight, wallThickness, setWallThickness, wallSpanSeg, setWallSpanSeg, wallHeightSeg, setWallHeightSeg, wallLayers, setWallLayers, showAllDebugLines, setShowAllDebugLines, bondsXEnabled, setBondsXEnabled, bondsYEnabled, setBondsYEnabled, bondsZEnabled, setBondsZEnabled, structureId, setStructureId, structures, structureDescription, pushForce, setPushForce, }: { debug: boolean; setDebug: (v: boolean) => void; physicsWireframe: boolean; setPhysicsWireframe: (v: boolean) => void; gravity: number; setGravity: (v: number) => void; solverGravityEnabled: boolean; setSolverGravityEnabled: (v: boolean) => void; mode: 'projectile' | 'cutter' | 'push'; setMode: (v: 'projectile' | 'cutter' | 'push') => void; projType: 'ball' | 'box'; setProjType: (v: 'ball' | 'box') => void; reset: () => void; projectileSpeed: number; setProjectileSpeed: (v: number) => void; projectileMass: number; setProjectileMass: (v: number) => void; materialScale: number; setMaterialScale: (v: number) => void; wallSpan: number; setWallSpan: (v: number) => void; wallHeight: number; setWallHeight: (v: number) => void; wallThickness: number; setWallThickness: (v: number) => void; wallSpanSeg: number; setWallSpanSeg: (v: number) => void; wallHeightSeg: number; setWallHeightSeg: (v: number) => void; wallLayers: number; setWallLayers: (v: number) => void; showAllDebugLines: boolean; setShowAllDebugLines: (v: boolean) => void; bondsXEnabled: boolean; setBondsXEnabled: (v: boolean) => void; bondsYEnabled: boolean; setBondsYEnabled: (v: boolean) => void; bondsZEnabled: boolean; setBondsZEnabled: (v: boolean) => void; structureId: StressPresetId; setStructureId: (v: StressPresetId) => void; structures: typeof STRESS_PRESET_METADATA; structureDescription?: string; pushForce: number; setPushForce: (v: number) => void }) {
+function HtmlOverlay({ debug, setDebug, debugDetailLevel, setDebugDetailLevel, debugUpdateIntervalMs, setDebugUpdateIntervalMs, physicsWireframe, setPhysicsWireframe, gravity, setGravity, solverGravityEnabled, setSolverGravityEnabled, mode, setMode, projType, setProjType, reset, projectileSpeed, setProjectileSpeed, projectileMass, setProjectileMass, materialScale, setMaterialScale, wallSpan, setWallSpan, wallHeight, setWallHeight, wallThickness, setWallThickness, wallSpanSeg, setWallSpanSeg, wallHeightSeg, setWallHeightSeg, wallLayers, setWallLayers, showAllDebugLines, setShowAllDebugLines, bondsXEnabled, setBondsXEnabled, bondsYEnabled, setBondsYEnabled, bondsZEnabled, setBondsZEnabled, structureId, setStructureId, structures, structureDescription, pushForce, setPushForce, }: { debug: boolean; setDebug: (v: boolean) => void; debugDetailLevel: 'critical' | 'reduced' | 'full'; setDebugDetailLevel: (v: 'critical' | 'reduced' | 'full') => void; debugUpdateIntervalMs: number; setDebugUpdateIntervalMs: (v: number) => void; physicsWireframe: boolean; setPhysicsWireframe: (v: boolean) => void; gravity: number; setGravity: (v: number) => void; solverGravityEnabled: boolean; setSolverGravityEnabled: (v: boolean) => void; mode: 'projectile' | 'cutter' | 'push'; setMode: (v: 'projectile' | 'cutter' | 'push') => void; projType: 'ball' | 'box'; setProjType: (v: 'ball' | 'box') => void; reset: () => void; projectileSpeed: number; setProjectileSpeed: (v: number) => void; projectileMass: number; setProjectileMass: (v: number) => void; materialScale: number; setMaterialScale: (v: number) => void; wallSpan: number; setWallSpan: (v: number) => void; wallHeight: number; setWallHeight: (v: number) => void; wallThickness: number; setWallThickness: (v: number) => void; wallSpanSeg: number; setWallSpanSeg: (v: number) => void; wallHeightSeg: number; setWallHeightSeg: (v: number) => void; wallLayers: number; setWallLayers: (v: number) => void; showAllDebugLines: boolean; setShowAllDebugLines: (v: boolean) => void; bondsXEnabled: boolean; setBondsXEnabled: (v: boolean) => void; bondsYEnabled: boolean; setBondsYEnabled: (v: boolean) => void; bondsZEnabled: boolean; setBondsZEnabled: (v: boolean) => void; structureId: StressPresetId; setStructureId: (v: StressPresetId) => void; structures: typeof STRESS_PRESET_METADATA; structureDescription?: string; pushForce: number; setPushForce: (v: number) => void }) {
   const isWallStructure = structureId === "wall" || structureId === "fracturedWall";
   return (
     <div style={{ position: 'absolute', top: 110, left: 16, zIndex: 10, display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 360 }}>
@@ -510,6 +575,37 @@ function HtmlOverlay({ debug, setDebug, physicsWireframe, setPhysicsWireframe, g
         <input type="checkbox" checked={showAllDebugLines} onChange={(e) => setShowAllDebugLines(e.target.checked)} style={{ accentColor: '#4da2ff', width: 16, height: 16 }} />
         Show all solver lines
       </label>
+      <label style={{ display: 'flex', flexDirection: 'column', gap: 6, color: '#d1d5db', fontSize: 14 }}>
+        <span>Stress debug detail</span>
+        <select
+          value={showAllDebugLines ? debugDetailLevel : 'critical'}
+          onChange={(e) => setDebugDetailLevel(e.target.value as 'critical' | 'reduced' | 'full')}
+          disabled={!showAllDebugLines}
+          style={{ background: '#111', color: '#eee', border: '1px solid #333', borderRadius: 6, padding: '8px 10px' }}
+        >
+          <option value="critical">Critical (solver min)</option>
+          <option value="reduced">Reduced (every other line)</option>
+          <option value="full">Full detail</option>
+        </select>
+      </label>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#d1d5db', fontSize: 14 }}>
+        Update interval
+        <input
+          type="range"
+          min={16}
+          max={250}
+          step={8}
+          value={debugUpdateIntervalMs}
+          onChange={(e) => setDebugUpdateIntervalMs(parseInt(e.target.value, 10))}
+          style={{ flex: 1 }}
+        />
+        <span style={{ color: '#9ca3af', width: 120, textAlign: 'right' }}>
+          {debugUpdateIntervalMs}ms (~{Math.round(1000 / debugUpdateIntervalMs)} fps)
+        </span>
+      </label>
+      <p style={{ margin: 0, color: '#9ca3af', fontSize: 12 }}>
+        Turning off “Show all solver lines” locks the detail level to Critical to minimize CPU and GPU load.
+      </p>
       <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#d1d5db', fontSize: 14 }}>
         Gravity
         <input type="range" min={-30} max={0.0} step={0.5} value={gravity} onChange={(e) => setGravity(parseFloat(e.target.value))} style={{ flex: 1 }} />
@@ -609,6 +705,8 @@ function HtmlOverlay({ debug, setDebug, physicsWireframe, setPhysicsWireframe, g
 
 export default function Page() {
   const [debug, setDebug] = useState(false);
+  const [debugDetailLevel, setDebugDetailLevel] = useState<'critical' | 'reduced' | 'full'>('full');
+  const [debugUpdateIntervalMs, setDebugUpdateIntervalMs] = useState(33);
   const [physicsWireframe, setPhysicsWireframe] = useState(false);
   const [gravity, setGravity] = useState(-9.81);
   const [solverGravityEnabled, setSolverGravityEnabled] = useState(true);
@@ -638,6 +736,10 @@ export default function Page() {
       <HtmlOverlay
         debug={debug}
         setDebug={setDebug}
+        debugDetailLevel={debugDetailLevel}
+        setDebugDetailLevel={setDebugDetailLevel}
+        debugUpdateIntervalMs={debugUpdateIntervalMs}
+        setDebugUpdateIntervalMs={setDebugUpdateIntervalMs}
         physicsWireframe={physicsWireframe}
         setPhysicsWireframe={setPhysicsWireframe}
         gravity={gravity}
@@ -689,6 +791,8 @@ export default function Page() {
           physicsWireframe={physicsWireframe}
           gravity={gravity}
           solverGravityEnabled={solverGravityEnabled}
+          debugDetailLevel={debugDetailLevel}
+          debugUpdateIntervalMs={debugUpdateIntervalMs}
           iteration={iteration}
           structureId={structureId}
           mode={mode}
