@@ -331,7 +331,7 @@ export function buildTownhouseScenario({ bondsX = true, bondsY = true, bondsZ = 
   return buildRectilinearScenario({
     size: makeVec(9.0, 5.8, 5.5),
     segments,
-    deckMass: 210_000,
+    deckMass: 620_000,
     areaScale: 0.052,
     addDiagonals: true,
     diagScale: 0.6,
@@ -440,7 +440,7 @@ export function buildCourtyardHouseScenario({ bondsX = true, bondsY = true, bond
   return buildRectilinearScenario({
     size: makeVec(12.5, 4.4, 12.5),
     segments,
-    deckMass: 260_000,
+    deckMass: 880_000,
     areaScale: 0.054,
     addDiagonals: true,
     diagScale: 0.58,
@@ -501,7 +501,7 @@ export function buildVaultedLoftScenario({ bondsX = true, bondsY = true, bondsZ 
   return buildRectilinearScenario({
     size: makeVec(10.5, 6.2, 5.2),
     segments,
-    deckMass: 240_000,
+    deckMass: 810_000,
     areaScale: 0.053,
     addDiagonals: true,
     diagScale: 0.6,
