@@ -73,6 +73,7 @@ export type DestructibleCore = {
   solver: ExtStressSolver;
   runtime: StressRuntime;
   rootBodyHandle: number;
+  groundBodyHandle: number;
   gravity: number;
   chunks: ChunkData[];
   colliderToNode: Map<number, number>;
@@ -85,6 +86,7 @@ export type DestructibleCore = {
   stepSafe: () => void;
   setGravity: (g: number) => void;
   setSolverGravityEnabled: (v: boolean) => void;
+  setLimitSinglesCollisions: (v: boolean) => void;
   getSolverDebugLines: () => Array<{ p0: Vec3; p1: Vec3; color0: number; color1: number }>;
   // Bond interaction helpers
   getNodeBonds: (nodeIndex: number) => BondRef[];

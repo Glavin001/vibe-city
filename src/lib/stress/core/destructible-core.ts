@@ -10,6 +10,7 @@ type BuildCoreOptions = {
   friction?: number;
   restitution?: number;
   materialScale?: number;
+  limitSinglesCollisions?: boolean;
 };
 
 const isDev = true; //process.env.NODE_ENV !== 'production';
@@ -21,6 +22,7 @@ export async function buildDestructibleCore({
   friction = 0.25,
   restitution = 0.0,
   materialScale = 1.0,
+  limitSinglesCollisions = false,
 }: BuildCoreOptions): Promise<DestructibleCore> {
   await RAPIER.init();
   const runtime = await loadStressSolver();
@@ -177,6 +179,7 @@ export async function buildDestructibleCore({
   let safeFrames = 0;
   let warnedColliderMapEmptyOnce = false;
   let solverGravityEnabled = true;
+  let limitSinglesCollisionsEnabled = !!limitSinglesCollisions;
 
   // Helper: determine if a set of nodes contains any supports (mass=0 or chunk flag)
   const actorNodesContainSupport = (nodesList: number[]): boolean => {
@@ -212,6 +215,10 @@ export async function buildDestructibleCore({
     pendingBallSpawns.push(s);
     safeFrames = Math.max(safeFrames, 1);
   }
+
+  // Now that options are ready, apply initial collision groups
+  try { applyCollisionGroupsForBody(rootBody, { enabled: limitSinglesCollisionsEnabled, groundBodyHandle: groundBody.handle }); } catch {}
+  try { applyCollisionGroupsForBody(groundBody, { enabled: limitSinglesCollisionsEnabled, groundBodyHandle: groundBody.handle }); } catch {}
 
   function setGravity(g: number) {
     try {
@@ -473,6 +480,7 @@ export async function buildDestructibleCore({
       bodyDesc.setLinvel(0, params.linvelY, 0);
     }
     const body = world.createRigidBody(bodyDesc);
+    try { body.userData = { projectile: true }; } catch {}
 
     const shape = params.type === 'ball' ? RAPIER.ColliderDesc.ball(params.radius) : RAPIER.ColliderDesc.cuboid(params.radius, params.radius, params.radius);
     const collider = world.createCollider(
@@ -484,6 +492,8 @@ export async function buildDestructibleCore({
         .setContactForceEventThreshold(0.0),
       body
     );
+    // Apply collision-group policy for projectiles
+    try { if (limitSinglesCollisionsEnabled) applyCollisionGroupsForBody(body, { enabled: limitSinglesCollisionsEnabled, groundBodyHandle: groundBody.handle }); } catch {}
     if (process.env.NODE_ENV !== 'production') console.debug('[Core] spawnProjectile', { body: body.handle, collider: collider.handle, start, params });
     projectiles.push({ bodyHandle: body.handle, radius: params.radius, type: params.type });
   }
@@ -550,6 +560,8 @@ export async function buildDestructibleCore({
         seg.colliderHandle = col.handle;
         seg.detached = true;
         colliderToNode.set(col.handle, seg.nodeIndex);
+        // Update groups after migration; collider count may be 1
+        try { if (limitSinglesCollisionsEnabled) applyCollisionGroupsForBody(body, { enabled: limitSinglesCollisionsEnabled, groundBodyHandle: groundBody.handle }); } catch {}
       }
     }
   }
@@ -654,6 +666,7 @@ export async function buildDestructibleCore({
     solver,
     runtime,
     rootBodyHandle: rootBody.handle,
+    groundBodyHandle: groundBody.handle,
     gravity,
     chunks,
     colliderToNode,
@@ -665,6 +678,19 @@ export async function buildDestructibleCore({
     stepSafe,
     setGravity,
     setSolverGravityEnabled,
+    setLimitSinglesCollisions: (v: boolean) => {
+      limitSinglesCollisionsEnabled = !!v;
+      try {
+        world.forEachRigidBody((b) => applyCollisionGroupsForBody(b, { enabled: limitSinglesCollisionsEnabled, groundBodyHandle: groundBody.handle }));
+      } catch {
+        try { applyCollisionGroupsForBody(rootBody, { enabled: limitSinglesCollisionsEnabled, groundBodyHandle: groundBody.handle }); } catch {}
+        try { applyCollisionGroupsForBody(groundBody, { enabled: limitSinglesCollisionsEnabled, groundBodyHandle: groundBody.handle }); } catch {}
+        for (const { bodyHandle } of Array.from(actorMap.values())) {
+          const b = world.getRigidBody(bodyHandle);
+          if (b) applyCollisionGroupsForBody(b, { enabled: limitSinglesCollisionsEnabled, groundBodyHandle: groundBody.handle });
+        }
+      }
+    },
     getSolverDebugLines,
     getNodeBonds,
     cutBond,
@@ -702,6 +728,46 @@ function applyQuatToVec3(v: Vec3, q: Quat): Vec3 {
     y: iy * qw + iw * -qy + iz * -qx - ix * -qz,
     z: iz * qw + iw * -qz + ix * -qy - iy * -qx,
   };
+}
+
+// --- Collision-group helpers (moved below for clarity) ---
+const GROUP_GROUND = 1 << 0;
+const GROUP_SINGLE = 1 << 1;
+const GROUP_MULTI = 1 << 2;
+const mkGroups = (memberships: number, filter: number) => (((memberships & 0xffff) << 16) | (filter & 0xffff));
+
+function applyGroupsForCollider(c: RAPIER.Collider, groups: number) {
+  try {
+    c.setCollisionGroups(groups as unknown as number);
+    c.setSolverGroups(groups as unknown as number);
+  } catch {}
+}
+
+function applyCollisionGroupsForBody(body: RAPIER.RigidBody, opts: { enabled: boolean; groundBodyHandle: number }) {
+  if (!body) return;
+  const n = body?.numColliders() || 0;
+  let groups = mkGroups(0xffff, 0xffff);
+  const ud = (body as unknown as { userData?: unknown }).userData as { projectile?: boolean } | undefined;
+  if (ud?.projectile) {
+    groups = mkGroups(0xffff, 0xffff);
+  } else if (opts.enabled) {
+    if (body.handle === opts.groundBodyHandle) {
+      groups = mkGroups(GROUP_GROUND, GROUP_GROUND | GROUP_SINGLE | GROUP_MULTI);
+    } else {
+      const isDynamicLike = body.isDynamic() || body.isKinematic();
+      if (isDynamicLike && n === 1) {
+        groups = mkGroups(GROUP_SINGLE, GROUP_GROUND | GROUP_MULTI);
+      } else {
+        groups = mkGroups(GROUP_MULTI, GROUP_GROUND | GROUP_MULTI | GROUP_SINGLE);
+      }
+    }
+  }
+  for (let i = 0; i < n; i += 1) {
+    try {
+      const col = body.collider(i);
+      if (col) applyGroupsForCollider(col, groups);
+    } catch {}
+  }
 }
 
 
