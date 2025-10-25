@@ -86,6 +86,7 @@ export type DestructibleCore = {
   stepSafe: () => void;
   setGravity: (g: number) => void;
   setSolverGravityEnabled: (v: boolean) => void;
+  setApplyExcessForces: (v: boolean) => void;
   setLimitSinglesCollisions: (v: boolean) => void;
   getSolverDebugLines: () => Array<{ p0: Vec3; p1: Vec3; color0: number; color1: number }>;
   // Bond interaction helpers
