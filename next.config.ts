@@ -24,6 +24,11 @@ const nextConfig: NextConfig = {
       use: { loader: 'worker-loader' },
     });
 
+    config.module.rules.push({
+      test: /\.(glsl|vert|frag)$/i,
+      type: 'asset/source',
+    });
+
     // Provide globals for buffer/process if needed by deps
     config.plugins = config.plugins || [];
     const webpack = require('webpack');
