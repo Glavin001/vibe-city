@@ -576,6 +576,7 @@ export function buildVaultedLoftScenario({ bondsX = true, bondsY = true, bondsZ 
 
 export type StressPresetId =
   | "wall"
+  | "brickWall"
   | "hut"
   | "bridge"
   | "beamBridge"
@@ -594,6 +595,11 @@ export const STRESS_PRESET_METADATA: Array<{
     id: "wall",
     label: "Tunable wall panel",
     description: "Baseline single wall for dialing in solver parameters and stress thresholds.",
+  },
+  {
+    id: "brickWall",
+    label: "Brick wall (running bond)",
+    description: "Per-brick wall with half-brick staggering and clumped mortar strengths.",
   },
   {
     id: "hut",
