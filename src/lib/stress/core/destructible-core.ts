@@ -177,7 +177,7 @@ export async function buildDestructibleCore({
   const projectiles: Array<{ bodyHandle: number; radius: number; type: 'ball'|'box'; mesh?: unknown }> = [];
   const removedBondIndices = new Set<number>();
   const pendingExternalForces: Array<{ nodeIndex:number; point: Vec3; force: Vec3 }> = [];
-  const pendingActorExcessForces = new Map<number, Array<{ force: Vec3; torque: Vec3 }>>();
+  const pendingActorExcessForces = new Map<number, { force: Vec3; torque: Vec3 }>();
 
   let safeFrames = 0;
   let warnedColliderMapEmptyOnce = false;
@@ -244,9 +244,21 @@ export async function buildDestructibleCore({
     const f = isFiniteVec3(force) ? force : { x: 0, y: 0, z: 0 };
     const t = isFiniteVec3(torque) ? torque : { x: 0, y: 0, z: 0 };
     if (isVectorNearlyZero(f) && isVectorNearlyZero(t)) return;
-    const existing = pendingActorExcessForces.get(actorIndex) ?? [];
-    existing.push({ force: { x: f.x, y: f.y, z: f.z }, torque: { x: t.x, y: t.y, z: t.z } });
-    pendingActorExcessForces.set(actorIndex, existing);
+    const existing = pendingActorExcessForces.get(actorIndex);
+    if (existing) {
+      existing.force.x += f.x;
+      existing.force.y += f.y;
+      existing.force.z += f.z;
+      existing.torque.x += t.x;
+      existing.torque.y += t.y;
+      existing.torque.z += t.z;
+    } else {
+      pendingActorExcessForces.set(actorIndex, {
+        force: { x: f.x, y: f.y, z: f.z },
+        torque: { x: t.x, y: t.y, z: t.z },
+      });
+    }
+    safeFrames = Math.max(safeFrames, 1);
   }
 
   // Rebuild the collider → node mapping from current chunk state
@@ -582,9 +594,12 @@ export async function buildDestructibleCore({
           const pt = inherit.translation();
           const pq = inherit.rotation();
           const lv = inherit.linvel?.();
+          const av = inherit.angvel?.();
+          const angvelVec = { x: av?.x ?? 0, y: av?.y ?? 0, z: av?.z ?? 0 };
           desc.setTranslation(pt.x, pt.y, pt.z)
             .setRotation(pq)
-            .setLinvel(lv?.x ?? 0, lv?.y ?? 0, lv?.z ?? 0);
+            .setLinvel(lv?.x ?? 0, lv?.y ?? 0, lv?.z ?? 0)
+            .setAngvel(angvelVec as unknown as RAPIER.Vector);
         }
         const body = world.createRigidBody(desc);
         actorMap.set(pb.actorIndex, { bodyHandle: body.handle });
@@ -644,7 +659,7 @@ export async function buildDestructibleCore({
       return;
     }
     if (pendingActorExcessForces.size === 0) return;
-    for (const [actorIndex, entries] of Array.from(pendingActorExcessForces.entries())) {
+    for (const [actorIndex, entry] of Array.from(pendingActorExcessForces.entries())) {
       const actorEntry = actorMap.get(actorIndex);
       if (!actorEntry) {
         pendingActorExcessForces.delete(actorIndex);
@@ -652,14 +667,13 @@ export async function buildDestructibleCore({
       }
       const body = world.getRigidBody(actorEntry.bodyHandle);
       if (!body) continue;
-      for (const entry of entries) {
-        if (isFiniteVec3(entry.force) && !isVectorNearlyZero(entry.force)) {
-          try { body.applyImpulse({ x: entry.force.x, y: entry.force.y, z: entry.force.z }, true); } catch {}
-        }
-        if (isFiniteVec3(entry.torque) && !isVectorNearlyZero(entry.torque)) {
-          try { body.applyTorqueImpulse({ x: entry.torque.x, y: entry.torque.y, z: entry.torque.z }, true); } catch {}
-        }
+      if (isFiniteVec3(entry.force) && !isVectorNearlyZero(entry.force)) {
+        try { body.applyImpulse({ x: entry.force.x, y: entry.force.y, z: entry.force.z }, true); } catch {}
       }
+      if (isFiniteVec3(entry.torque) && !isVectorNearlyZero(entry.torque)) {
+        try { body.applyTorqueImpulse({ x: entry.torque.x, y: entry.torque.y, z: entry.torque.z }, true); } catch {}
+      }
+      try { body.wakeUp?.(); } catch {}
       pendingActorExcessForces.delete(actorIndex);
     }
   }
