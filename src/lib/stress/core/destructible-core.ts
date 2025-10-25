@@ -51,6 +51,11 @@ export async function buildDestructibleCore({
   const nodes = scenario.nodes.map((n) => ({ centroid: n.centroid, mass: n.mass, volume: n.volume }));
   const bonds = scenario.bonds.map((b) => ({ node0: b.node0, node1: b.node1, centroid: b.centroid, normal: b.normal, area: b.area }));
 
+  const hasSupports = nodes.some((n) => n.mass === 0);
+  if (!hasSupports) {
+    console.warn('[Core] no supports (nodes withmass=0)found in scenario', scenario);
+  }
+
   const solver = runtime.createExtSolver({ nodes, bonds, settings: scaledSettings });
 
   // Persist bond list with indices for cutting and adjacency
@@ -172,6 +177,21 @@ export async function buildDestructibleCore({
   let safeFrames = 0;
   let warnedColliderMapEmptyOnce = false;
   let solverGravityEnabled = true;
+
+  // Helper: determine if a set of nodes contains any supports (mass=0 or chunk flag)
+  const actorNodesContainSupport = (nodesList: number[]): boolean => {
+    for (const n of nodesList) {
+      const ch = chunks[n];
+      if (!ch) {
+        console.error('chunk not found', n, ch, chunks);
+        throw new Error('chunk not found');
+      }
+      if (ch?.isSupport) return true;
+      const mass = scenario.nodes[n]?.mass ?? 0;
+      if (!(mass > 0)) return true;
+    }
+    return false;
+  };
 
   // Rebuild the collider → node mapping from current chunk state
   function rebuildColliderToNodeFromChunks() {
@@ -416,7 +436,7 @@ export async function buildDestructibleCore({
         if (!child || !Array.isArray(child.nodes) || child.nodes.length === 0) continue;
         // Update ownership: all nodes listed now belong to this child actor
         for (const n of child.nodes) nodeToActor.set(n, child.actorIndex);
-        const isActorSupport = child.nodes.some((n: number) => chunks[n]?.isSupport);
+        const isActorSupport = actorNodesContainSupport(child.nodes);
         if (child.actorIndex === parentActorIndex) {
           // If the parent portion no longer contains supports, migrate it to a NEW dynamic body.
           if (!isActorSupport) {

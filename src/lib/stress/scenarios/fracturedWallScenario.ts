@@ -51,6 +51,7 @@ function buildFragments({ span, height, thickness, fragmentCount }: Required<Omi
       isSupport: false,
     };
   });
+
   // Add a thin foundation slab along X under the wall (support-only nodes)
   const foundationSegmentsX = Math.max(6, Math.round(span / 0.5));
   const cellW = span / foundationSegmentsX;
@@ -209,6 +210,7 @@ export function buildFracturedWallScenario({
     const isSupport = f.isSupport || (f.worldPosition.y - hy <= EPS && false);
     const mass = isSupport ? 0 : volume; // scale later for non-supports
     if (!isSupport) totalVolume += volume;
+
     nodes.push({ centroid: { x: f.worldPosition.x, y: f.worldPosition.y, z: f.worldPosition.z }, mass, volume });
     fragmentSizes.push(size);
     fragmentGeometries.push(f.geometry);
@@ -226,6 +228,10 @@ export function buildFracturedWallScenario({
   const scale = totalVolume > 0 ? deckMass / totalVolume : 0;
   if (scale > 0) {
     for (const n of nodes) {
+      if (n.mass === 0) {
+        // Node is support, so leave mass=0
+        continue;
+      }
       n.mass = n.volume > 0 ? n.volume * scale : 0;
     }
   } else {
