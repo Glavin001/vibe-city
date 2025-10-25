@@ -45,9 +45,16 @@ export function updateChunkMeshes(core: DestructibleCore, meshes: THREE.Mesh[]) 
     const chunk = core.chunks[i];
     const mesh = meshes[i];
     if (!mesh) continue;
+    // Hide destroyed chunks
+    if (chunk.destroyed) {
+      mesh.visible = false;
+      continue;
+    } else {
+      mesh.visible = true;
+    }
     const handle = chunk.bodyHandle;
     if (handle == null) {
-      if (process.env.NODE_ENV !== 'production') console.error('[Adapter] Missing bodyHandle for chunk', { chunkIndex: i });
+      if (process.env.NODE_ENV !== 'production') console.warn('[Adapter] Missing bodyHandle for chunk', { chunkIndex: i });
       continue;
     }
     const body = core.world.getRigidBody(handle);
@@ -64,24 +71,33 @@ export function updateChunkMeshes(core: DestructibleCore, meshes: THREE.Mesh[]) 
     tmp.set(chunk.baseLocalOffset.x, chunk.baseLocalOffset.y, chunk.baseLocalOffset.z).applyQuaternion(mesh.quaternion);
     mesh.position.add(tmp);
 
-    // Set mesh color based on type of rigid body: fixed (gray), kinematic (blue), dynamic (orange)
+    // Set mesh color based on type of rigid body and optional damage health tint
     // Use MeshStandardMaterial color for clarity; this affects the mesh's material but preserves shadows/etc
     if (body) {
-      let color = 0xbababa; // default: gray for fixed
-      if (body.isKinematic()) {
-        color = 0x2a6ddb; // blue for kinematic
-      } else if (body.isDynamic()) {
-        color = 0xff9147; // orange for dynamic
-      } else if (body.isFixed()) {
-        color = 0xbababa; // gray for fixed
+      const mat = (mesh.material && mesh.material instanceof THREE.MeshStandardMaterial) ? mesh.material : null;
+      if (!mat) continue;
+      const damageEnabled = (core as unknown as { damageEnabled?: boolean }).damageEnabled === true;
+      const healthGetter = (core as unknown as { getNodeHealth?: (idx:number) => { health:number; maxHealth:number; destroyed:boolean } | null }).getNodeHealth;
+      if (damageEnabled && typeof healthGetter === 'function') {
+        const info = healthGetter(chunk.nodeIndex);
+        if (info && info.maxHealth > 0) {
+          const ratio = Math.max(0, Math.min(1, info.health / info.maxHealth));
+          // if (!chunk.isSupport && ratio < 0.9) {
+          //   console.log("[Adapter] Health for chunk", chunk.nodeIndex, info.health, info.maxHealth, ratio);
+          // }
+          const healthy = new THREE.Color(0x2fbf71);
+          const critical = new THREE.Color(0xd72638);
+          const lerped = healthy.clone().lerp(critical, 1 - ratio);
+          mat.color.copy(lerped);
+          continue;
+        } else {
+          console.warn("[Adapter] Missing health for chunk", chunk.nodeIndex);
+        }
       }
-      if (
-        mesh.material &&
-        mesh.material instanceof THREE.MeshStandardMaterial &&
-        (mesh.material.color.getHex() !== color)
-      ) {
-        mesh.material.color.setHex(color);
-      }
+      // Fallback when damage disabled or unknown
+      if (body.isKinematic()) mat.color.setHex(0x2a6ddb);
+      else if (body.isFixed()) mat.color.setHex(0xbababa);
+      else if (body.isDynamic()) mat.color.setHex(0xff9147);
     }
   }
 }

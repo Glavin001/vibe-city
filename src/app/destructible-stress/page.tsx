@@ -40,9 +40,15 @@ type SceneProps = {
   gravity: number;
   solverGravityEnabled: boolean;
   limitSinglesCollisions: boolean;
+  damageEnabled: boolean;
+  damageClickRatio: number;
+  contactDamageScale: number;
+  minImpulseThreshold: number;
+  contactCooldownMs: number;
+  internalContactScale: number;
   iteration: number;
   structureId: StressPresetId;
-  mode: 'projectile' | 'cutter' | 'push';
+  mode: 'projectile' | 'cutter' | 'push' | 'damage';
   pushForce: number;
   projType: 'ball' | 'box';
   projectileSpeed: number;
@@ -120,6 +126,12 @@ function Scene({
   gravity,
   solverGravityEnabled,
   limitSinglesCollisions,
+  damageEnabled,
+  damageClickRatio,
+  contactDamageScale,
+  minImpulseThreshold,
+  contactCooldownMs,
+  internalContactScale,
   iteration,
   structureId,
   mode,
@@ -220,6 +232,18 @@ function Scene({
         },
         gravity: buildGravityRef.current,
         materialScale: materialScale,
+        damage: {
+          enabled: damageEnabled,
+          autoDetachOnDestroy: true,
+          autoCleanupPhysics: true,
+          contactDamageScale: contactDamageScale,
+          minImpulseThreshold: minImpulseThreshold,
+          contactCooldownMs: contactCooldownMs,
+          internalContactScale: internalContactScale,
+        },
+        onNodeDestroyed: ({ nodeIndex, actorIndex }) => {
+          console.log('[Damage] node destroyed', { nodeIndex, actorIndex });
+        },
       });
       if (!mounted) { core.dispose(); return; }
       coreRef.current = core;
@@ -279,7 +303,7 @@ function Scene({
       if (coreRef.current) coreRef.current.dispose();
       coreRef.current = null;
     };
-  }, [iteration, structureId, wallSpan, wallHeight, wallThickness, wallSpanSeg, wallHeightSeg, wallLayers, bondsXEnabled, bondsYEnabled, bondsZEnabled, scene, materialScale]);
+  }, [iteration, structureId, wallSpan, wallHeight, wallThickness, wallSpanSeg, wallHeightSeg, wallLayers, bondsXEnabled, bondsYEnabled, bondsZEnabled, scene, materialScale, damageEnabled, contactDamageScale, minImpulseThreshold, contactCooldownMs, internalContactScale]);
 
   // Listen for a one-time test projectile spawn request; depends on speed/mass only
   useEffect(() => {
@@ -395,7 +419,10 @@ function Scene({
         if (isDev) throw new Error('Missing scene group');
         return;
       }
-      const intersects: THREE.Intersection[] = raycaster.intersectObjects([groupRef.current], true);
+      const rayTargets: THREE.Object3D[] = (chunkMeshesRef.current && chunkMeshesRef.current.length > 0)
+        ? (chunkMeshesRef.current as unknown as THREE.Object3D[])
+        : ([groupRef.current] as unknown as THREE.Object3D[]);
+      const intersects: THREE.Intersection[] = raycaster.intersectObjects(rayTargets, true);
       const target = new THREE.Vector3();
       if (intersects.length > 0) {
         target.copy(intersects[0].point);
@@ -464,11 +491,33 @@ function Scene({
         // Mirror to solver only (solver consumes and clears per-frame)
         core.applyExternalForce(nodeIndex, { x: hit.point.x, y: hit.point.y, z: hit.point.z }, { x: force.x, y: force.y, z: force.z });
         if (isDev) console.debug('[Page] Push: applied', { nodeIndex, point: hit.point, force });
+      } else if (mode === 'damage') {
+        // Damage: pick intersected chunk and apply direct damage percent of max health
+        let hit: THREE.Intersection | undefined;
+        for (const intr of intersects) {
+          const obj = intr.object as THREE.Object3D & { userData?: Record<string, unknown> };
+          const idx = obj?.userData?.nodeIndex as number | undefined;
+          if (typeof idx === 'number') { hit = intr; break; }
+        }
+        if (!hit) {
+          if (isDev) console.warn('[Page] Damage: no nodeIndex on hit object');
+          return;
+        }
+        const nodeIndex = (hit.object as THREE.Object3D & { userData?: Record<string, unknown> }).userData.nodeIndex as number;
+        if (!damageEnabled || typeof core.applyNodeDamage !== 'function' || typeof core.getNodeHealth !== 'function') {
+          if (isDev) console.warn('[Page] Damage: damage system not enabled');
+          return;
+        }
+        const info = core.getNodeHealth(nodeIndex);
+        const maxH = Math.max(1, info?.maxHealth ?? 1);
+        const amount = maxH * Math.max(0, Math.min(1, damageClickRatio));
+        core.applyNodeDamage(nodeIndex, amount, 'manual');
+        if (isDev) console.debug('[Page] Damage: applied', { nodeIndex, amount });
       }
     };
     canvas.addEventListener('pointerdown', handle);
     return () => canvas.removeEventListener('pointerdown', handle);
-  }, [mode, pushForce, projType, camera, projectileSpeed, projectileMass, placeClickMarker]);
+  }, [mode, pushForce, projType, camera, projectileSpeed, projectileMass, placeClickMarker, damageClickRatio, damageEnabled]);
 
   const hasCrashed = useRef(false);
   useFrame(() => {
@@ -507,16 +556,17 @@ function Scene({
   );
 }
 
-function HtmlOverlay({ debug, setDebug, physicsWireframe, setPhysicsWireframe, gravity, setGravity, solverGravityEnabled, setSolverGravityEnabled, limitSinglesCollisions, setLimitSinglesCollisions, mode, setMode, projType, setProjType, reset, projectileSpeed, setProjectileSpeed, projectileMass, setProjectileMass, materialScale, setMaterialScale, wallSpan, setWallSpan, wallHeight, setWallHeight, wallThickness, setWallThickness, wallSpanSeg, setWallSpanSeg, wallHeightSeg, setWallHeightSeg, wallLayers, setWallLayers, showAllDebugLines, setShowAllDebugLines, bondsXEnabled, setBondsXEnabled, bondsYEnabled, setBondsYEnabled, bondsZEnabled, setBondsZEnabled, structureId, setStructureId, structures, structureDescription, pushForce, setPushForce, }: { debug: boolean; setDebug: (v: boolean) => void; physicsWireframe: boolean; setPhysicsWireframe: (v: boolean) => void; gravity: number; setGravity: (v: number) => void; solverGravityEnabled: boolean; setSolverGravityEnabled: (v: boolean) => void; limitSinglesCollisions: boolean; setLimitSinglesCollisions: (v: boolean) => void; mode: 'projectile' | 'cutter' | 'push'; setMode: (v: 'projectile' | 'cutter' | 'push') => void; projType: 'ball' | 'box'; setProjType: (v: 'ball' | 'box') => void; reset: () => void; projectileSpeed: number; setProjectileSpeed: (v: number) => void; projectileMass: number; setProjectileMass: (v: number) => void; materialScale: number; setMaterialScale: (v: number) => void; wallSpan: number; setWallSpan: (v: number) => void; wallHeight: number; setWallHeight: (v: number) => void; wallThickness: number; setWallThickness: (v: number) => void; wallSpanSeg: number; setWallSpanSeg: (v: number) => void; wallHeightSeg: number; setWallHeightSeg: (v: number) => void; wallLayers: number; setWallLayers: (v: number) => void; showAllDebugLines: boolean; setShowAllDebugLines: (v: boolean) => void; bondsXEnabled: boolean; setBondsXEnabled: (v: boolean) => void; bondsYEnabled: boolean; setBondsYEnabled: (v: boolean) => void; bondsZEnabled: boolean; setBondsZEnabled: (v: boolean) => void; structureId: StressPresetId; setStructureId: (v: StressPresetId) => void; structures: typeof STRESS_PRESET_METADATA; structureDescription?: string; pushForce: number; setPushForce: (v: number) => void }) {
+function HtmlOverlay({ debug, setDebug, physicsWireframe, setPhysicsWireframe, gravity, setGravity, solverGravityEnabled, setSolverGravityEnabled, limitSinglesCollisions, setLimitSinglesCollisions, damageEnabled, setDamageEnabled, mode, setMode, projType, setProjType, reset, projectileSpeed, setProjectileSpeed, projectileMass, setProjectileMass, materialScale, setMaterialScale, wallSpan, setWallSpan, wallHeight, setWallHeight, wallThickness, setWallThickness, wallSpanSeg, setWallSpanSeg, wallHeightSeg, setWallHeightSeg, wallLayers, setWallLayers, showAllDebugLines, setShowAllDebugLines, bondsXEnabled, setBondsXEnabled, bondsYEnabled, setBondsYEnabled, bondsZEnabled, setBondsZEnabled, structureId, setStructureId, structures, structureDescription, pushForce, setPushForce, damageClickRatio, setDamageClickRatio, contactDamageScale, setContactDamageScale, minImpulseThreshold, setMinImpulseThreshold, contactCooldownMs, setContactCooldownMs, internalContactScale, setInternalContactScale }: { debug: boolean; setDebug: (v: boolean) => void; physicsWireframe: boolean; setPhysicsWireframe: (v: boolean) => void; gravity: number; setGravity: (v: number) => void; solverGravityEnabled: boolean; setSolverGravityEnabled: (v: boolean) => void; limitSinglesCollisions: boolean; setLimitSinglesCollisions: (v: boolean) => void; damageEnabled: boolean; setDamageEnabled: (v: boolean) => void; mode: 'projectile' | 'cutter' | 'push' | 'damage'; setMode: (v: 'projectile' | 'cutter' | 'push' | 'damage') => void; projType: 'ball' | 'box'; setProjType: (v: 'ball' | 'box') => void; reset: () => void; projectileSpeed: number; setProjectileSpeed: (v: number) => void; projectileMass: number; setProjectileMass: (v: number) => void; materialScale: number; setMaterialScale: (v: number) => void; wallSpan: number; setWallSpan: (v: number) => void; wallHeight: number; setWallHeight: (v: number) => void; wallThickness: number; setWallThickness: (v: number) => void; wallSpanSeg: number; setWallSpanSeg: (v: number) => void; wallHeightSeg: number; setWallHeightSeg: (v: number) => void; wallLayers: number; setWallLayers: (v: number) => void; showAllDebugLines: boolean; setShowAllDebugLines: (v: boolean) => void; bondsXEnabled: boolean; setBondsXEnabled: (v: boolean) => void; bondsYEnabled: boolean; setBondsYEnabled: (v: boolean) => void; bondsZEnabled: boolean; setBondsZEnabled: (v: boolean) => void; structureId: StressPresetId; setStructureId: (v: StressPresetId) => void; structures: typeof STRESS_PRESET_METADATA; structureDescription?: string; pushForce: number; setPushForce: (v: number) => void; damageClickRatio: number; setDamageClickRatio: (v: number) => void; contactDamageScale: number; setContactDamageScale: (v: number) => void; minImpulseThreshold: number; setMinImpulseThreshold: (v: number) => void; contactCooldownMs: number; setContactCooldownMs: (v: number) => void; internalContactScale: number; setInternalContactScale: (v: number) => void }) {
   const isWallStructure = structureId === "wall" || structureId === "fracturedWall";
   return (
     <div style={{ position: 'absolute', top: 110, left: 16, zIndex: 10, display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 360 }}>
       <div style={{ display: 'flex', gap: 8 }}>
         <button type="button" onClick={reset} style={{ padding: '8px 14px', background: '#0d0d0d', color: 'white', borderRadius: 6, border: '1px solid #303030' }}>Reset</button>
-        <select value={mode} onChange={(e) => setMode(e.target.value as 'projectile' | 'cutter' | 'push')} style={{ background: '#111', color: '#eee', border: '1px solid #333', borderRadius: 6, padding: '8px 10px', flex: 1 }}>
+        <select value={mode} onChange={(e) => setMode(e.target.value as 'projectile' | 'cutter' | 'push' | 'damage')} style={{ background: '#111', color: '#eee', border: '1px solid #333', borderRadius: 6, padding: '8px 10px', flex: 1 }}>
           <option value="projectile">Projectile</option>
           <option value="cutter">Cutter</option>
-          <option value="push">Push</option>
+        <option value="push">Push</option>
+          <option value="damage">Damage</option>
         </select>
       </div>
       <select value={structureId} onChange={(e) => setStructureId(e.target.value as StressPresetId)} style={{ background: '#111', color: '#eee', border: '1px solid #333', borderRadius: 6, padding: '8px 10px' }}>
@@ -551,6 +601,10 @@ function HtmlOverlay({ debug, setDebug, physicsWireframe, setPhysicsWireframe, g
         Apply gravity to solver
       </label>
       <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#d1d5db', fontSize: 14 }}>
+        <input type="checkbox" checked={damageEnabled} onChange={(e) => setDamageEnabled(e.target.checked)} style={{ accentColor: '#4da2ff', width: 16, height: 16 }} />
+        Enable damageable chunks
+      </label>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#d1d5db', fontSize: 14 }}>
         <input type="checkbox" checked={limitSinglesCollisions} onChange={(e) => setLimitSinglesCollisions(e.target.checked)} style={{ accentColor: '#4da2ff', width: 16, height: 16 }} />
         Limit singles collisions (no SINGLE↔SINGLE)
       </label>
@@ -562,6 +616,32 @@ function HtmlOverlay({ debug, setDebug, physicsWireframe, setPhysicsWireframe, g
         <span style={{ color: '#9ca3af', width: 80, textAlign: 'right' }}>{Math.round(pushForce).toLocaleString()}</span>
       </label>
       <div style={{ color: '#9ca3af', fontSize: 13 }}>Projectile</div>
+      <div style={{ color: '#9ca3af', fontSize: 13 }}>Damage</div>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#d1d5db', fontSize: 14 }}>
+        Per-click (% max health)
+        <input type="range" min={0.05} max={1} step={0.05} value={damageClickRatio} onChange={(e) => setDamageClickRatio(parseFloat(e.target.value))} style={{ flex: 1 }} />
+        <span style={{ color: '#9ca3af', width: 60, textAlign: 'right' }}>{Math.round(damageClickRatio * 100)}%</span>
+      </label>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#d1d5db', fontSize: 14 }}>
+        Contact damage scale
+        <input type="range" min={0} max={1_000.0} step={0.1} value={contactDamageScale} onChange={(e) => setContactDamageScale(parseFloat(e.target.value))} style={{ flex: 1 }} />
+        <span style={{ color: '#9ca3af', width: 60, textAlign: 'right' }}>{contactDamageScale.toFixed(1)}×</span>
+      </label>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#d1d5db', fontSize: 14 }}>
+        Internal contact scale
+        <input type="range" min={0} max={1_000.0} step={0.05} value={internalContactScale} onChange={(e) => setInternalContactScale(parseFloat(e.target.value))} style={{ flex: 1 }} />
+        <span style={{ color: '#9ca3af', width: 60, textAlign: 'right' }}>{internalContactScale.toFixed(2)}×</span>
+      </label>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#d1d5db', fontSize: 14 }}>
+        Min impulse (N·s)
+        <input type="range" min={0} max={500} step={5} value={minImpulseThreshold} onChange={(e) => setMinImpulseThreshold(parseFloat(e.target.value))} style={{ flex: 1 }} />
+        <span style={{ color: '#9ca3af', width: 60, textAlign: 'right' }}>{Math.round(minImpulseThreshold)}</span>
+      </label>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#d1d5db', fontSize: 14 }}>
+        Contact cooldown (ms)
+        <input type="range" min={0} max={1000} step={10} value={contactCooldownMs} onChange={(e) => setContactCooldownMs(parseFloat(e.target.value))} style={{ flex: 1 }} />
+        <span style={{ color: '#9ca3af', width: 60, textAlign: 'right' }}>{Math.round(contactCooldownMs)}ms</span>
+      </label>
       <select value={projType} onChange={(e) => setProjType(e.target.value as 'ball' | 'box')} style={{ background: '#111', color: '#eee', border: '1px solid #333', borderRadius: 6, padding: '8px 10px' }}>
         <option value="ball">Ball</option>
         <option value="box">Box</option>
@@ -648,13 +728,19 @@ export default function Page() {
   const [gravity, setGravity] = useState(-9.81);
   const [solverGravityEnabled, setSolverGravityEnabled] = useState(true);
   const [limitSinglesCollisions, setLimitSinglesCollisions] = useState(false);
+  const [damageEnabled, setDamageEnabled] = useState(false);
   const [iteration, setIteration] = useState(0);
-  const [mode, setMode] = useState<'projectile' | 'cutter' | 'push'>('projectile');
+  const [mode, setMode] = useState<'projectile' | 'cutter' | 'push' | 'damage'>('projectile');
+  const [damageClickRatio, setDamageClickRatio] = useState(0.5);
+  const [contactDamageScale, setContactDamageScale] = useState(4.0);
+  const [minImpulseThreshold, setMinImpulseThreshold] = useState(0);
+  const [contactCooldownMs, setContactCooldownMs] = useState(100);
+  const [internalContactScale, setInternalContactScale] = useState(0.5);
   const [structureId, setStructureId] = useState<StressPresetId>('hut');
   const [projType, setProjType] = useState<'ball' | 'box'>("ball");
   const [projectileSpeed, setProjectileSpeed] = useState(36);
   const [projectileMass, setProjectileMass] = useState(15000);
-  const [materialScale, setMaterialScale] = useState(1_000_000.0);
+  const [materialScale, setMaterialScale] = useState(1.0);
   const [pushForce, setPushForce] = useState(8000);
   const [wallSpan, setWallSpan] = useState(6.0);
   const [wallHeight, setWallHeight] = useState(3.0);
@@ -682,8 +768,12 @@ export default function Page() {
         setSolverGravityEnabled={setSolverGravityEnabled}
         limitSinglesCollisions={limitSinglesCollisions}
         setLimitSinglesCollisions={setLimitSinglesCollisions}
+        damageClickRatio={damageClickRatio}
+        setDamageClickRatio={setDamageClickRatio}
         mode={mode}
         setMode={setMode}
+        damageEnabled={damageEnabled}
+        setDamageEnabled={setDamageEnabled}
         pushForce={pushForce}
         setPushForce={setPushForce}
         projType={projType}
@@ -719,6 +809,14 @@ export default function Page() {
         setStructureId={setStructureId}
         structures={structures}
         structureDescription={currentStructure?.description}
+        contactDamageScale={contactDamageScale}
+        setContactDamageScale={setContactDamageScale}
+        minImpulseThreshold={minImpulseThreshold}
+        setMinImpulseThreshold={setMinImpulseThreshold}
+        contactCooldownMs={contactCooldownMs}
+        setContactCooldownMs={setContactCooldownMs}
+        internalContactScale={internalContactScale}
+        setInternalContactScale={setInternalContactScale}
       />
       <Canvas shadows camera={{ position: [7, 5, 9], fov: 45 }}>
         <color attach="background" args={["#0e0e12"]} />
@@ -731,6 +829,12 @@ export default function Page() {
           iteration={iteration}
           structureId={structureId}
           mode={mode}
+          damageEnabled={damageEnabled}
+          damageClickRatio={damageClickRatio}
+          contactDamageScale={contactDamageScale}
+          minImpulseThreshold={minImpulseThreshold}
+          contactCooldownMs={contactCooldownMs}
+          internalContactScale={internalContactScale}
           pushForce={pushForce}
           projType={projType}
           projectileSpeed={projectileSpeed}
