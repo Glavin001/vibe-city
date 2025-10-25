@@ -12,8 +12,11 @@ import { buildBeamBridgeScenario } from "@/lib/stress/scenarios/beamBridgeScenar
 import {
   STRESS_PRESET_METADATA,
   buildBridgeScenario,
+  buildCourtyardHouseScenario,
   buildHutScenario,
+  buildTownhouseScenario,
   buildTowerScenario,
+  buildVaultedLoftScenario,
   type StressPresetId,
 } from "@/lib/stress/scenarios/structurePresets";
 import { buildChunkMeshes, buildChunkMeshesFromGeometries, buildSolverDebugHelper, updateChunkMeshes, updateProjectileMeshes, computeWorldDebugLines } from "@/lib/stress/three/destructible-adapter";
@@ -100,6 +103,12 @@ const SCENARIO_BUILDERS: Record<StressPresetId, (params: ScenarioBuilderParams) 
     buildBeamBridgeScenario({ bondsX: bondsXEnabled, bondsY: bondsYEnabled, bondsZ: bondsZEnabled }),
   tower: ({ bondsXEnabled, bondsYEnabled, bondsZEnabled }) =>
     buildTowerScenario({ bondsX: bondsXEnabled, bondsY: bondsYEnabled, bondsZ: bondsZEnabled }),
+  townhouse: ({ bondsXEnabled, bondsYEnabled, bondsZEnabled }) =>
+    buildTownhouseScenario({ bondsX: bondsXEnabled, bondsY: bondsYEnabled, bondsZ: bondsZEnabled }),
+  courtyardHouse: ({ bondsXEnabled, bondsYEnabled, bondsZEnabled }) =>
+    buildCourtyardHouseScenario({ bondsX: bondsXEnabled, bondsY: bondsYEnabled, bondsZ: bondsZEnabled }),
+  vaultedLoft: ({ bondsXEnabled, bondsYEnabled, bondsZEnabled }) =>
+    buildVaultedLoftScenario({ bondsX: bondsXEnabled, bondsY: bondsYEnabled, bondsZ: bondsZEnabled }),
   fracturedWall: ({ wallSpan, wallHeight, wallThickness }) =>
     buildFracturedWallScenario({ span: wallSpan, height: wallHeight, thickness: wallThickness, fragmentCount: 120 }),
 };
