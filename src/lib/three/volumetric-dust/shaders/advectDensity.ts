@@ -1,4 +1,4 @@
-import { atlasHelpers } from './atlas';
+import { atlasHelpers } from "./atlas";
 
 export const advectDensityShader = /* glsl */ `
 precision highp float;
@@ -18,9 +18,6 @@ uniform int   uEmit;
 uniform vec3  uEmitterCenterLocal;
 uniform float uEmitterRadiusMeters;
 uniform float uEmitterMassRateKgPerSec;
-
-uniform sampler2D tDensity;
-uniform sampler2D tVelocity;
 
 ${atlasHelpers}
 

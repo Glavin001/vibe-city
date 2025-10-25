@@ -1,7 +1,7 @@
-import * as THREE from 'three';
-import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
+import * as THREE from "three";
+import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
 
-import { volumetricCompositeShader } from './shaders/volumetricComposite';
+import { volumetricCompositeShader } from "./shaders/volumetricComposite";
 
 export type VolumetricPassOptions = {
   densityAtlas: THREE.Texture;
@@ -27,7 +27,9 @@ export class VolumetricCompositePass {
       uGrid: { value: opts.grid },
       uTilesX: { value: tilesX },
       uTilesY: { value: tilesY },
-      uAtlasSize: { value: new THREE.Vector2(tilesX * opts.grid, tilesY * opts.grid) },
+      uAtlasSize: {
+        value: new THREE.Vector2(tilesX * opts.grid, tilesY * opts.grid),
+      },
       uTileMin: { value: opts.tileMin.clone() },
       uTileMax: { value: opts.tileMax.clone() },
       uVoxelWorldSize: {
@@ -37,10 +39,10 @@ export class VolumetricCompositePass {
       uAlbedo: { value: opts.albedo.clone() },
       uStepWorld: { value: opts.stepWorld },
       uMaxSteps: { value: opts.maxSteps },
-      projectionMatrix: { value: new THREE.Matrix4() },
-      viewMatrix: { value: new THREE.Matrix4() },
-      invProjectionMatrix: { value: new THREE.Matrix4() },
-      invViewMatrix: { value: new THREE.Matrix4() },
+      uProjectionMatrix: { value: new THREE.Matrix4() },
+      uViewMatrix: { value: new THREE.Matrix4() },
+      uInvProjectionMatrix: { value: new THREE.Matrix4() },
+      uInvViewMatrix: { value: new THREE.Matrix4() },
     };
 
     this.pass = new ShaderPass({
@@ -72,15 +74,17 @@ export class VolumetricCompositePass {
     if (u.tileMin) (uniforms.uTileMin.value as THREE.Vector3).copy(u.tileMin);
     if (u.tileMax) (uniforms.uTileMax.value as THREE.Vector3).copy(u.tileMax);
     if (u.projectionMatrix)
-      (uniforms.projectionMatrix.value as THREE.Matrix4).copy(u.projectionMatrix);
+      (uniforms.uProjectionMatrix.value as THREE.Matrix4).copy(
+        u.projectionMatrix,
+      );
     if (u.invProjectionMatrix)
-      (uniforms.invProjectionMatrix.value as THREE.Matrix4).copy(
+      (uniforms.uInvProjectionMatrix.value as THREE.Matrix4).copy(
         u.invProjectionMatrix,
       );
     if (u.viewMatrix)
-      (uniforms.viewMatrix.value as THREE.Matrix4).copy(u.viewMatrix);
+      (uniforms.uViewMatrix.value as THREE.Matrix4).copy(u.viewMatrix);
     if (u.invViewMatrix)
-      (uniforms.invViewMatrix.value as THREE.Matrix4).copy(u.invViewMatrix);
+      (uniforms.uInvViewMatrix.value as THREE.Matrix4).copy(u.invViewMatrix);
     if (u.voxelWorldSize !== undefined)
       uniforms.uVoxelWorldSize.value = u.voxelWorldSize;
   }

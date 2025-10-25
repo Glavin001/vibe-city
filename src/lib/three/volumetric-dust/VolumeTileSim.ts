@@ -1,11 +1,11 @@
-import * as THREE from 'three';
+import * as THREE from "three";
 import {
   GPUComputationRenderer,
-  Variable,
-} from 'three/examples/jsm/misc/GPUComputationRenderer.js';
+  type Variable,
+} from "three/examples/jsm/misc/GPUComputationRenderer.js";
 
-import { advectDensityShader } from './shaders/advectDensity';
-import { advectVelocityShader } from './shaders/advectVelocity';
+import { advectDensityShader } from "./shaders/advectDensity";
+import { advectVelocityShader } from "./shaders/advectVelocity";
 
 export type SimUpdateOptions = {
   tileMin: THREE.Vector3;
@@ -62,8 +62,16 @@ export class VolumeTileSim {
       velArr[i + 3] = 0;
     }
 
-    this.densVar = this.gpu.addVariable('tDensity', advectDensityShader, densTex);
-    this.velVar = this.gpu.addVariable('tVelocity', advectVelocityShader, velTex);
+    this.densVar = this.gpu.addVariable(
+      "tDensity",
+      advectDensityShader,
+      densTex,
+    );
+    this.velVar = this.gpu.addVariable(
+      "tVelocity",
+      advectVelocityShader,
+      velTex,
+    );
 
     this.gpu.setVariableDependencies(this.densVar, [this.densVar, this.velVar]);
     this.gpu.setVariableDependencies(this.velVar, [this.velVar]);
@@ -104,10 +112,14 @@ export class VolumeTileSim {
   }
 
   update(dt: number, opts: SimUpdateOptions) {
-    const densUniforms = this.densVar.material
-      .uniforms as Record<string, THREE.IUniform>;
-    const velUniforms = this.velVar.material
-      .uniforms as Record<string, THREE.IUniform>;
+    const densUniforms = this.densVar.material.uniforms as Record<
+      string,
+      THREE.IUniform
+    >;
+    const velUniforms = this.velVar.material.uniforms as Record<
+      string,
+      THREE.IUniform
+    >;
 
     densUniforms.uDt.value = dt;
     velUniforms.uDt.value = dt;
@@ -130,8 +142,6 @@ export class VolumeTileSim {
     );
     densUniforms.uEmitterRadiusMeters.value = opts.emitterRadiusMeters;
     densUniforms.uEmitterMassRateKgPerSec.value = opts.emitterMassRateKgPerSec;
-
-    densUniforms.tVelocity.value = this.getVelocityTexture();
 
     this.gpu.compute();
   }

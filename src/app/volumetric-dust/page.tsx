@@ -1,18 +1,18 @@
-'use client';
+"use client";
 
-import { useEffect, useRef } from 'react';
-import * as THREE from 'three';
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
-import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { useEffect, useRef } from "react";
+import * as THREE from "three";
+import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
+import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 
-import { VolumeTileSim } from '@/lib/three/volumetric-dust/VolumeTileSim';
-import { VolumetricCompositePass } from '@/lib/three/volumetric-dust/VolumetricCompositePass';
+import { VolumeTileSim } from "@/lib/three/volumetric-dust/VolumeTileSim";
+import { VolumetricCompositePass } from "@/lib/three/volumetric-dust/VolumetricCompositePass";
 
 const FULL_HEIGHT_STYLE: React.CSSProperties = {
-  width: '100%',
-  height: '100vh',
-  position: 'relative',
+  width: "100%",
+  height: "100vh",
+  position: "relative",
 };
 
 export default function VolumetricDustPage() {
@@ -30,7 +30,7 @@ export default function VolumetricDustPage() {
 
     if (!renderer.capabilities.isWebGL2) {
       // eslint-disable-next-line no-console
-      console.warn('Volumetric dust demo requires WebGL2.');
+      console.warn("Volumetric dust demo requires WebGL2.");
     }
 
     const scene = new THREE.Scene();
@@ -71,14 +71,21 @@ export default function VolumetricDustPage() {
       metalness: 0,
       roughness: 1,
     });
-    const floor = new THREE.Mesh(new THREE.PlaneGeometry(roomSize.x, roomSize.z), floorMat);
+    const floor = new THREE.Mesh(
+      new THREE.PlaneGeometry(roomSize.x, roomSize.z),
+      floorMat,
+    );
     floor.rotation.x = -Math.PI / 2;
     scene.add(floor);
 
     const brickSize = new THREE.Vector3(0.19, 0.09, 0.057);
     const brick = new THREE.Mesh(
       new THREE.BoxGeometry(brickSize.x, brickSize.y, brickSize.z),
-      new THREE.MeshStandardMaterial({ color: 0x6d3a27, metalness: 0, roughness: 0.9 }),
+      new THREE.MeshStandardMaterial({
+        color: 0x6d3a27,
+        metalness: 0,
+        roughness: 0.9,
+      }),
     );
     brick.position.set(0, 1.2, 0);
     scene.add(brick);
@@ -86,7 +93,11 @@ export default function VolumetricDustPage() {
     const GRID = 64;
     const tileSize = 3;
     const tileMin = new THREE.Vector3(-tileSize * 0.5, 0.4, -tileSize * 0.5);
-    const tileMax = new THREE.Vector3(tileSize * 0.5, 0.4 + tileSize, tileSize * 0.5);
+    const tileMax = new THREE.Vector3(
+      tileSize * 0.5,
+      0.4 + tileSize,
+      tileSize * 0.5,
+    );
 
     const sim = new VolumeTileSim(renderer, GRID);
 
@@ -118,20 +129,24 @@ export default function VolumetricDustPage() {
           tileMax.z - tileMin.z,
         ),
       ),
-      new THREE.LineBasicMaterial({ color: 0x7fbfff, transparent: true, opacity: 0.25 }),
+      new THREE.LineBasicMaterial({
+        color: 0x7fbfff,
+        transparent: true,
+        opacity: 0.25,
+      }),
     );
     tileBox.position.copy(tileMin.clone().add(tileMax).multiplyScalar(0.5));
     scene.add(tileBox);
 
-    const overlay = document.createElement('div');
-    overlay.style.position = 'absolute';
-    overlay.style.left = '12px';
-    overlay.style.top = '12px';
-    overlay.style.color = '#eaecef';
-    overlay.style.font = '600 12px system-ui, sans-serif';
-    overlay.style.background = 'rgba(0,0,0,0.4)';
-    overlay.style.padding = '10px 12px';
-    overlay.style.borderRadius = '8px';
+    const overlay = document.createElement("div");
+    overlay.style.position = "absolute";
+    overlay.style.left = "12px";
+    overlay.style.top = "12px";
+    overlay.style.color = "#eaecef";
+    overlay.style.font = "600 12px system-ui, sans-serif";
+    overlay.style.background = "rgba(0,0,0,0.4)";
+    overlay.style.padding = "10px 12px";
+    overlay.style.borderRadius = "8px";
     overlay.innerHTML = `
       <div><b>Volumetric dust (GPU) — demo</b></div>
       <div>Left-drag orbit, wheel zoom</div>
@@ -139,7 +154,7 @@ export default function VolumetricDustPage() {
     `;
     container.appendChild(overlay);
 
-    const destroyBtn = overlay.querySelector<HTMLButtonElement>('#destroyBtn');
+    const destroyBtn = overlay.querySelector<HTMLButtonElement>("#destroyBtn");
 
     const brickDensitySolid = 2000;
     const airborneFrac = 0.03;
@@ -161,13 +176,25 @@ export default function VolumetricDustPage() {
       injectTimer = burstSeconds;
 
       emitterCenterLocal.set(
-        THREE.MathUtils.clamp((brick.position.x - tileMin.x) / (tileMax.x - tileMin.x), 0.01, 0.99),
-        THREE.MathUtils.clamp((brick.position.y - tileMin.y) / (tileMax.y - tileMin.y), 0.01, 0.99),
-        THREE.MathUtils.clamp((brick.position.z - tileMin.z) / (tileMax.z - tileMin.z), 0.01, 0.99),
+        THREE.MathUtils.clamp(
+          (brick.position.x - tileMin.x) / (tileMax.x - tileMin.x),
+          0.01,
+          0.99,
+        ),
+        THREE.MathUtils.clamp(
+          (brick.position.y - tileMin.y) / (tileMax.y - tileMin.y),
+          0.01,
+          0.99,
+        ),
+        THREE.MathUtils.clamp(
+          (brick.position.z - tileMin.z) / (tileMax.z - tileMin.z),
+          0.01,
+          0.99,
+        ),
       );
     };
 
-    destroyBtn?.addEventListener('click', destroyBrick);
+    destroyBtn?.addEventListener("click", destroyBrick);
 
     const onResize = () => {
       const w = container.clientWidth;
@@ -177,7 +204,7 @@ export default function VolumetricDustPage() {
       camera.updateProjectionMatrix();
       composer.setSize(w, h);
     };
-    window.addEventListener('resize', onResize);
+    window.addEventListener("resize", onResize);
     onResize();
 
     const clock = new THREE.Clock();
@@ -230,8 +257,8 @@ export default function VolumetricDustPage() {
 
     return () => {
       cancelAnimationFrame(frameId);
-      window.removeEventListener('resize', onResize);
-      destroyBtn?.removeEventListener('click', destroyBrick);
+      window.removeEventListener("resize", onResize);
+      destroyBtn?.removeEventListener("click", destroyBrick);
       controls.dispose();
       composer.dispose();
       sim.dispose();

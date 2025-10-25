@@ -1,4 +1,4 @@
-import { atlasHelpers } from './atlas';
+import { atlasHelpers } from "./atlas";
 
 export const volumetricCompositeShader = /* glsl */ `
 precision highp float;
@@ -20,10 +20,10 @@ uniform vec3  uAlbedo;
 uniform float uStepWorld;
 uniform float uMaxSteps;
 
-uniform mat4 projectionMatrix;
-uniform mat4 viewMatrix;
-uniform mat4 invProjectionMatrix;
-uniform mat4 invViewMatrix;
+uniform mat4 uProjectionMatrix;
+uniform mat4 uViewMatrix;
+uniform mat4 uInvProjectionMatrix;
+uniform mat4 uInvViewMatrix;
 
 varying vec2 vUv;
 
@@ -42,9 +42,9 @@ vec2 intersectAABB(vec3 ro, vec3 rd, vec3 bmin, vec3 bmax) {
 
 vec3 worldPosFromDepth(vec2 uv, float depth) {
   vec4 clip = vec4(uv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
-  vec4 view = invProjectionMatrix * clip;
+  vec4 view = uInvProjectionMatrix * clip;
   view /= view.w;
-  vec4 world = invViewMatrix * view;
+  vec4 world = uInvViewMatrix * view;
   return world.xyz;
 }
 
@@ -54,7 +54,7 @@ void main() {
   vec3 sceneCol = texture2D(tScene, uv).rgb;
   float depth = texture2D(tDepth, uv).x;
 
-  vec3 camPos = (invViewMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+  vec3 camPos = (uInvViewMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
   vec3 wsAtDepth = worldPosFromDepth(uv, depth);
   vec3 rd = normalize(wsAtDepth - camPos);
 

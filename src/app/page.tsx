@@ -18,63 +18,80 @@ const demoCategories: DemoCategory[] = [
         href: "/three",
         icon: "🎲",
         title: "THREE.js Demo",
-        description: "Basic THREE.js setup with interactive 3D scene. A starting point for 3D web graphics."
+        description:
+          "Basic THREE.js setup with interactive 3D scene. A starting point for 3D web graphics.",
       },
       {
         href: "/humanoid-demo",
         icon: "🧍",
         title: "Universal Humanoid",
-        description: "Optimized 3D character model with 45 animations. Demonstrates instanced rendering and animation blending with gltfjsx."
+        description:
+          "Optimized 3D character model with 45 animations. Demonstrates instanced rendering and animation blending with gltfjsx.",
       },
       {
         href: "/animation-mixer-demo",
         icon: "🎭",
         title: "Animation State Machine",
-        description: "Advanced animation blending with 2D blend spaces, layered animations, and state machines. Features parameter damping, masked layers, and smooth transitions."
+        description:
+          "Advanced animation blending with 2D blend spaces, layered animations, and state machines. Features parameter damping, masked layers, and smooth transitions.",
       },
       {
         href: "/grass",
         icon: "🌿",
         title: "Grass Demo (V1)",
-        description: "First iteration of procedural grass rendering. Features basic wind simulation and LOD optimization."
+        description:
+          "First iteration of procedural grass rendering. Features basic wind simulation and LOD optimization.",
       },
       {
         href: "/grass-v2",
         icon: "🌱",
         title: "Grass Demo (V2)",
-        description: "Enhanced grass rendering with improved shaders. Better performance and more realistic movement."
+        description:
+          "Enhanced grass rendering with improved shaders. Better performance and more realistic movement.",
       },
       {
         href: "/instanced-mesh2",
         icon: "🔲",
         title: "Instanced Mesh2 Demo",
-        description: "Advanced instanced mesh rendering for thousands of objects. Demonstrates GPU optimization techniques."
+        description:
+          "Advanced instanced mesh rendering for thousands of objects. Demonstrates GPU optimization techniques.",
       },
       {
         href: "/materials",
         icon: "🎨",
         title: "Materials Gallery",
-        description: "Comprehensive WebGPU materials showcase featuring 10 procedural wood types (40 variations) and 8 industry-standard MaterialX materials. All displayed in a unified grid with interactive controls. Includes chrome, copper, gold, jade, marble, velvet, plastic, and brushed metal."
+        description:
+          "Comprehensive WebGPU materials showcase featuring 10 procedural wood types (40 variations) and 8 industry-standard MaterialX materials. All displayed in a unified grid with interactive controls. Includes chrome, copper, gold, jade, marble, velvet, plastic, and brushed metal.",
       },
       {
         href: "/decals-demo",
         icon: "🎯",
         title: "Instanced Decals Demo",
-        description: "Click-to-place decals on instanced meshes with BatchedMesh for efficient rendering. Demonstrates raycasting, DecalGeometry, and ring buffer optimization with up to 2000 decals in a single draw call."
+        description:
+          "Click-to-place decals on instanced meshes with BatchedMesh for efficient rendering. Demonstrates raycasting, DecalGeometry, and ring buffer optimization with up to 2000 decals in a single draw call.",
       },
       {
         href: "/decals-csg-demo",
         icon: "🕳️",
         title: "Decals + CSG Holes",
-        description: "Shoot decals and subtract cylindrical holes via CSG. Proof-of-concept that combines surface decals with boolean subtraction on instanced geometry."
+        description:
+          "Shoot decals and subtract cylindrical holes via CSG. Proof-of-concept that combines surface decals with boolean subtraction on instanced geometry.",
       },
       {
         href: "/gpu-rain",
         icon: "🌧️",
         title: "GPU Compute Particles Rain",
-        description: "WebGPU compute shader rain simulation with 50,000 particles. Features real-time collision detection via render-to-texture, GPU-driven particle physics, and dynamic ripple effects."
-      }
-    ]
+        description:
+          "WebGPU compute shader rain simulation with 50,000 particles. Features real-time collision detection via render-to-texture, GPU-driven particle physics, and dynamic ripple effects.",
+      },
+      {
+        href: "/volumetric-dust",
+        icon: "🌫️",
+        title: "Volumetric Dust (GPU)",
+        description:
+          "Three.js GPUComputationRenderer dust tile with ray-marched volumetric compositing and interactive emission trigger.",
+      },
+    ],
   },
   {
     name: "Physics & Terrain",
@@ -83,63 +100,73 @@ const demoCategories: DemoCategory[] = [
         href: "/three-pinata",
         icon: "🎪",
         title: "THREE.js + Pinata",
-        description: "Interactive 3D piñata with physics simulation. Break it open with realistic destruction effects!"
+        description:
+          "Interactive 3D piñata with physics simulation. Break it open with realistic destruction effects!",
       },
       {
         href: "/heightfield-demo",
         icon: "🏔️",
         title: "Heightfield Physics Demo",
-        description: "Interactive terrain with Rapier physics integration. Demonstrates collision detection on height maps."
+        description:
+          "Interactive terrain with Rapier physics integration. Demonstrates collision detection on height maps.",
       },
       {
         href: "/heightfield-dynamic",
         icon: "⛰️",
         title: "Heightfield (Dynamic)",
-        description: "Real-time deformable terrain system. Modify the landscape dynamically with physics interactions."
+        description:
+          "Real-time deformable terrain system. Modify the landscape dynamically with physics interactions.",
       },
       {
         href: "/heightfield-simple",
         icon: "🗻",
         title: "Heightfield (Simple)",
-        description: "Simplified heightfield implementation for learning. Clean code structure for understanding the basics."
+        description:
+          "Simplified heightfield implementation for learning. Clean code structure for understanding the basics.",
       },
       {
         href: "/heightfield-craters",
         icon: "💥",
         title: "Heightfield (Craters)",
-        description: "Dynamic crater creation on terrain surfaces. Creates realistic impact deformations with physics."
+        description:
+          "Dynamic crater creation on terrain surfaces. Creates realistic impact deformations with physics.",
       },
       {
         href: "/bunker-rapier",
         icon: "⚡",
         title: "Bunker (Rapier Physics)",
-        description: "Bunker demo powered by Rapier physics engine. Fast and accurate physics simulation in the browser."
+        description:
+          "Bunker demo powered by Rapier physics engine. Fast and accurate physics simulation in the browser.",
       },
       {
         href: "/destructible-wall",
         icon: "🧱",
         title: "Destructible Wall",
-        description: "Breakable wall system with realistic destruction. Uses physics constraints and fracture patterns."
-      }
-      ,{
+        description:
+          "Breakable wall system with realistic destruction. Uses physics constraints and fracture patterns.",
+      },
+      {
         href: "/destructible-stress",
         icon: "🧱",
         title: "Destructible (Stress Solver)",
-        description: "Single-body colliders + Blast Stress Solver with safe-frame splitting and debug lines."
-      }
-      ,{
+        description:
+          "Single-body colliders + Blast Stress Solver with safe-frame splitting and debug lines.",
+      },
+      {
         href: "/shockwave-demo",
         icon: "💣",
         title: "Shockwave Demo",
-        description: "Interactive explosive shockwave with presets (TNT/C4/etc.) and simple scenes."
-      }
-      ,{
+        description:
+          "Interactive explosive shockwave with presets (TNT/C4/etc.) and simple scenes.",
+      },
+      {
         href: "/ragdoll",
         icon: "🧍",
         title: "Ragdoll Physics",
-        description: "Spawn humanoid ragdolls with Rapier joints. Click to place them on varied terrain; toggle debug and gravity with Leva."
-      }
-    ]
+        description:
+          "Spawn humanoid ragdolls with Rapier joints. Click to place them on varied terrain; toggle debug and gravity with Leva.",
+      },
+    ],
   },
   {
     name: "AI & Game Logic",
@@ -148,27 +175,31 @@ const demoCategories: DemoCategory[] = [
         href: "/ai-world",
         icon: "🌐",
         title: "AI World (Advanced)",
-        description: "Advanced 3D interactive world with physics, multiple AI NPCs, action system, and Gemini chat integration. Complete ECS-style world with HTN planning."
+        description:
+          "Advanced 3D interactive world with physics, multiple AI NPCs, action system, and Gemini chat integration. Complete ECS-style world with HTN planning.",
       },
       {
         href: "/bunker",
         icon: "🏰",
         title: "Bunker Mission (HTN)",
-        description: "AI-driven NPCs using Hierarchical Task Networks. Watch soldiers plan and execute tactical missions."
+        description:
+          "AI-driven NPCs using Hierarchical Task Networks. Watch soldiers plan and execute tactical missions.",
       },
       {
         href: "/bunker-fluid",
         icon: "💧",
         title: "Bunker (Fluid HTN + WASM)",
-        description: "Advanced HTN planning with WASM performance. Fluid HTN allows dynamic replanning during execution."
+        description:
+          "Advanced HTN planning with WASM performance. Fluid HTN allows dynamic replanning during execution.",
       },
       {
         href: "/fluid-demo",
         icon: "🧩",
         title: "Fluid HTN Demo",
-        description: "Pure demonstration of Fluid HTN planning system. See how AI agents decompose complex tasks."
-      }
-    ]
+        description:
+          "Pure demonstration of Fluid HTN planning system. See how AI agents decompose complex tasks.",
+      },
+    ],
   },
   {
     name: "Chat & Conversation",
@@ -177,33 +208,38 @@ const demoCategories: DemoCategory[] = [
         href: "/ai-chat",
         icon: "🤖",
         title: "AI Chat",
-        description: "Basic AI chat interface with streaming responses. Connect to various LLM providers for conversation."
+        description:
+          "Basic AI chat interface with streaming responses. Connect to various LLM providers for conversation.",
       },
       {
         href: "/ai-chat-advanced",
         icon: "🧠",
         title: "AI Chat (Advanced)",
-        description: "Enhanced chat with advanced features and context. Includes memory and conversation management."
+        description:
+          "Enhanced chat with advanced features and context. Includes memory and conversation management.",
       },
       {
         href: "/npc-chat",
         icon: "🧑‍🚀",
         title: "NPC Chat",
-        description: "Interactive NPC conversations with personality. Game-ready dialogue system with character traits."
+        description:
+          "Interactive NPC conversations with personality. Game-ready dialogue system with character traits.",
       },
       {
         href: "/npc-chat-physics",
         icon: "🎮",
         title: "NPC Chat (Physics)",
-        description: "NPC chat with Rapier physics. Both player and NPCs use character controllers that collide with walls!"
+        description:
+          "NPC chat with Rapier physics. Both player and NPCs use character controllers that collide with walls!",
       },
       {
         href: "/ai-text-world",
         icon: "🌍",
         title: "AI Text World",
-        description: "Text-based virtual world with AI tool calling. Chat with an AI agent that can move, perform actions, and interact with the environment using real-time tool execution."
-      }
-    ]
+        description:
+          "Text-based virtual world with AI tool calling. Chat with an AI agent that can move, perform actions, and interact with the environment using real-time tool execution.",
+      },
+    ],
   },
   {
     name: "Audio & Speech",
@@ -212,33 +248,38 @@ const demoCategories: DemoCategory[] = [
         href: "/whisper",
         icon: "🔊",
         title: "Whisper STT",
-        description: "OpenAI Whisper speech-to-text in the browser. High-quality transcription running locally."
+        description:
+          "OpenAI Whisper speech-to-text in the browser. High-quality transcription running locally.",
       },
       {
         href: "/kokoro-tts",
         icon: "🗣️",
         title: "Kokoro TTS",
-        description: "Text-to-speech synthesis using Kokoro model. Natural-sounding voice generation in real-time."
+        description:
+          "Text-to-speech synthesis using Kokoro model. Natural-sounding voice generation in real-time.",
       },
       {
         href: "/vad",
         icon: "🎙️",
         title: "VAD Demo",
-        description: "Voice Activity Detection using Silero VAD. Detect when someone is speaking with low latency."
+        description:
+          "Voice Activity Detection using Silero VAD. Detect when someone is speaking with low latency.",
       },
       {
         href: "/voice-to-voice",
         icon: "🎤",
         title: "Voice to Voice",
-        description: "Real-time voice conversation system. Combines STT, AI, and TTS for natural dialogue."
+        description:
+          "Real-time voice conversation system. Combines STT, AI, and TTS for natural dialogue.",
       },
       {
         href: "/kokoro-chunker",
         icon: "✂️",
         title: "Kokoro Chunker",
-        description: "Smart text chunking for TTS processing. Splits text at natural boundaries for smoother speech."
-      }
-    ]
+        description:
+          "Smart text chunking for TTS processing. Splits text at natural boundaries for smoother speech.",
+      },
+    ],
   },
   {
     name: "Computer Vision",
@@ -247,10 +288,11 @@ const demoCategories: DemoCategory[] = [
         href: "/face-api",
         icon: "😊",
         title: "Face API",
-        description: "Real-time face detection and recognition. Track facial features and expressions in the browser."
-      }
-    ]
-  }
+        description:
+          "Real-time face detection and recognition. Track facial features and expressions in the browser.",
+      },
+    ],
+  },
 ];
 
 function DemoCard({ demo }: { demo: Demo }) {
@@ -286,8 +328,8 @@ export default function Home() {
             Vibe City Demos
           </h1>
           <p className="text-xl text-gray-400 max-w-2xl mx-auto">
-            Explore interactive demos showcasing 3D graphics, physics, AI, and more.
-            Built with cutting-edge web technologies.
+            Explore interactive demos showcasing 3D graphics, physics, AI, and
+            more. Built with cutting-edge web technologies.
           </p>
         </header>
 

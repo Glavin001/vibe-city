@@ -1,4 +1,4 @@
-import { atlasHelpers } from './atlas';
+import { atlasHelpers } from "./atlas";
 
 export const advectVelocityShader = /* glsl */ `
 precision highp float;
@@ -13,9 +13,6 @@ uniform float uBuoyancy;
 
 uniform vec3  uTileMin;
 uniform vec3  uTileMax;
-
-varying vec2 vUv;
-uniform sampler2D tVelocity;
 
 ${atlasHelpers}
 
