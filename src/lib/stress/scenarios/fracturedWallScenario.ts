@@ -94,7 +94,8 @@ function computeBondsFromFragments(fragments: FragmentInfo[]): Array<{ a: number
   const bonds: Array<{ a: number; b: number; centroid: Vec3; normal: Vec3; area: number }> = [];
   if (fragments.length === 0) return bonds;
 
-  const tolerance = 0.12 * Math.min(...fragments.map((f) => Math.min(f.halfExtents.x, f.halfExtents.z)));
+  // Global tolerance baseline; refined per-pair below
+  const globalTol = 0.12 * Math.min(...fragments.map((f) => Math.min(f.halfExtents.x, f.halfExtents.z)));
 
   for (let i = 0; i < fragments.length; i += 1) {
     for (let j = i + 1; j < fragments.length; j += 1) {
@@ -111,8 +112,6 @@ function computeBondsFromFragments(fragments: FragmentInfo[]): Array<{ a: number
       const aN = projectExtentsOnAxisWorld(A.geometry, A.worldPosition, n);
       const bN = projectExtentsOnAxisWorld(B.geometry, B.worldPosition, n);
       const separation = bN.min - aN.max; // positive if B is in +n direction away from A
-      const epsGap = Math.max(0.006, tolerance * 0.15);
-      if (separation > epsGap) continue;
 
       // Use two tangents for overlap area test
       const up = Math.abs(n.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
@@ -123,16 +122,31 @@ function computeBondsFromFragments(fragments: FragmentInfo[]): Array<{ a: number
       const b1 = projectExtentsOnAxisWorld(B.geometry, B.worldPosition, t1);
       const a2 = projectExtentsOnAxisWorld(A.geometry, A.worldPosition, t2);
       const b2 = projectExtentsOnAxisWorld(B.geometry, B.worldPosition, t2);
+
       const o1 = overlap1D(a1, b1);
       const o2 = overlap1D(a2, b2);
       const size1 = Math.min(a1.max - a1.min, b1.max - b1.min);
       const size2 = Math.min(a2.max - a2.min, b2.max - b2.min);
+
+      // Pair-relative gap threshold to avoid long-range bonds across thin gaps
+      const pairMin = Math.max(1e-6, Math.min(size1, size2));
+      const epsGap = Math.max(0.006, Math.min(globalTol, pairMin * 0.15));
+      if (separation > epsGap) continue;
+
       if (o1 < size1 * 0.22 || o2 < size2 * 0.22) continue;
 
       const contactArea = o1 * o2;
       if (!(contactArea > 0)) continue;
 
-      const mid = A.worldPosition.clone().add(B.worldPosition).multiplyScalar(0.5);
+      // Contact centroid: the center of the overlap rectangle in the (n, t1, t2) basis
+      const cN = 0.5 * (Math.max(aN.min, bN.min) + Math.min(aN.max, bN.max));
+      const c1 = 0.5 * (Math.max(a1.min, b1.min) + Math.min(a1.max, b1.max));
+      const c2 = 0.5 * (Math.max(a2.min, b2.min) + Math.min(a2.max, b2.max));
+      const mid = new THREE.Vector3()
+        .addScaledVector(n, cN)
+        .addScaledVector(t1, c1)
+        .addScaledVector(t2, c2);
+
       bonds.push({
         a: i,
         b: j,
@@ -143,6 +157,29 @@ function computeBondsFromFragments(fragments: FragmentInfo[]): Array<{ a: number
     }
   }
   return bonds;
+}
+
+function normalizeFractureAreasByAxis(
+  list: Array<{ a?: number; b?: number; centroid: Vec3; normal: Vec3; area: number }>,
+  dims: { span: number; height: number; thickness: number }
+) {
+  const target = { x: dims.height * dims.thickness, y: dims.span * dims.thickness, z: dims.span * dims.height };
+  const sum = { x: 0, y: 0, z: 0 };
+  const pick = (n: Vec3): 'x' | 'y' | 'z' => {
+    const ax = Math.abs(n.x), ay = Math.abs(n.y), az = Math.abs(n.z);
+    return ax >= ay && ax >= az ? 'x' : (ay >= az ? 'y' : 'z');
+  };
+  for (const b of list) sum[pick(b.normal)] += b.area;
+  const scale = {
+    x: sum.x > 0 ? target.x / sum.x : 1,
+    y: sum.y > 0 ? target.y / sum.y : 1,
+    z: sum.z > 0 ? target.z / sum.z : 1,
+  } as const;
+  return list.map((b) => {
+    const axis = pick(b.normal);
+    const area = Math.max(b.area * scale[axis], 1e-8);
+    return { ...b, area };
+  });
 }
 
 export function buildFracturedWallScenario({
@@ -196,9 +233,10 @@ export function buildFracturedWallScenario({
   }
 
   const rawBonds = computeBondsFromFragments(frags);
-  const bonds: ScenarioDesc['bonds'] = rawBonds.map((b) => ({
-    node0: b.a,
-    node1: b.b,
+  const normBonds = normalizeFractureAreasByAxis(rawBonds, { span, height, thickness });
+  const bonds: ScenarioDesc["bonds"] = normBonds.map((b) => ({
+    node0: (b as { a: number }).a,
+    node1: (b as { b: number }).b,
     centroid: b.centroid,
     normal: b.normal,
     area: Math.max(b.area, 1e-8),
