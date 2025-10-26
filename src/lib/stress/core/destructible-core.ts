@@ -17,13 +17,6 @@ type BuildCoreOptions = {
 };
 
 const isDev = true; //process.env.NODE_ENV !== 'production';
-// Velocity gating for damage: ignores quasi-static contacts, boosts fast impacts
-const V_GATE_MIN_EXTERNAL = 0.5; // baseline speed where boost starts
-const V_GATE_MIN_INTERNAL = 0.25; // internal gets earlier boost
-const V_GATE_MAX = 6.0; // m/s at which factor reaches 1.0
-const V_GATE_EXP = 1.0;
-const MIN_INTERNAL_SPEED_FACTOR = 1.0; // baseline factor below threshold
-const MIN_EXTERNAL_SPEED_FACTOR = 1.0; // baseline factor below threshold
 
 export async function buildDestructibleCore({
   scenario,
@@ -215,9 +208,139 @@ export async function buildDestructibleCore({
     internalContactScale: damage?.internalContactScale ?? 2.0,
     massExponent: damage?.massExponent ?? 0.5,
     internalMinImpulseThreshold: damage?.internalMinImpulseThreshold ?? 15,
+    splashRadius: damage?.splashRadius ?? 1.5,
+    splashFalloffExp: damage?.splashFalloffExp ?? 2.0,
+    speedMinExternal: damage?.speedMinExternal ?? 0.5,
+    speedMinInternal: damage?.speedMinInternal ?? 0.25,
+    speedMax: damage?.speedMax ?? 6.0,
+    speedExponent: damage?.speedExponent ?? 1.0,
+    slowSpeedFactor: damage?.slowSpeedFactor ?? 0.9,
+    fastSpeedFactor: damage?.fastSpeedFactor ?? 3.0,
   } as const;
 
   const damageSystem = new DestructibleDamageSystem({ chunks, scenario, materialScale, options: damageOptions });
+
+  // --- Shared helpers for speed scaling and contact draining ---
+  function getDt(): number {
+    try {
+      return world.timestep
+        ?? world.integrationParameters?.dt
+        ?? (1 / 60);
+    } catch { return (1 / 60); }
+  }
+
+  function computeSpeedFactor(relSpeed: number, isInternal: boolean): number {
+    try {
+      const opts = damageSystem.getOptions();
+      const vMin = isInternal ? (opts.speedMinInternal ?? 0.25) : (opts.speedMinExternal ?? 0.5);
+      const vMax = opts.speedMax ?? 6.0;
+      const exp = Math.max(0.01, opts.speedExponent ?? 1.0);
+      const slow = Math.max(0, Math.min(1, opts.slowSpeedFactor ?? 0.9));
+      const fast = Math.max(1, opts.fastSpeedFactor ?? 3.0);
+      const vSpan = Math.max(1e-3, vMax - vMin);
+      const t = relSpeed > vMin ? Math.min(1, Math.pow((relSpeed - vMin) / vSpan, exp)) : 0;
+      return slow + (fast - slow) * t;
+    } catch {
+      return 1.0;
+    }
+  }
+
+  function drainContactForces(params: { injectSolverForces: boolean }) {
+    eventQueue.drainContactForceEvents((ev: { totalForce: () => {x:number;y:number;z:number}; totalForceMagnitude: () => number; collider1: () => number; collider2: () => number; worldContactPoint?: () => {x:number;y:number;z:number}; worldContactPoint2?: () => {x:number;y:number;z:number} }) => {
+      const tf = ev.totalForce?.();
+      const mag = ev.totalForceMagnitude?.();
+      if (!tf || !(mag > 0)) {
+        return;
+      }
+
+      const h1 = ev.collider1?.();
+      const h2 = ev.collider2?.();
+      const wp = ev.worldContactPoint ? ev.worldContactPoint() : undefined;
+      const wp2 = ev.worldContactPoint2 ? ev.worldContactPoint2() : undefined;
+      const p1 = wp ?? wp2 ?? fallbackPoint(world, h1);
+      const p2 = wp2 ?? wp ?? fallbackPoint(world, h2);
+
+      const node1 = colliderToNode.has(h1) ? colliderToNode.get(h1) : undefined;
+      const node2 = colliderToNode.has(h2) ? colliderToNode.get(h2) : undefined;
+      const isInternal = (node1 != null && node2 != null);
+
+      const dt = getDt();
+      const relSpeed = computeRelativeSpeed(world, h1, h2, p1 ?? p2);
+      const speedFactor = computeSpeedFactor(relSpeed, isInternal);
+      const effMag = (mag ?? 0) * speedFactor;
+
+      const local1 = (node1 != null && p1) ? worldPointToActorLocal(node1, p1) : null;
+      const local2 = (node2 != null && p2) ? worldPointToActorLocal(node2, p2) : null;
+
+      // External: one side is ours, other is not
+      if (h1 != null) {
+        if (node1 != null && node2 == null) {
+          if (params.injectSolverForces) addForceForCollider(h1, +1, tf, p1 ?? p2);
+          try { if (damageSystem.isEnabled()) damageSystem.onImpact(node1, effMag, dt, local1 ? { localPoint: local1 } : undefined); } catch {}
+        }
+      }
+      if (h2 != null) {
+        if (node2 != null && node1 == null) {
+          if (params.injectSolverForces) addForceForCollider(h2, -1, tf, p2 ?? p1);
+          try { if (damageSystem.isEnabled()) damageSystem.onImpact(node2, effMag, dt, local2 ? { localPoint: local2 } : undefined); } catch {}
+        }
+        if (node1 != null && node2 != null) {
+          try { if (damageSystem.isEnabled()) damageSystem.onInternalImpact(node1, node2, effMag, dt, { localPointA: local1 ?? undefined, localPointB: local2 ?? undefined }); } catch {}
+        }
+      }
+    });
+  }
+
+  function injectPendingExternalForces(): boolean {
+    const had = pendingExternalForces.length > 0;
+    if (!had) return false;
+    try {
+      const dt = getDt();
+      for (const ef of pendingExternalForces) {
+        const { body } = actorBodyForNode(ef.nodeIndex);
+        const rb = body ?? world.getRigidBody(rootBody.handle);
+        if (!rb) {
+          if (isDev) console.warn('addForceForCollider', 'body is null', ef.nodeIndex);
+          continue;
+        }
+        const t = rb.translation();
+        const r = rb.rotation();
+        const qInv = { x: -r.x, y: -r.y, z: -r.z, w: r.w };
+        const pRel = { x: ef.point.x - t.x, y: ef.point.y - t.y, z: ef.point.z - t.z };
+        const localPoint = applyQuatToVec3(pRel, qInv);
+        const scaledForce = { x: ef.force.x * dt, y: ef.force.y * dt, z: ef.force.z * dt };
+        const localForce = applyQuatToVec3(scaledForce, qInv);
+        solver.addForce(
+          ef.nodeIndex,
+          { x: localPoint.x, y: localPoint.y, z: localPoint.z },
+          { x: localForce.x, y: localForce.y, z: localForce.z },
+          runtime.ExtForceMode.Force
+        );
+        // Map external push impulse to damage
+        try {
+          if (damageSystem.isEnabled()) {
+            const fmag = Math.hypot(ef.force.x, ef.force.y, ef.force.z);
+            damageSystem.onImpact(ef.nodeIndex, fmag, dt, { localPoint });
+          }
+        } catch {}
+      }
+    } catch (e) {
+      if (isDev) console.error('[Core] addForceForCollider failed', e);
+    } finally {
+      pendingExternalForces.splice(0, pendingExternalForces.length);
+    }
+    return had;
+  }
+
+  function applyDamageTick() {
+    if (!damageSystem.isEnabled()) return;
+    const dt = getDt();
+    damageSystem.tick(dt, (nodeIndex, reason) => {
+      try { handleNodeDestroyed(nodeIndex, reason as 'impact'|'manual'); } catch (e) {
+        if (isDev) console.error('[Core] handleNodeDestroyed failed', e);
+      }
+    });
+  }
 
   // Helper: determine if a set of nodes contains any supports (mass=0 or chunk flag)
   const actorNodesContainSupport = (nodesList: number[]): boolean => {
@@ -343,6 +466,22 @@ export async function buildDestructibleCore({
     return Math.hypot(dx, dy, dz);
   }
 
+  function worldPointToActorLocal(nodeIndex: number, worldPoint: { x:number; y:number; z:number }): { x:number; y:number; z:number } | null {
+    try {
+      const { body } = actorBodyForNode(nodeIndex);
+      const rb = body ?? world.getRigidBody(rootBody.handle);
+      if (!rb) return null;
+      const t = rb.translation();
+      const r = rb.rotation();
+      const qInv = { x: -r.x, y: -r.y, z: -r.z, w: r.w };
+      const pRel = { x: (worldPoint.x ?? 0) - (t.x ?? 0), y: (worldPoint.y ?? 0) - (t.y ?? 0), z: (worldPoint.z ?? 0) - (t.z ?? 0) };
+      const localPoint = applyQuatToVec3(pRel, qInv);
+      return { x: localPoint.x, y: localPoint.y, z: localPoint.z };
+    } catch {
+      return null;
+    }
+  }
+
   function stepEventful() {
     // Defensive: if mapping is empty (e.g., over-pruned by a prior sweep), rebuild from chunks
     if (colliderToNode.size === 0) {
@@ -361,134 +500,10 @@ export async function buildDestructibleCore({
       safeFrames = Math.max(safeFrames, 1);
       return;
     }
+    // Drain contact forces → solver and damage, with speed scaling
+    drainContactForces({ injectSolverForces: true });
 
-    // Drain contact forces → solver and damage
-    eventQueue.drainContactForceEvents((ev: { totalForce: () => {x:number;y:number;z:number}; totalForceMagnitude: () => number; collider1: () => number; collider2: () => number; worldContactPoint?: () => {x:number;y:number;z:number}; worldContactPoint2?: () => {x:number;y:number;z:number} }) => {
-      const tf = ev.totalForce?.();
-      const mag = ev.totalForceMagnitude?.();
-      if (!tf || !(mag > 0)) {
-        console.error('drainContactForceEvents skipped', ev, tf, mag);
-        return;
-      }
-
-      const h1 = ev.collider1?.();
-      const h2 = ev.collider2?.();
-
-      const collider1 = world.getCollider(h1);
-      const collider2 = world.getCollider(h2);
-      const userData1: any = collider1.parent()?.userData;
-      const userData2: any = collider2.parent()?.userData;
-
-      const wp = ev.worldContactPoint ? ev.worldContactPoint() : undefined;
-      const wp2 = ev.worldContactPoint2 ? ev.worldContactPoint2() : undefined;
-      const p1 = wp ?? wp2 ?? fallbackPoint(world, h1);
-      const p2 = wp2 ?? wp ?? fallbackPoint(world, h2);
-
-      // Get optional nodes for each collider
-      const node1 = colliderToNode.has(h1) ? colliderToNode.get(h1) : undefined;
-      const node2 = colliderToNode.has(h2) ? colliderToNode.get(h2) : undefined;
- 
-      // console.log('drainContactForceEvents', ev, h1, h2, p1, p2, node1, node2);
-    
-      // only inject EXTERNAL loads: exactly one side is bridge
-      // if (isBridge1 && !isBridge2) {
-      //   const p = ev.worldContactPoint?.() ?? ev.worldContactPoint2?.() ?? fallbackPoint(state.world, h1);
-      //   add(h1, +1, tf, p);     // always +1; we are adding an external load
-      // } else if (isBridge2 && !isBridge1) {
-      //   const p = ev.worldContactPoint2?.() ?? ev.worldContactPoint?.() ?? fallbackPoint(state.world, h2);
-      //   add(h2, +1, tf, p);
-      // }
-
-      // Impact damage for external contacts
-      const dt = world.timestep
-        ?? world.integrationParameters?.dt
-        ?? (1 / 60);
-
-      const relSpeed = computeRelativeSpeed(world, h1, h2, p1 ?? p2);
-      const isInternal = (node1 != null && node2 != null);
-      const hasGround = userData1?.ground || userData2?.ground;
-
-      // if (!isInternal && !hasGround) {
-      //   console.log('drainContactForceEvents', h1, h2, collider1.parent()?.userData, collider2.parent()?.userData);
-      // }
-
-      const vMin = isInternal ? V_GATE_MIN_INTERNAL : V_GATE_MIN_EXTERNAL;
-      const vMax = V_GATE_MAX;
-      const vSpan = Math.max(1e-3, vMax - vMin);
-      const rawBoost = relSpeed > vMin ? Math.min(1, Math.pow((relSpeed - vMin) / vSpan, V_GATE_EXP)) : 0;
-      const base = isInternal ? MIN_INTERNAL_SPEED_FACTOR : MIN_EXTERNAL_SPEED_FACTOR;
-      const speedFactor = base + (1 - base) * rawBoost;
-      const effMag = (mag ?? 0) * speedFactor;
-
-      if (h1 != null) {
-        if (node1 != null && node2 == null) {
-          addForceForCollider(h1, +1, tf, p1 ?? p2);
-          try { if (damageSystem.isEnabled()) damageSystem.onImpact(node1, effMag, dt); } catch {}
-        }
-      } else {
-        console.warn('drainContactForceEvents', ev, 'h1 is null');
-      }
-      if (h2 != null) {
-        if (node2 != null && node1 == null) {
-          addForceForCollider(h2, -1, tf, p2 ?? p1);
-          try { if (damageSystem.isEnabled()) damageSystem.onImpact(node2, effMag, dt); } catch {}
-        }
-        // Internal contacts: both sides are our structure
-        if (node1 != null && node2 != null) {
-          try { if (damageSystem.isEnabled()) damageSystem.onInternalImpact(node1, node2, effMag, dt); } catch {}
-        }
-      } else {
-        console.warn('drainContactForceEvents', ev, 'h2 is null');
-      }
-    });
-
-    // Inject external (non-contact) forces into solver at node space (single-frame)
-    const hasExternalForces = pendingExternalForces.length > 0;
-    if (hasExternalForces) {
-      try {
-        const dt = (world as unknown as { timestep?: number; integrationParameters?: { dt?: number } }).timestep
-          ?? (world as unknown as { integrationParameters?: { dt?: number } }).integrationParameters?.dt
-          ?? (1 / 60);
-        for (const ef of pendingExternalForces) {
-          const { body } = actorBodyForNode(ef.nodeIndex);
-          const rb = body ?? world.getRigidBody(rootBody.handle);
-          if (!rb) {
-            console.warn('addForceForCollider', 'body is null', ef.nodeIndex);
-            continue;
-          }
-
-          const t = rb.translation();
-          const r = rb.rotation();
-          const qInv = { x: -r.x, y: -r.y, z: -r.z, w: r.w };
-
-          const pRel = { x: ef.point.x - t.x, y: ef.point.y - t.y, z: ef.point.z - t.z };
-          const localPoint = applyQuatToVec3(pRel, qInv);
-          // Scale by dt so effect is one-shot and not frame-rate dependent
-          const scaledForce = { x: ef.force.x * dt, y: ef.force.y * dt, z: ef.force.z * dt };
-          const localForce = applyQuatToVec3(scaledForce, qInv);
-
-          solver.addForce(
-            ef.nodeIndex,
-            { x: localPoint.x, y: localPoint.y, z: localPoint.z },
-            { x: localForce.x, y: localForce.y, z: localForce.z },
-            runtime.ExtForceMode.Force
-          );
-
-          // Map external push impulse to damage as well
-          try {
-            if (damageSystem.isEnabled()) {
-              const fmag = Math.hypot(ef.force.x, ef.force.y, ef.force.z);
-              damageSystem.onImpact(ef.nodeIndex, fmag, dt);
-            }
-          } catch {}
-        }
-      } catch (e) {
-        if (isDev) console.error('[Core] addForceForCollider failed', e);
-      } finally {
-        // Clear queue after injection
-        pendingExternalForces.splice(0, pendingExternalForces.length);
-      }
-    }
+    const hadExternalForces = injectPendingExternalForces();
 
     // Gravity and solver update
     if (solverGravityEnabled) {
@@ -500,7 +515,7 @@ export async function buildDestructibleCore({
       } catch {}
     }
     solver.update();
-    if (hasExternalForces && process.env.NODE_ENV !== 'production') {
+    if (hadExternalForces && process.env.NODE_ENV !== 'production') {
       try { ((window as unknown as { debugStressSolver?: { printSolver?: () => unknown } }).debugStressSolver)?.printSolver?.(); } catch {}
     }
 
@@ -515,18 +530,7 @@ export async function buildDestructibleCore({
     }
 
     // Apply accumulated damage and process destructions (after solver update)
-    if (damageSystem.isEnabled()) {
-      const dt = world.timestep
-        ?? world.integrationParameters?.dt
-        ?? (1 / 60);
-      damageSystem.tick(dt, (nodeIndex, reason) => {
-        try {
-          handleNodeDestroyed(nodeIndex, reason as 'impact'|'manual');
-        } catch (e) {
-          if (isDev) console.error('[Core] handleNodeDestroyed failed', e);
-        }
-      });
-    }
+    applyDamageTick();
   }
 
   function stepSafe() {
@@ -535,102 +539,15 @@ export async function buildDestructibleCore({
       console.error('stepSafe', error);
     }
     // Drain contact forces for damage in safe mode (skip solver external force injection)
-    try {
-      const dt = world.timestep
-        ?? world.integrationParameters?.dt
-        ?? (1 / 60);
-
-      eventQueue.drainContactForceEvents((ev: { totalForce: () => {x:number;y:number;z:number}; totalForceMagnitude: () => number; collider1: () => number; collider2: () => number; worldContactPoint?: () => {x:number;y:number;z:number}; worldContactPoint2?: () => {x:number;y:number;z:number} }) => {
-        const mag = ev.totalForceMagnitude?.();
-        if (!(mag > 0)) return;
-        const h1 = ev.collider1?.();
-        const h2 = ev.collider2?.();
-
-        const collider1 = world.getCollider(h1);
-        const collider2 = world.getCollider(h2);
-
-        const wp = ev.worldContactPoint ? ev.worldContactPoint() : undefined;
-        const wp2 = ev.worldContactPoint2 ? ev.worldContactPoint2() : undefined;
-        const p = wp ?? wp2;
-        const relSpeed = computeRelativeSpeed(world, h1, h2, p);
-        const node1 = colliderToNode.has(h1) ? colliderToNode.get(h1) : undefined;
-        const node2 = colliderToNode.has(h2) ? colliderToNode.get(h2) : undefined;
-        const userData1: any = collider1.parent()?.userData;
-        const userData2: any = collider2.parent()?.userData;
-        const isInternal = (node1 != null && node2 != null);
-        const hasGround = userData1?.ground || userData2?.ground;
-
-        // if (!isInternal && !hasGround) {
-        //   console.log('drainContactForceEvents', h1, h2, collider1.parent()?.userData, collider2.parent()?.userData);
-        // }
-
-        const vMin = isInternal ? V_GATE_MIN_INTERNAL : V_GATE_MIN_EXTERNAL;
-        const vSpan = Math.max(1e-3, V_GATE_MAX - vMin);
-        const rawBoost = relSpeed > vMin ? Math.min(1, Math.pow((relSpeed - vMin) / vSpan, V_GATE_EXP)) : 0;
-        const base = isInternal ? MIN_INTERNAL_SPEED_FACTOR : MIN_EXTERNAL_SPEED_FACTOR;
-        const speedFactor = base + (1 - base) * rawBoost;
-        const effMag = (mag ?? 0) * speedFactor;
-        if (damageSystem.isEnabled()) {
-          if (node1 != null && node2 == null) {
-            try { damageSystem.onImpact(node1, effMag, dt); } catch {}
-          } else if (node2 != null && node1 == null) {
-            try { damageSystem.onImpact(node2, effMag, dt); } catch {}
-          } else if (node1 != null && node2 != null) {
-            try { damageSystem.onInternalImpact(node1, node2, effMag, dt); } catch {}
-          }
-        }
-      });
-    } catch {}
+    drainContactForces({ injectSolverForces: false });
 
     // Drain any queued external forces even in safe mode
-    if (pendingExternalForces.length > 0) {
-      try {
-        const dt = (world as unknown as { timestep?: number; integrationParameters?: { dt?: number } }).timestep
-          ?? (world as unknown as { integrationParameters?: { dt?: number } }).integrationParameters?.dt
-          ?? (1 / 60);
-        for (const ef of pendingExternalForces) {
-          const { body } = actorBodyForNode(ef.nodeIndex);
-          const rb = body ?? world.getRigidBody(rootBody.handle);
-          if (!rb) continue;
-          const t = rb.translation();
-          const r = rb.rotation();
-          const qInv = { x: -r.x, y: -r.y, z: -r.z, w: r.w };
-          const pRel = { x: ef.point.x - t.x, y: ef.point.y - t.y, z: ef.point.z - t.z };
-          const localPoint = applyQuatToVec3(pRel, qInv);
-          const scaledForce = { x: ef.force.x * dt, y: ef.force.y * dt, z: ef.force.z * dt };
-          const localForce = applyQuatToVec3(scaledForce, qInv);
-          solver.addForce(
-            ef.nodeIndex,
-            { x: localPoint.x, y: localPoint.y, z: localPoint.z },
-            { x: localForce.x, y: localForce.y, z: localForce.z },
-            runtime.ExtForceMode.Force
-          );
-
-          // Damage from push impulse in safe mode as well
-          try {
-            if (damageSystem.isEnabled()) {
-              const fmag = Math.hypot(ef.force.x, ef.force.y, ef.force.z);
-              damageSystem.onImpact(ef.nodeIndex, fmag, dt);
-            }
-          } catch {}
-        }
-      } catch {}
-      pendingExternalForces.splice(0, pendingExternalForces.length);
-    }
+    injectPendingExternalForces();
     applyPendingSpawns();
     applyPendingMigrations();
     removeDisabledHandles();
     // Apply damage in safe mode too to avoid missing destructions
-    if (damageSystem.isEnabled()) {
-      try {
-        const dt = world.timestep
-          ?? world.integrationParameters?.dt
-          ?? (1 / 60);
-        damageSystem.tick(dt, (nodeIndex, reason) => {
-          try { handleNodeDestroyed(nodeIndex, reason as 'impact'|'manual'); } catch {}
-        });
-      } catch {}
-    }
+    applyDamageTick();
     if (safeFrames > 0) safeFrames -= 1;
   }
 

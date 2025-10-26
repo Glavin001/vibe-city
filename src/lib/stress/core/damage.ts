@@ -12,6 +12,16 @@ export type DamageOptions = {
   // New: reduce mass immunity and improve collapse responsiveness
   massExponent?: number; // damage denominator uses mass^massExponent (was 1.0)
   internalMinImpulseThreshold?: number; // threshold specifically for self-contacts
+  // Splash AOE around impact point (actor-local coordinates)
+  splashRadius?: number; // meters
+  splashFalloffExp?: number; // exponent for smooth falloff
+  // Speed scaling controls (applied in core when mapping contact forces → damage)
+  speedMinExternal?: number; // m/s threshold for external contacts where boost begins
+  speedMinInternal?: number; // m/s threshold for internal contacts where boost begins
+  speedMax?: number; // m/s at which boost fully applies
+  speedExponent?: number; // curve exponent for boost falloff
+  slowSpeedFactor?: number; // multiplier at/below vMin (<=1 suppresses resting)
+  fastSpeedFactor?: number; // multiplier at/above vMax (>=1 boosts fast impacts)
 };
 
 export type DestroyCallback = (nodeIndex: number, reason: string) => void;
@@ -36,6 +46,14 @@ export class DestructibleDamageSystem {
       internalContactScale: 0.5,
       massExponent: 0.5,
       internalMinImpulseThreshold: 15,
+      splashRadius: 1.5,
+      splashFalloffExp: 2.0,
+      speedMinExternal: 0.5,
+      speedMinInternal: 0.25,
+      speedMax: 6.0,
+      speedExponent: 1.0,
+      slowSpeedFactor: 0.9,
+      fastSpeedFactor: 3.0,
     };
     const opts = { ...defaults, ...(args.options ?? {}) };
     this.chunks = args.chunks;
@@ -68,7 +86,12 @@ export class DestructibleDamageSystem {
     return this.options;
   }
 
-  public onImpact(nodeIndex: number, forceMagnitude: number, dt: number) {
+  public onImpact(
+    nodeIndex: number,
+    forceMagnitude: number,
+    dt: number,
+    opts?: { localPoint?: { x:number; y:number; z:number } }
+  ) {
     if (!this.options.enabled) {
     //   console.log("[DestructibleDamageSystem] onImpact early return: damage system not enabled", { nodeIndex, forceMagnitude, dt });
       return;
@@ -103,11 +126,48 @@ export class DestructibleDamageSystem {
     const dmgBase = this.options.kImpact * (impulse / denom);
     const dmgScaled = dmgBase * this.options.contactDamageScale;
     const dmg = Number.isFinite(dmgScaled) ? dmgScaled : 0;
+
+    const lp = opts?.localPoint;
+    const radius = Math.max(1e-6, this.options.splashRadius ?? 0);
+    const exp = Math.max(0.01, this.options.splashFalloffExp ?? 1);
+    const hitBody = this.chunks[nodeIndex]?.bodyHandle;
+
+    if (lp && hitBody != null) {
+      // Apply AOE to chunks on the same rigid body; center chunk always gets full damage
+      for (let i = 0; i < this.chunks.length; i++) {
+        const c = this.chunks[i];
+        if (!c || c.destroyed) continue;
+        if (c.bodyHandle !== hitBody) continue;
+        const center = c.baseLocalOffset ?? { x: 0, y: 0, z: 0 };
+        const dx = (center.x ?? 0) - (lp.x ?? 0);
+        const dy = (center.y ?? 0) - (lp.y ?? 0);
+        const dz = (center.z ?? 0) - (lp.z ?? 0);
+        const d = Math.hypot(dx, dy, dz);
+        let w = 0;
+        if (i === nodeIndex) {
+          w = 1; // ensure full damage on the hit collider
+        } else if (d <= radius) {
+          w = Math.pow(Math.max(0, 1 - d / radius), exp);
+        }
+        if (w <= 0) continue;
+        c.pendingDamage = (c.pendingDamage ?? 0) + dmg * w;
+      }
+      this.nextAllowedImpactTimeMs[nodeIndex] = this.timeMs + this.options.contactCooldownMs;
+      return;
+    }
+
+    // Fallback: single-chunk damage if no impact point provided
     ch.pendingDamage = (ch.pendingDamage ?? 0) + dmg;
     this.nextAllowedImpactTimeMs[nodeIndex] = this.timeMs + this.options.contactCooldownMs;
   }
 
-  public onInternalImpact(nodeA: number, nodeB: number, forceMagnitude: number, dt: number) {
+  public onInternalImpact(
+    nodeA: number,
+    nodeB: number,
+    forceMagnitude: number,
+    dt: number,
+    opts?: { localPointA?: { x:number; y:number; z:number }; localPointB?: { x:number; y:number; z:number } }
+  ) {
     if (!this.options.enabled) return;
 
     const impulse = Math.max(0, forceMagnitude) * Math.max(0, dt);
@@ -115,8 +175,8 @@ export class DestructibleDamageSystem {
     if (impulse < threshold) return;
     const scale = this.options.internalContactScale;
 
-    this.onImpact(nodeA, forceMagnitude * scale, dt);
-    this.onImpact(nodeB, forceMagnitude * scale, dt);
+    this.onImpact(nodeA, forceMagnitude * scale, dt, { localPoint: opts?.localPointA });
+    this.onImpact(nodeB, forceMagnitude * scale, dt, { localPoint: opts?.localPointB });
     // console.log("[DestructibleDamageSystem] onInternalImpact: dmg", nodeA, nodeB, forceMagnitude, dt, scale);
   }
 
