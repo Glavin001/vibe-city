@@ -14,6 +14,11 @@ type BuildCoreOptions = {
   limitSinglesCollisions?: boolean;
   damage?: DamageOptions & { autoDetachOnDestroy?: boolean; autoCleanupPhysics?: boolean };
   onNodeDestroyed?: (e: { nodeIndex: number; actorIndex: number; reason: 'impact'|'manual' }) => void;
+  // Fracture rollback/resimulation controls
+  resimulateOnFracture?: boolean; // default true
+  maxResimulationPasses?: number; // default 1
+  snapshotMode?: 'perBody' | 'world'; // default 'perBody'
+  onWorldReplaced?: (newWorld: RAPIER.World) => void; // only used when snapshotMode==='world'
 };
 
 const isDev = true; //process.env.NODE_ENV !== 'production';
@@ -28,6 +33,10 @@ export async function buildDestructibleCore({
   limitSinglesCollisions = false,
   damage,
   onNodeDestroyed,
+  resimulateOnFracture = true,
+  maxResimulationPasses = 1,
+  snapshotMode = 'perBody',
+  onWorldReplaced,
 }: BuildCoreOptions): Promise<DestructibleCore> {
   await RAPIER.init();
   const runtime = await loadStressSolver();
@@ -77,7 +86,7 @@ export async function buildDestructibleCore({
     if (arr1) arr1.push(b.index);
   }
 
-  const world = new RAPIER.World({ x: 0, y: gravity, z: 0 });
+  let world = new RAPIER.World({ x: 0, y: gravity, z: 0 });
   const eventQueue = new RAPIER.EventQueue(true);
 
   // Root fixed body
@@ -245,7 +254,21 @@ export async function buildDestructibleCore({
     }
   }
 
-  function drainContactForces(params: { injectSolverForces: boolean }) {
+  // --- Buffered contact damage (to avoid double-apply across rollback) ---
+  type BufferedExternalContact = { node:number; effMag:number; dt:number; local?:{x:number;y:number;z:number} };
+  type BufferedInternalContact = { a:number; b:number; effMag:number; dt:number; localA?:{x:number;y:number;z:number}; localB?:{x:number;y:number;z:number} };
+  const bufferedExternal: BufferedExternalContact[] = [];
+  const bufferedInternal: BufferedInternalContact[] = [];
+  function clearBufferedContacts() { bufferedExternal.length = 0; bufferedInternal.length = 0; }
+  function replayBufferedContacts() {
+    if (!damageSystem.isEnabled()) return;
+    for (const e of bufferedExternal) damageSystem.onImpact(e.node, e.effMag, e.dt, e.local ? { localPoint: e.local } : undefined);
+    for (const i of bufferedInternal) damageSystem.onInternalImpact(i.a, i.b, i.effMag, i.dt, { localPointA: i.localA, localPointB: i.localB });
+  }
+
+  function drainContactForces(params: { injectSolverForces: boolean; applyDamage: boolean; recordForReplay?: boolean }) {
+    const applyDamage = !!params.applyDamage;
+    const record = !!params.recordForReplay;
     eventQueue.drainContactForceEvents((ev: { totalForce: () => {x:number;y:number;z:number}; totalForceMagnitude: () => number; collider1: () => number; collider2: () => number; worldContactPoint?: () => {x:number; y:number; z:number}; worldContactPoint2?: () => {x:number; y:number; z:number} }) => {
       const tf = ev.totalForce?.();
       const mag = ev.totalForceMagnitude?.();
@@ -297,16 +320,32 @@ export async function buildDestructibleCore({
       if (h1 != null) {
         if (node1 != null && node2 == null) {
           if (params.injectSolverForces) addForceForCollider(h1, +1, tf, pForNode1 ?? pForNode2 ?? relAnchor);
-          try { if (damageSystem.isEnabled()) damageSystem.onImpact(node1, effMag, dt, local1 ? { localPoint: local1 } : undefined); } catch {}
+          if (damageSystem.isEnabled()) {
+            if (applyDamage) {
+              try { damageSystem.onImpact(node1, effMag, dt, local1 ? { localPoint: local1 } : undefined); } catch {}
+            } else if (record) {
+              bufferedExternal.push({ node: node1, effMag, dt, local: local1 ?? undefined });
+            }
+          }
         }
       }
       if (h2 != null) {
         if (node2 != null && node1 == null) {
           if (params.injectSolverForces) addForceForCollider(h2, -1, tf, pForNode2 ?? pForNode1 ?? relAnchor);
-          try { if (damageSystem.isEnabled()) damageSystem.onImpact(node2, effMag, dt, local2 ? { localPoint: local2 } : undefined); } catch {}
+          if (damageSystem.isEnabled()) {
+            if (applyDamage) {
+              try { damageSystem.onImpact(node2, effMag, dt, local2 ? { localPoint: local2 } : undefined); } catch {}
+            } else if (record) {
+              bufferedExternal.push({ node: node2, effMag, dt, local: local2 ?? undefined });
+            }
+          }
         }
-        if (node1 != null && node2 != null) {
-          try { if (damageSystem.isEnabled()) damageSystem.onInternalImpact(node1, node2, effMag, dt, { localPointA: local1 ?? undefined, localPointB: local2 ?? undefined }); } catch {}
+        if (node1 != null && node2 != null && damageSystem.isEnabled()) {
+          if (applyDamage) {
+            try { damageSystem.onInternalImpact(node1, node2, effMag, dt, { localPointA: local1 ?? undefined, localPointB: local2 ?? undefined }); } catch {}
+          } else if (record) {
+            bufferedInternal.push({ a: node1, b: node2, effMag, dt, localA: local1 ?? undefined, localB: local2 ?? undefined });
+          }
         }
       }
     });
@@ -517,8 +556,59 @@ export async function buildDestructibleCore({
     } catch { return null; }
   }
 
-  function stepEventful() {
-    // Defensive: if mapping is empty (e.g., over-pruned by a prior sweep), rebuild from chunks
+  // --- Per-body snapshot helpers (Plan A default) ---
+  type BodySnapshot = Map<number, {
+    t: {x:number;y:number;z:number};
+    r: {x:number;y:number;z:number;w:number};
+    lv: {x:number;y:number;z:number};
+    av: {x:number;y:number;z:number};
+    asleep: boolean;
+  }>;
+  function captureBodySnapshot(): BodySnapshot {
+    const snap = new Map<number, { t:{x:number;y:number;z:number}; r:{x:number;y:number;z:number;w:number}; lv:{x:number;y:number;z:number}; av:{x:number;y:number;z:number}; asleep:boolean }>();
+    world.forEachRigidBody((b: RAPIER.RigidBody) => {
+      const h = b.handle;
+      const t = b.translation();
+      const r = b.rotation();
+      const lv = b.linvel?.() ?? { x: 0, y: 0, z: 0 };
+      const av = b.angvel?.() ?? { x: 0, y: 0, z: 0 };
+      snap.set(h, { t: { x: t.x, y: t.y, z: t.z }, r: { x: r.x, y: r.y, z: r.z, w: r.w }, lv, av, asleep: b.isSleeping?.() ?? false });
+    });
+    return snap;
+  }
+  function restoreBodySnapshot(snap: BodySnapshot) {
+    world.forEachRigidBody((b: RAPIER.RigidBody) => {
+      const s = snap.get(b.handle);
+      if (!s) return;
+      try { b.setTranslation(s.t, true); } catch {}
+      try { b.setRotation(s.r, true); } catch {}
+      try { b.setLinvel(s.lv, true); } catch {}
+      try { b.setAngvel(s.av, true); } catch {}
+      try { if (s.asleep) b.sleep(); else b.wakeUp(); } catch {}
+    });
+  }
+
+  function step() {
+    // Apply queued spawns up front
+    applyPendingSpawns();
+
+    const doResim = !!resimulateOnFracture && Math.max(0, maxResimulationPasses) > 0;
+    const useWorldSnapshot = snapshotMode === 'world';
+
+    // Snapshot pre-step state
+    let bodySnap: BodySnapshot | null = null;
+    let worldSnap: Uint8Array | null = null;
+    if (doResim) {
+      if (useWorldSnapshot) {
+        try { worldSnap = world.takeSnapshot(); } catch (e) { console.warn('[Core] World.takeSnapshot failed; falling back to perBody', e); bodySnap = captureBodySnapshot(); }
+      } else {
+        bodySnap = captureBodySnapshot();
+      }
+    }
+
+    // First pass
+    clearBufferedContacts();
+    // Defensive: keep collider mapping coherent
     if (colliderToNode.size === 0) {
       try { rebuildColliderToNodeFromChunks(); } catch {}
       if (colliderToNode.size === 0 && process.env.NODE_ENV !== 'production' && !warnedColliderMapEmptyOnce) {
@@ -527,68 +617,93 @@ export async function buildDestructibleCore({
       }
     }
     preStepSweep();
-    try {
-      world.step(eventQueue);
-    } catch (error) {
-      console.error('stepEventful', error);
-      // On error, switch to a safe step next frame
-      safeFrames = Math.max(safeFrames, 1);
-      return;
-    }
-    // Drain contact forces → solver and damage, with speed scaling
-    drainContactForces({ injectSolverForces: true });
+    try { world.step(eventQueue); } catch (error) { console.error('world.step', error); return; }
+    // Drain contacts: inject solver forces, buffer damage (no apply yet)
+    drainContactForces({ injectSolverForces: true, applyDamage: false, recordForReplay: true });
 
-    const hadExternalForces = injectPendingExternalForces();
-
-    // Gravity and solver update
+    // Gravity and solver update for detection phase
     if (solverGravityEnabled) {
       try {
         const g = world.gravity as unknown as { x:number; y:number; z:number };
-        const g2 = { x: g.x ?? 0, y: g.y ?? 0, z: g.z ?? 0 };
-        // console.log('addGravity', g2);
-        solver.addGravity(g2);
+        solver.addGravity({ x: g.x ?? 0, y: g.y ?? 0, z: g.z ?? 0 });
       } catch {}
     }
     solver.update();
-    if (hadExternalForces && process.env.NODE_ENV !== 'production') {
-      try { ((window as unknown as { debugStressSolver?: { printSolver?: () => unknown } }).debugStressSolver)?.printSolver?.(); } catch {}
+
+    const hasFracture = solver.overstressedBondCount() > 0;
+    if (!doResim || !hasFracture) {
+      // Accept first pass; apply buffered damage and external pushes, optionally queue immediate split
+      replayBufferedContacts();
+      const hadExternalForces = injectPendingExternalForces();
+      if (hadExternalForces && process.env.NODE_ENV !== 'production') {
+        try { ((window as unknown as { debugStressSolver?: { printSolver?: () => unknown } }).debugStressSolver)?.printSolver?.(); } catch {}
+      }
+      applyDamageTick();
+
+      if (hasFracture) {
+        try {
+          const perActor = solver.generateFractureCommandsPerActor();
+          const splitEvents = solver.applyFractureCommands(perActor) as Array<{ parentActorIndex:number; children:Array<{ actorIndex:number; nodes:number[] }> }> | undefined;
+          if (Array.isArray(splitEvents) && splitEvents.length > 0) {
+            queueSplitResults(splitEvents);
+            applyPendingMigrations();
+            removeDisabledHandles();
+          }
+        } catch (e) { console.error('[Core] applyFractureCommands', e); }
+      }
+      return;
     }
 
-    if (solver.overstressedBondCount() > 0) {
+    // Rollback and resimulate (accepted pass)
+    try {
+      if (useWorldSnapshot && worldSnap) {
+        const newWorld = RAPIER.World.restoreSnapshot(worldSnap);
+        if (newWorld) {
+          world = newWorld as unknown as RAPIER.World;
+          try { if (corePublic) (corePublic as unknown as { world: RAPIER.World }).world = world; } catch {}
+          try { onWorldReplaced?.(world); } catch {}
+        }
+      } else if (bodySnap) {
+        restoreBodySnapshot(bodySnap);
+      }
+    } catch (e) {
+      console.error('[Core] rollback failed; proceeding without resim', e);
+      replayBufferedContacts();
+      injectPendingExternalForces();
+      applyDamageTick();
+      return;
+    }
+
+    // Apply splits before accepted step
+    try {
       const perActor = solver.generateFractureCommandsPerActor();
-      const splitEvents = solver.applyFractureCommands(perActor);
-      // console.log('applyFractureCommands', solver.overstressedBondCount(), perActor.length, perActor[0]?.fractures?.length, perActor[0]?.fractures, splitEvents);
+      const splitEvents = solver.applyFractureCommands(perActor) as Array<{ parentActorIndex:number; children:Array<{ actorIndex:number; nodes:number[] }> }> | undefined;
       if (Array.isArray(splitEvents) && splitEvents.length > 0) {
         queueSplitResults(splitEvents);
-        safeFrames = Math.max(safeFrames, 2);
+        applyPendingMigrations();
+        removeDisabledHandles();
       }
-    }
+    } catch (e) { console.error('[Core] applyFractureCommands (resim)', e); }
 
-    // Apply accumulated damage and process destructions (after solver update)
-    applyDamageTick();
-  }
-
-  function stepSafe() {
-    // Use eventQueue in safe step so we can still observe contact forces (for damage)
-    try { world.step(eventQueue); } catch (error) {
-      console.error('stepSafe', error);
-    }
-    // Drain contact forces for damage in safe mode (skip solver external force injection)
-    drainContactForces({ injectSolverForces: false });
-
-    // Drain any queued external forces even in safe mode
+    // Accepted pass
+    clearBufferedContacts();
+    preStepSweep();
+    try { world.step(eventQueue); } catch (e) { console.error('world.step (resim)', e); }
+    drainContactForces({ injectSolverForces: true, applyDamage: true, recordForReplay: false });
     injectPendingExternalForces();
-    applyPendingSpawns();
-    applyPendingMigrations();
-    removeDisabledHandles();
-    // Apply damage in safe mode too to avoid missing destructions
+    if (solverGravityEnabled) {
+      try {
+        const g = world.gravity as unknown as { x:number; y:number; z:number };
+        solver.addGravity({ x: g.x ?? 0, y: g.y ?? 0, z: g.z ?? 0 });
+      } catch {}
+    }
+    solver.update();
     applyDamageTick();
-    if (safeFrames > 0) safeFrames -= 1;
   }
 
-  function step() {
-    if (safeFrames > 0) stepSafe(); else stepEventful();
-  }
+  // Back-compat aliases
+  const stepEventful = step;
+  const stepSafe = step;
 
   function queueSplitResults(splitEvents: Array<{ parentActorIndex:number; children:Array<{ actorIndex:number; nodes:number[] }> }>) {
     console.debug('[Core] queueSplitResults', splitEvents?.[0]?.children);
@@ -633,6 +748,7 @@ export async function buildDestructibleCore({
       .setLinearDamping(0.0)
       .setAngularDamping(0.0)
       .setUserData({ projectile: true });
+    try { (bodyDesc as unknown as { setCcdEnabled?: (v:boolean)=>unknown }).setCcdEnabled?.(true); } catch {}
     if (params.linvel) {
       bodyDesc.setLinvel(params.linvel.x, params.linvel.y, params.linvel.z);
     } else if (typeof params.linvelY === 'number') {
@@ -679,6 +795,7 @@ export async function buildDestructibleCore({
             })
             ;
         }
+        try { if (!pb.isSupport) (desc as unknown as { setCcdEnabled?: (v:boolean)=>unknown }).setCcdEnabled?.(true); } catch {}
         const body = world.createRigidBody(desc);
         actorMap.set(pb.actorIndex, { bodyHandle: body.handle });
         for (const nodeIndex of pb.nodes) pendingColliderMigrations.push({ nodeIndex, targetBodyHandle: body.handle });
@@ -867,7 +984,8 @@ export async function buildDestructibleCore({
     safeFrames = Math.max(safeFrames, 2);
   }
 
-  return {
+  let corePublic: DestructibleCore | null = null;
+  const api: DestructibleCore = {
     world,
     eventQueue,
     solver,
@@ -911,6 +1029,8 @@ export async function buildDestructibleCore({
     damageEnabled: damageSystem.isEnabled(),
     dispose,
   };
+  corePublic = api;
+  return api;
 }
 
 function fallbackPoint(world: RAPIER.World, handle?: number) {
