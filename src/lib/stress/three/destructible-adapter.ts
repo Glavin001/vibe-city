@@ -17,12 +17,16 @@ export type InstancedState = {
   tmpColor: THREE.Color;
   healthyColor: THREE.Color;
   criticalColor: THREE.Color;
+  dynamicColor: THREE.Color;
+  fixedColor: THREE.Color;
+  kinematicColor: THREE.Color;
+  sleepingColor: THREE.Color;
   useHealthTint: boolean;
 };
 
 export function buildChunkMeshes(core: DestructibleCore, materials?: { deck?: THREE.Material; support?: THREE.Material }) {
-  const deckMat = (materials?.deck ?? new THREE.MeshStandardMaterial({ color: 0x4b6fe8, roughness: 0.4, metalness: 0.45 }));
-  const supportMat = (materials?.support ?? new THREE.MeshStandardMaterial({ color: 0x2f3e56, roughness: 0.6, metalness: 0.25 }));
+  const deckMat = (materials?.deck ?? new THREE.MeshStandardMaterial({ color: 0x4f7fff, roughness: 0.38, metalness: 0.5 }));
+  const supportMat = (materials?.support ?? new THREE.MeshStandardMaterial({ color: 0x3a4f6b, roughness: 0.58, metalness: 0.2 }));
   const meshes: THREE.Mesh[] = [];
   for (const chunk of core.chunks) {
     const mat = chunk.isSupport ? supportMat.clone() : deckMat.clone();
@@ -35,8 +39,8 @@ export function buildChunkMeshes(core: DestructibleCore, materials?: { deck?: TH
 }
 
 export function buildChunkMeshesInstanced(core: DestructibleCore, materials?: { deck?: THREE.Material; support?: THREE.Material }): { group: THREE.Group; state: InstancedState } {
-  const deckMat = (materials?.deck ?? new THREE.MeshStandardMaterial({ color: 0x4b6fe8, roughness: 0.4, metalness: 0.45 }));
-  const supportMat = (materials?.support ?? new THREE.MeshStandardMaterial({ color: 0x2f3e56, roughness: 0.6, metalness: 0.25 }));
+  const deckMat = (materials?.deck ?? new THREE.MeshStandardMaterial({ color: 0x4f7fff, roughness: 0.38, metalness: 0.5 }));
+  const supportMat = (materials?.support ?? new THREE.MeshStandardMaterial({ color: 0x3a4f6b, roughness: 0.58, metalness: 0.2 }));
   const group = new THREE.Group();
   const firstDeck = core.chunks.find((c) => !c.isSupport);
   const firstSupport = core.chunks.find((c) => c.isSupport);
@@ -58,25 +62,30 @@ export function buildChunkMeshesInstanced(core: DestructibleCore, materials?: { 
     tmpPos: new THREE.Vector3(),
     tmpScale: new THREE.Vector3(1, 1, 1),
     tmpColor: new THREE.Color(),
-    healthyColor: new THREE.Color(0x2fbf71),
+    healthyColor: new THREE.Color(0x4dffae),
     criticalColor: new THREE.Color(0xd72638),
+    dynamicColor: new THREE.Color(0xff9b5a),
+    fixedColor: new THREE.Color(0xbec4d5),
+    kinematicColor: new THREE.Color(0x6fd2ff),
+    sleepingColor: new THREE.Color(0x8a9aae),
     useHealthTint: !!(core as unknown as { damageEnabled?: boolean }).damageEnabled,
   };
   if (state.deck) {
     state.deck.castShadow = true;
     state.deck.receiveShadow = true;
     state.deck.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    if (state.useHealthTint) {
-      const attr = new THREE.InstancedBufferAttribute(new Float32Array(deckCount * 3), 3);
-      attr.setUsage(THREE.DynamicDrawUsage);
-      state.deck.instanceColor = attr;
-    }
+    const attr = new THREE.InstancedBufferAttribute(new Float32Array(deckCount * 3), 3);
+    attr.setUsage(THREE.DynamicDrawUsage);
+    state.deck.instanceColor = attr;
     group.add(state.deck);
   }
   if (state.support) {
     state.support.castShadow = true;
     state.support.receiveShadow = true;
     state.support.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    const attr = new THREE.InstancedBufferAttribute(new Float32Array(supportCount * 3), 3);
+    attr.setUsage(THREE.DynamicDrawUsage);
+    state.support.instanceColor = attr;
     group.add(state.support);
   }
   return { group, state };
@@ -85,7 +94,10 @@ export function buildChunkMeshesInstanced(core: DestructibleCore, materials?: { 
 export function updateInstancedChunkMeshes(core: DestructibleCore, state: InstancedState) {
   const deck = state.deck;
   const support = state.support;
-  const getHealth = state.useHealthTint ? (core as unknown as { getNodeHealth?: (idx:number) => { health:number; maxHealth:number; destroyed:boolean } | null }).getNodeHealth : undefined;
+  const damageEnabled = (core as unknown as { damageEnabled?: boolean }).damageEnabled === true && state.useHealthTint;
+  const getHealth = damageEnabled
+    ? (core as unknown as { getNodeHealth?: (idx:number) => { health:number; maxHealth:number; destroyed:boolean } | null }).getNodeHealth
+    : undefined;
   let deckIndex = 0;
   let supportIndex = 0;
   for (const chunk of core.chunks) {
@@ -100,22 +112,34 @@ export function updateInstancedChunkMeshes(core: DestructibleCore, state: Instan
     state.tmpVec.set(chunk.baseLocalOffset.x, chunk.baseLocalOffset.y, chunk.baseLocalOffset.z).applyQuaternion(state.tmpQuat);
     state.tmpPos.set(t.x + state.tmpVec.x, t.y + state.tmpVec.y, t.z + state.tmpVec.z);
     state.tmpMatrix.compose(state.tmpPos, state.tmpQuat, state.tmpScale.set(1, 1, 1));
+    const matColor = (() => {
+      if (damageEnabled && typeof getHealth === 'function') {
+        const info = getHealth(chunk.nodeIndex);
+        if (info && info.maxHealth > 0) {
+          const ratio = Math.max(0, Math.min(1, info.health / info.maxHealth));
+          return state.tmpColor.copy(state.healthyColor).lerp(state.criticalColor, 1 - ratio);
+        }
+      }
+      if (body.isKinematic()) return state.tmpColor.copy(state.kinematicColor);
+      if (body.isFixed()) return state.tmpColor.copy(state.fixedColor);
+      if (!body.isSleeping()) return state.tmpColor.copy(state.dynamicColor);
+      return state.tmpColor.copy(state.sleepingColor);
+    })();
+
     if (chunk.isSupport) {
       if (!support) continue;
       support.setMatrixAt(supportIndex, state.tmpMatrix);
       if (state.supportNodes) state.supportNodes[supportIndex] = chunk.nodeIndex;
+      if (support.instanceColor) {
+        support.instanceColor.setXYZ(supportIndex, matColor.r, matColor.g, matColor.b);
+      }
       supportIndex += 1;
     } else {
       if (!deck) continue;
       deck.setMatrixAt(deckIndex, state.tmpMatrix);
       if (state.deckNodes) state.deckNodes[deckIndex] = chunk.nodeIndex;
-      if (state.useHealthTint && deck.instanceColor && typeof getHealth === 'function') {
-        const info = getHealth(chunk.nodeIndex);
-        if (info && info.maxHealth > 0) {
-          const ratio = Math.max(0, Math.min(1, info.health / info.maxHealth));
-          state.tmpColor.copy(state.healthyColor).lerp(state.criticalColor, 1 - ratio);
-          deck.instanceColor.setXYZ(deckIndex, state.tmpColor.r, state.tmpColor.g, state.tmpColor.b);
-        }
+      if (deck.instanceColor) {
+        deck.instanceColor.setXYZ(deckIndex, matColor.r, matColor.g, matColor.b);
       }
       deckIndex += 1;
     }
@@ -127,7 +151,7 @@ export function updateInstancedChunkMeshes(core: DestructibleCore, state: Instan
       for (let i = deckIndex; i < state.lastDeckCount; i++) state.deckNodes[i] = -1;
       state.lastDeckCount = deckIndex;
     }
-    if (state.useHealthTint && deck.instanceColor) deck.instanceColor.needsUpdate = true;
+    if (deck.instanceColor) deck.instanceColor.needsUpdate = true;
   }
   if (support) {
     support.count = supportIndex;
@@ -136,6 +160,7 @@ export function updateInstancedChunkMeshes(core: DestructibleCore, state: Instan
       for (let i = supportIndex; i < state.lastSupportCount; i++) state.supportNodes[i] = -1;
       state.lastSupportCount = supportIndex;
     }
+    if (support.instanceColor) support.instanceColor.needsUpdate = true;
   }
 }
 
@@ -206,7 +231,7 @@ export function updateChunkMeshes(core: DestructibleCore, meshes: THREE.Mesh[]) 
         const info = healthGetter(chunk.nodeIndex);
         if (info && info.maxHealth > 0) {
           const ratio = Math.max(0, Math.min(1, info.health / info.maxHealth));
-          const healthy = new THREE.Color(0x2fbf71);
+          const healthy = new THREE.Color(0x4dffae);
           const critical = new THREE.Color(0xd72638);
           const lerped = healthy.clone().lerp(critical, 1 - ratio);
           mat.color.copy(lerped);
@@ -216,9 +241,10 @@ export function updateChunkMeshes(core: DestructibleCore, meshes: THREE.Mesh[]) 
         }
       }
       // Fallback when damage disabled or unknown
-      if (body.isKinematic()) mat.color.setHex(0x2a6ddb);
-      else if (body.isFixed()) mat.color.setHex(0xbababa);
-      else if (body.isDynamic()) mat.color.setHex(0xff9147);
+      if (body.isKinematic()) mat.color.setHex(0x6fd2ff);
+      else if (body.isFixed()) mat.color.setHex(0xbec4d5);
+      else if (!body.isSleeping()) mat.color.setHex(0xff9b5a);
+      else mat.color.setHex(0x8a9aae);
     }
   }
 }
