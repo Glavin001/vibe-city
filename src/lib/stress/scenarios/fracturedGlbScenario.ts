@@ -206,9 +206,12 @@ export async function buildFracturedGlbScenario({
       const s = new THREE.Vector3();
       bb.getSize(s);
       const vol = Math.max(0, s.x) * Math.max(0, s.y) * Math.max(0, s.z);
-      if (!best || vol > best.volume) best = { geom: cloned, volume: vol };
+      if (best == null || vol > best.volume) {
+        best = { geom: cloned, volume: vol };
+      }
     });
-    if (best) return best.geom;
+    const bestGeom = best?.geom ?? null;
+    if (bestGeom) return bestGeom;
     // Fallback: merge everything
     const geoms: THREE.BufferGeometry[] = [];
     gltf.scene.traverse((obj) => {
