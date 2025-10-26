@@ -8,6 +8,7 @@ import { buildDestructibleCore } from "@/lib/stress/core/destructible-core";
 import type { DestructibleCore } from "@/lib/stress/core/types";
 import { buildWallScenario } from "@/lib/stress/scenarios/wallScenario";
 import { buildFracturedWallScenario } from "@/lib/stress/scenarios/fracturedWallScenario";
+import { buildFracturedGlbScenario } from "@/lib/stress/scenarios/fracturedGlbScenario";
 import { buildBeamBridgeScenario } from "@/lib/stress/scenarios/beamBridgeScenario";
 import {
   STRESS_PRESET_METADATA,
@@ -88,7 +89,8 @@ type ScenarioBuilderParams = {
   bondsZEnabled: boolean;
 };
 
-const SCENARIO_BUILDERS: Record<StressPresetId, (params: ScenarioBuilderParams) => ReturnType<typeof buildWallScenario>> = {
+type ScenarioBuilder = (params: ScenarioBuilderParams) => ReturnType<typeof buildWallScenario> | Promise<ReturnType<typeof buildWallScenario>>;
+const SCENARIO_BUILDERS: Record<StressPresetId, ScenarioBuilder> = {
   wall: ({
     wallSpan,
     wallHeight,
@@ -127,6 +129,7 @@ const SCENARIO_BUILDERS: Record<StressPresetId, (params: ScenarioBuilderParams) 
     buildVaultedLoftScenario({ bondsX: bondsXEnabled, bondsY: bondsYEnabled, bondsZ: bondsZEnabled }),
   fracturedWall: ({ wallSpan, wallHeight, wallThickness }) =>
     buildFracturedWallScenario({ span: wallSpan, height: wallHeight, thickness: wallThickness, fragmentCount: 120 }),
+  fracturedGlb: async () => buildFracturedGlbScenario({ fragmentCount: 120, objectMass: 10_000 }),
 };
 
 function Scene({
@@ -228,7 +231,7 @@ function Scene({
     let mounted = true;
     (async () => {
       const builder = SCENARIO_BUILDERS[structureId] ?? SCENARIO_BUILDERS.wall;
-      const scenario = builder({
+      const scenario = await builder({
         wallSpan,
         wallHeight,
         wallThickness,
