@@ -190,7 +190,8 @@ export async function buildFracturedGlbScenario({
     const gltf = await loader.loadAsync(url);
     try { gltf.scene.updateMatrixWorld(true); } catch {}
     // Pick the largest Mesh geometry with a valid position attribute
-    let best: { geom: THREE.BufferGeometry; volume: number } | null = null;
+    let bestGeom: THREE.BufferGeometry | null = null;
+    let bestVolume = -Infinity;
     gltf.scene.traverse((obj) => {
       const mesh = obj as THREE.Mesh;
       const geometry = mesh?.geometry as THREE.BufferGeometry | undefined;
@@ -206,9 +207,12 @@ export async function buildFracturedGlbScenario({
       const s = new THREE.Vector3();
       bb.getSize(s);
       const vol = Math.max(0, s.x) * Math.max(0, s.y) * Math.max(0, s.z);
-      if (!best || vol > best.volume) best = { geom: cloned, volume: vol };
+      if (vol > bestVolume) {
+        bestVolume = vol;
+        bestGeom = cloned;
+      }
     });
-    if (best) return best.geom;
+    if (bestGeom) return bestGeom;
     // Fallback: merge everything
     const geoms: THREE.BufferGeometry[] = [];
     gltf.scene.traverse((obj) => {

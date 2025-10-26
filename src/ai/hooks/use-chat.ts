@@ -1,5 +1,5 @@
 import { useChat as useChatSDK, type UIMessage, type UseChatOptions } from "@ai-sdk/react";
-import type { ChatInit, LanguageModel } from "ai";
+import type { LanguageModel } from "ai";
 // biome-ignore lint: streamText is needed for type extraction via typeof
 import { streamText } from "ai";
 import { useEffect, useRef } from "react";
@@ -9,10 +9,9 @@ import { CustomChatTransport } from "../custom-chat-transport";
 type StreamTextParams = Parameters<typeof streamText>[0];
 type ToolsType = StreamTextParams["tools"];
 
-type ClientChatOptions = Omit<ChatInit<UIMessage>, "transport"> &
-  Pick<UseChatOptions<UIMessage>, "experimental_throttle" | "resume"> & {
-    tools?: ToolsType;
-  };
+type ClientChatOptions = Omit<UseChatOptions<UIMessage>, "api" | "transport"> & {
+  tools?: ToolsType;
+};
 
 export function useClientSideChat(
   model: LanguageModel,
