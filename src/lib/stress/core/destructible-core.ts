@@ -1,4 +1,4 @@
-import RAPIER from '@dimforge/rapier3d-compat';
+import RAPIER, { type RigidBody as RapierRigidBody } from '@dimforge/rapier3d-compat';
 import { loadStressSolver } from 'blast-stress-solver';
 import type { DestructibleCore, ScenarioDesc, ChunkData, Vec3, ProjectileSpawn, BondRef } from './types';
 import { DestructibleDamageSystem, type DamageOptions } from './damage';
@@ -17,6 +17,13 @@ type BuildCoreOptions = {
 };
 
 const isDev = true; //process.env.NODE_ENV !== 'production';
+// Velocity gating for damage: ignores quasi-static contacts, boosts fast impacts
+const V_GATE_MIN_EXTERNAL = 0.5; // baseline speed where boost starts
+const V_GATE_MIN_INTERNAL = 0.25; // internal gets earlier boost
+const V_GATE_MAX = 6.0; // m/s at which factor reaches 1.0
+const V_GATE_EXP = 1.0;
+const MIN_INTERNAL_SPEED_FACTOR = 1.0; // baseline factor below threshold
+const MIN_EXTERNAL_SPEED_FACTOR = 1.0; // baseline factor below threshold
 
 export async function buildDestructibleCore({
   scenario,
@@ -81,14 +88,24 @@ export async function buildDestructibleCore({
   const eventQueue = new RAPIER.EventQueue(true);
 
   // Root fixed body
-  const rootBody = world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(0, 0, 0));
+  const rootBody = world.createRigidBody(
+    RAPIER.RigidBodyDesc.fixed().setTranslation(0, 0, 0)
+    .setUserData({ root: true })
+  );
 
   // Ground collider (fixed body), wide plane with top aligned to y=0
-  const groundBody = world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(0, 0, 0));
+  const groundBody = world.createRigidBody(
+    RAPIER.RigidBodyDesc.fixed()
+      .setTranslation(0, 0, 0)
+      .setUserData({ ground: true })
+  );
   world.createCollider(
     RAPIER.ColliderDesc.cuboid(100, 0.025, 100)
       .setTranslation(0, -0.025, 0)
-      .setFriction(0.9),
+      .setFriction(0.9)
+      .setActiveEvents(RAPIER.ActiveEvents.CONTACT_FORCE_EVENTS)
+      .setContactForceEventThreshold(0.0)
+      ,
     groundBody
   );
 
@@ -195,7 +212,9 @@ export async function buildDestructibleCore({
     contactDamageScale: damage?.contactDamageScale ?? 1.0,
     minImpulseThreshold: damage?.minImpulseThreshold ?? 50,
     contactCooldownMs: damage?.contactCooldownMs ?? 120,
-    internalContactScale: damage?.internalContactScale ?? 0.5,
+    internalContactScale: damage?.internalContactScale ?? 2.0,
+    massExponent: damage?.massExponent ?? 0.5,
+    internalMinImpulseThreshold: damage?.internalMinImpulseThreshold ?? 15,
   } as const;
 
   const damageSystem = new DestructibleDamageSystem({ chunks, scenario, materialScale, options: damageOptions });
@@ -230,7 +249,7 @@ export async function buildDestructibleCore({
   }
 
   function enqueueProjectile(s: ProjectileSpawn) {
-    if (process.env.NODE_ENV !== 'production') console.debug('[Core] enqueueProjectile', s);
+    // if (process.env.NODE_ENV !== 'production') console.debug('[Core] enqueueProjectile', s);
     pendingBallSpawns.push(s);
     safeFrames = Math.max(safeFrames, 1);
   }
@@ -282,6 +301,48 @@ export async function buildDestructibleCore({
     );
   }
 
+  function getBodyForColliderHandle(handle?: number | null): RAPIER.RigidBody | null {
+    if (handle == null) return null;
+    try {
+      const c = world.getCollider(handle);
+      // const parentHandle = c ? c.parent() : undefined;
+      // return typeof parentHandle === 'number' ? (world.getRigidBody(parentHandle) ?? null) : null;
+      const parent: RapierRigidBody | null = c ? c.parent() : null;
+      return parent ?? null;
+    } catch {
+      // console.error('getBodyForColliderHandle', e);
+      return null;
+    }
+  }
+
+  function bodyPointVelocity(body: RAPIER.RigidBody | null, point: { x:number; y:number; z:number }): { x:number; y:number; z:number } {
+    if (!body) return { x: 0, y: 0, z: 0 };
+    try {
+      const lv = body.linvel?.();
+      const av = body.angvel?.();
+      const t = body.translation();
+      const rx = (point.x ?? 0) - (t.x ?? 0);
+      const ry = (point.y ?? 0) - (t.y ?? 0);
+      const rz = (point.z ?? 0) - (t.z ?? 0);
+      const cx = (av?.y ?? 0) * rz - (av?.z ?? 0) * ry;
+      const cy = (av?.z ?? 0) * rx - (av?.x ?? 0) * rz;
+      const cz = (av?.x ?? 0) * ry - (av?.y ?? 0) * rx;
+      return { x: (lv?.x ?? 0) + cx, y: (lv?.y ?? 0) + cy, z: (lv?.z ?? 0) + cz };
+    } catch { return { x: 0, y: 0, z: 0 }; }
+  }
+
+  function computeRelativeSpeed(_world: RAPIER.World, h1?: number | null, h2?: number | null, atPoint?: { x:number; y:number; z:number }): number {
+    const p = atPoint ?? { x: 0, y: 0, z: 0 };
+    const b1 = getBodyForColliderHandle(h1 ?? null);
+    const b2 = getBodyForColliderHandle(h2 ?? null);
+    const v1 = bodyPointVelocity(b1, p);
+    const v2 = bodyPointVelocity(b2, p);
+    const dx = v1.x - v2.x;
+    const dy = v1.y - v2.y;
+    const dz = v1.z - v2.z;
+    return Math.hypot(dx, dy, dz);
+  }
+
   function stepEventful() {
     // Defensive: if mapping is empty (e.g., over-pruned by a prior sweep), rebuild from chunks
     if (colliderToNode.size === 0) {
@@ -294,7 +355,8 @@ export async function buildDestructibleCore({
     preStepSweep();
     try {
       world.step(eventQueue);
-    } catch {
+    } catch (error) {
+      console.error('stepEventful', error);
       // On error, switch to a safe step next frame
       safeFrames = Math.max(safeFrames, 1);
       return;
@@ -305,12 +367,18 @@ export async function buildDestructibleCore({
       const tf = ev.totalForce?.();
       const mag = ev.totalForceMagnitude?.();
       if (!tf || !(mag > 0)) {
-        console.log('drainContactForceEvents', ev, tf, mag);
+        console.error('drainContactForceEvents skipped', ev, tf, mag);
         return;
       }
 
       const h1 = ev.collider1?.();
       const h2 = ev.collider2?.();
+
+      const collider1 = world.getCollider(h1);
+      const collider2 = world.getCollider(h2);
+      const userData1: any = collider1.parent()?.userData;
+      const userData2: any = collider2.parent()?.userData;
+
       const wp = ev.worldContactPoint ? ev.worldContactPoint() : undefined;
       const wp2 = ev.worldContactPoint2 ? ev.worldContactPoint2() : undefined;
       const p1 = wp ?? wp2 ?? fallbackPoint(world, h1);
@@ -336,10 +404,26 @@ export async function buildDestructibleCore({
         ?? world.integrationParameters?.dt
         ?? (1 / 60);
 
+      const relSpeed = computeRelativeSpeed(world, h1, h2, p1 ?? p2);
+      const isInternal = (node1 != null && node2 != null);
+      const hasGround = userData1?.ground || userData2?.ground;
+
+      // if (!isInternal && !hasGround) {
+      //   console.log('drainContactForceEvents', h1, h2, collider1.parent()?.userData, collider2.parent()?.userData);
+      // }
+
+      const vMin = isInternal ? V_GATE_MIN_INTERNAL : V_GATE_MIN_EXTERNAL;
+      const vMax = V_GATE_MAX;
+      const vSpan = Math.max(1e-3, vMax - vMin);
+      const rawBoost = relSpeed > vMin ? Math.min(1, Math.pow((relSpeed - vMin) / vSpan, V_GATE_EXP)) : 0;
+      const base = isInternal ? MIN_INTERNAL_SPEED_FACTOR : MIN_EXTERNAL_SPEED_FACTOR;
+      const speedFactor = base + (1 - base) * rawBoost;
+      const effMag = (mag ?? 0) * speedFactor;
+
       if (h1 != null) {
         if (node1 != null && node2 == null) {
           addForceForCollider(h1, +1, tf, p1 ?? p2);
-          try { if (damageSystem.isEnabled()) damageSystem.onImpact(node1, mag ?? 0, dt); } catch {}
+          try { if (damageSystem.isEnabled()) damageSystem.onImpact(node1, effMag, dt); } catch {}
         }
       } else {
         console.warn('drainContactForceEvents', ev, 'h1 is null');
@@ -347,11 +431,11 @@ export async function buildDestructibleCore({
       if (h2 != null) {
         if (node2 != null && node1 == null) {
           addForceForCollider(h2, -1, tf, p2 ?? p1);
-          try { if (damageSystem.isEnabled()) damageSystem.onImpact(node2, mag ?? 0, dt); } catch {}
+          try { if (damageSystem.isEnabled()) damageSystem.onImpact(node2, effMag, dt); } catch {}
         }
         // Internal contacts: both sides are our structure
         if (node1 != null && node2 != null) {
-          try { if (damageSystem.isEnabled()) damageSystem.onInternalImpact(node1, node2, mag ?? 0, dt); } catch {}
+          try { if (damageSystem.isEnabled()) damageSystem.onInternalImpact(node1, node2, effMag, dt); } catch {}
         }
       } else {
         console.warn('drainContactForceEvents', ev, 'h2 is null');
@@ -447,30 +531,57 @@ export async function buildDestructibleCore({
 
   function stepSafe() {
     // Use eventQueue in safe step so we can still observe contact forces (for damage)
-    try { world.step(eventQueue); } catch {}
+    try { world.step(eventQueue); } catch (error) {
+      console.error('stepSafe', error);
+    }
     // Drain contact forces for damage in safe mode (skip solver external force injection)
     try {
       const dt = world.timestep
         ?? world.integrationParameters?.dt
         ?? (1 / 60);
+
       eventQueue.drainContactForceEvents((ev: { totalForce: () => {x:number;y:number;z:number}; totalForceMagnitude: () => number; collider1: () => number; collider2: () => number; worldContactPoint?: () => {x:number;y:number;z:number}; worldContactPoint2?: () => {x:number;y:number;z:number} }) => {
         const mag = ev.totalForceMagnitude?.();
         if (!(mag > 0)) return;
         const h1 = ev.collider1?.();
         const h2 = ev.collider2?.();
+
+        const collider1 = world.getCollider(h1);
+        const collider2 = world.getCollider(h2);
+
+        const wp = ev.worldContactPoint ? ev.worldContactPoint() : undefined;
+        const wp2 = ev.worldContactPoint2 ? ev.worldContactPoint2() : undefined;
+        const p = wp ?? wp2;
+        const relSpeed = computeRelativeSpeed(world, h1, h2, p);
         const node1 = colliderToNode.has(h1) ? colliderToNode.get(h1) : undefined;
         const node2 = colliderToNode.has(h2) ? colliderToNode.get(h2) : undefined;
+        const userData1: any = collider1.parent()?.userData;
+        const userData2: any = collider2.parent()?.userData;
+        const isInternal = (node1 != null && node2 != null);
+        const hasGround = userData1?.ground || userData2?.ground;
+
+        // if (!isInternal && !hasGround) {
+        //   console.log('drainContactForceEvents', h1, h2, collider1.parent()?.userData, collider2.parent()?.userData);
+        // }
+
+        const vMin = isInternal ? V_GATE_MIN_INTERNAL : V_GATE_MIN_EXTERNAL;
+        const vSpan = Math.max(1e-3, V_GATE_MAX - vMin);
+        const rawBoost = relSpeed > vMin ? Math.min(1, Math.pow((relSpeed - vMin) / vSpan, V_GATE_EXP)) : 0;
+        const base = isInternal ? MIN_INTERNAL_SPEED_FACTOR : MIN_EXTERNAL_SPEED_FACTOR;
+        const speedFactor = base + (1 - base) * rawBoost;
+        const effMag = (mag ?? 0) * speedFactor;
         if (damageSystem.isEnabled()) {
           if (node1 != null && node2 == null) {
-            try { damageSystem.onImpact(node1, mag ?? 0, dt); } catch {}
+            try { damageSystem.onImpact(node1, effMag, dt); } catch {}
           } else if (node2 != null && node1 == null) {
-            try { damageSystem.onImpact(node2, mag ?? 0, dt); } catch {}
+            try { damageSystem.onImpact(node2, effMag, dt); } catch {}
           } else if (node1 != null && node2 != null) {
-            try { damageSystem.onInternalImpact(node1, node2, mag ?? 0, dt); } catch {}
+            try { damageSystem.onInternalImpact(node1, node2, effMag, dt); } catch {}
           }
         }
       });
     } catch {}
+
     // Drain any queued external forces even in safe mode
     if (pendingExternalForces.length > 0) {
       try {
@@ -558,7 +669,7 @@ export async function buildDestructibleCore({
   function applyPendingSpawns() {
     if (pendingBallSpawns.length === 0) return;
     const list = pendingBallSpawns.splice(0, pendingBallSpawns.length);
-    if (process.env.NODE_ENV !== 'production') console.debug('[Core] applyPendingSpawns', { count: list.length });
+    // if (process.env.NODE_ENV !== 'production') console.debug('[Core] applyPendingSpawns', { count: list.length });
     for (const s of list) spawnProjectile(s);
   }
 
@@ -568,7 +679,8 @@ export async function buildDestructibleCore({
       .setTranslation(start.x, start.y, start.z)
       .setCanSleep(false)
       .setLinearDamping(0.0)
-      .setAngularDamping(0.0);
+      .setAngularDamping(0.0)
+      .setUserData({ projectile: true });
     if (params.linvel) {
       bodyDesc.setLinvel(params.linvel.x, params.linvel.y, params.linvel.z);
     } else if (typeof params.linvelY === 'number') {
@@ -594,7 +706,7 @@ export async function buildDestructibleCore({
   }
 
   function applyPendingMigrations() {
-    console.log('applyPendingMigrations', pendingBodiesToCreate.length, pendingColliderMigrations.length);
+    // console.log('applyPendingMigrations', pendingBodiesToCreate.length, pendingColliderMigrations.length);
 
     // Create child bodies
     if (pendingBodiesToCreate.length > 0) {
@@ -608,7 +720,12 @@ export async function buildDestructibleCore({
           const lv = inherit.linvel?.();
           desc.setTranslation(pt.x, pt.y, pt.z)
             .setRotation(pq)
-            .setLinvel(lv?.x ?? 0, lv?.y ?? 0, lv?.z ?? 0);
+            .setLinvel(lv?.x ?? 0, lv?.y ?? 0, lv?.z ?? 0)
+            .setUserData({
+              body: true,
+              recreated: true,
+            })
+            ;
         }
         const body = world.createRigidBody(desc);
         actorMap.set(pb.actorIndex, { bodyHandle: body.handle });

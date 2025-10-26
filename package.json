@@ -21,6 +21,7 @@
     "@ai-sdk/google": "2.0.14",
     "@ai-sdk/react": "2.0.44",
     "@dgreenheck/three-pinata": "^0.3.17",
+    "@dimforge/rapier3d-compat": "^0.19.2",
     "@huggingface/transformers": "^3.7.3",
     "@react-three/csg": "^4.0.0",
     "@react-three/drei": "^10.7.5",

@@ -82,9 +82,6 @@ export function updateChunkMeshes(core: DestructibleCore, meshes: THREE.Mesh[]) 
         const info = healthGetter(chunk.nodeIndex);
         if (info && info.maxHealth > 0) {
           const ratio = Math.max(0, Math.min(1, info.health / info.maxHealth));
-          // if (!chunk.isSupport && ratio < 0.9) {
-          //   console.log("[Adapter] Health for chunk", chunk.nodeIndex, info.health, info.maxHealth, ratio);
-          // }
           const healthy = new THREE.Color(0x2fbf71);
           const critical = new THREE.Color(0xd72638);
           const lerped = healthy.clone().lerp(critical, 1 - ratio);
@@ -144,7 +141,7 @@ export function updateProjectileMeshes(core: DestructibleCore, root: THREE.Group
       mesh.castShadow = true; mesh.receiveShadow = true;
       p.mesh = mesh;
       root.add(mesh);
-      if (process.env.NODE_ENV !== 'production') console.debug('[Adapter] Created projectile mesh', p);
+      // if (process.env.NODE_ENV !== 'production') console.debug('[Adapter] Created projectile mesh', p);
     }
     (p.mesh as THREE.Mesh).visible = true;
     const t = body.translation();

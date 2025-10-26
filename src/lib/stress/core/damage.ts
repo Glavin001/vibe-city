@@ -9,6 +9,9 @@ export type DamageOptions = {
   minImpulseThreshold?: number;
   contactCooldownMs?: number;
   internalContactScale?: number;
+  // New: reduce mass immunity and improve collapse responsiveness
+  massExponent?: number; // damage denominator uses mass^massExponent (was 1.0)
+  internalMinImpulseThreshold?: number; // threshold specifically for self-contacts
 };
 
 export type DestroyCallback = (nodeIndex: number, reason: string) => void;
@@ -31,6 +34,8 @@ export class DestructibleDamageSystem {
       minImpulseThreshold: 50,
       contactCooldownMs: 120,
       internalContactScale: 0.5,
+      massExponent: 0.5,
+      internalMinImpulseThreshold: 15,
     };
     const opts = { ...defaults, ...(args.options ?? {}) };
     this.chunks = args.chunks;
@@ -76,13 +81,14 @@ export class DestructibleDamageSystem {
     }
 
     const node = this.nodes[nodeIndex];
-    // const isInfiniteMass = (node?.mass ?? 0) === 0; // supports mass=0 are infinite mass
-    // if (!this.options.enableSupportsDamage && isInfiniteMass) {
-    //   console.log("[DestructibleDamageSystem] onImpact early return: supports damage not enabled and node is infinite mass", { nodeIndex });
-    //   return;
-    // }
+    const rawMass = node?.mass ?? 1;
+    const isInfiniteMass = rawMass === 0; // supports mass=0 are infinite mass
+    if (!this.options.enableSupportsDamage && isInfiniteMass) {
+      // Ignore support impacts when support damage is disabled
+      // console.log("[DestructibleDamageSystem] onImpact early return: support node and support damage is disabled", { nodeIndex });
+      // return;
+    }
 
-    const nodeMass = Math.max(1, node?.mass ?? 1);
     const impulse = Math.max(0, forceMagnitude) * Math.max(0, dt);
     if (impulse < this.options.minImpulseThreshold) {
     //   console.log("[DestructibleDamageSystem] onImpact early return: impulse below threshold", { nodeIndex, impulse, minImpulseThreshold: this.options.minImpulseThreshold });
@@ -92,8 +98,9 @@ export class DestructibleDamageSystem {
     //   console.log("[DestructibleDamageSystem] onImpact early return: impact cooldown active", { nodeIndex, timeMs: this.timeMs, nextAllowed: this.nextAllowedImpactTimeMs[nodeIndex] });
       return;
     }
-
-    const dmgBase = this.options.kImpact * (impulse / nodeMass);
+    const nodeMass = Math.max(1, rawMass);
+    const denom = Math.max(1, Math.pow(nodeMass, this.options.massExponent));
+    const dmgBase = this.options.kImpact * (impulse / denom);
     const dmgScaled = dmgBase * this.options.contactDamageScale;
     const dmg = Number.isFinite(dmgScaled) ? dmgScaled : 0;
     ch.pendingDamage = (ch.pendingDamage ?? 0) + dmg;
@@ -104,7 +111,8 @@ export class DestructibleDamageSystem {
     if (!this.options.enabled) return;
 
     const impulse = Math.max(0, forceMagnitude) * Math.max(0, dt);
-    if (impulse < this.options.minImpulseThreshold) return;
+    const threshold = this.options.internalMinImpulseThreshold ?? this.options.minImpulseThreshold;
+    if (impulse < threshold) return;
     const scale = this.options.internalContactScale;
 
     this.onImpact(nodeA, forceMagnitude * scale, dt);

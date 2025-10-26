@@ -445,7 +445,7 @@ function Scene({
         const dir = new THREE.Vector3().subVectors(target, camPos).normalize();
         const start = camPos.clone().addScaledVector(dir, 6).add(new THREE.Vector3(0, 2.5, 0));
         const linvel = new THREE.Vector3().subVectors(target, start).normalize().multiplyScalar(projectileSpeed);
-        if (isDev) console.debug('[Page] Click fire', { target, start, linvel, projType });
+        // if (isDev) console.debug('[Page] Click fire', { target, start, linvel, projType });
         core.enqueueProjectile({ start: { x: start.x, y: start.y, z: start.z }, linvel: { x: linvel.x, y: linvel.y, z: linvel.z }, x: target.x, z: target.z, type: projType, radius: 0.5, mass: projectileMass, friction: 0.6, restitution: 0.2 });
       } else if (mode === 'cutter') {
         // Cutter: choose first intersected mesh with nodeIndex
@@ -624,7 +624,7 @@ function HtmlOverlay({ debug, setDebug, physicsWireframe, setPhysicsWireframe, g
       </label>
       <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#d1d5db', fontSize: 14 }}>
         Contact damage scale
-        <input type="range" min={0} max={1_000.0} step={0.1} value={contactDamageScale} onChange={(e) => setContactDamageScale(parseFloat(e.target.value))} style={{ flex: 1 }} />
+        <input type="range" min={0} max={10_000.0} step={0.1} value={contactDamageScale} onChange={(e) => setContactDamageScale(parseFloat(e.target.value))} style={{ flex: 1 }} />
         <span style={{ color: '#9ca3af', width: 60, textAlign: 'right' }}>{contactDamageScale.toFixed(1)}×</span>
       </label>
       <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#d1d5db', fontSize: 14 }}>
@@ -662,7 +662,7 @@ function HtmlOverlay({ debug, setDebug, physicsWireframe, setPhysicsWireframe, g
         Strength Scale
         {/* <input type="range" min={0.05} max={5} step={0.05} value={materialScale} onChange={(e) => setMaterialScale(parseFloat(e.target.value))} style={{ flex: 1 }} /> */}
         {/* <input type="range" min={0.5} max={5_000_000} step={0.5} value={materialScale} onChange={(e) => setMaterialScale(parseFloat(e.target.value))} style={{ flex: 1 }} /> */}
-        <input type="range" min={1} max={5_000_000} step={10} value={materialScale} onChange={(e) => setMaterialScale(parseFloat(e.target.value))} style={{ flex: 1 }} />
+        <input type="range" min={1} max={50_000_000} step={10} value={materialScale} onChange={(e) => setMaterialScale(parseFloat(e.target.value))} style={{ flex: 1 }} />
         <span style={{ color: '#9ca3af', width: 60, textAlign: 'right' }}>{materialScale.toFixed(2)}×</span>
       </label>
       <div style={{ display: 'flex', gap: 8, color: '#d1d5db', fontSize: 14 }}>
