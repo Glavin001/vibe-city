@@ -269,6 +269,8 @@ export async function buildDestructibleCore({
   function drainContactForces(params: { injectSolverForces: boolean; applyDamage: boolean; recordForReplay?: boolean }) {
     const applyDamage = !!params.applyDamage;
     const record = !!params.recordForReplay;
+    const damageEnabled = damageSystem.isEnabled();
+    const dt = getDt();
     eventQueue.drainContactForceEvents((ev: { totalForce: () => {x:number;y:number;z:number}; totalForceMagnitude: () => number; collider1: () => number; collider2: () => number; worldContactPoint?: () => {x:number; y:number; z:number}; worldContactPoint2?: () => {x:number; y:number; z:number} }) => {
       const tf = ev.totalForce?.();
       const mag = ev.totalForceMagnitude?.();
@@ -283,11 +285,10 @@ export async function buildDestructibleCore({
       const p1 = wp ?? wp2 ?? fallbackPoint(world, h1);
       const p2 = wp2 ?? wp ?? fallbackPoint(world, h2);
 
-      const node1 = colliderToNode.has(h1) ? colliderToNode.get(h1) : undefined;
-      const node2 = colliderToNode.has(h2) ? colliderToNode.get(h2) : undefined;
+      const node1 = h1 != null ? colliderToNode.get(h1) : undefined;
+      const node2 = h2 != null ? colliderToNode.get(h2) : undefined;
       const isInternal = (node1 != null && node2 != null);
 
-      const dt = getDt();
       // Use reported contact points if present; otherwise approximate by chunk world center
       const pForNode1 = node1 != null ? (wp ?? wp2 ?? chunkWorldCenter(node1) ?? p1) : undefined;
       const pForNode2 = node2 != null ? (wp2 ?? wp ?? chunkWorldCenter(node2) ?? p2) : undefined;
@@ -320,7 +321,7 @@ export async function buildDestructibleCore({
       if (h1 != null) {
         if (node1 != null && node2 == null) {
           if (params.injectSolverForces) addForceForCollider(h1, +1, tf, pForNode1 ?? pForNode2 ?? relAnchor);
-          if (damageSystem.isEnabled()) {
+          if (damageEnabled) {
             if (applyDamage) {
               try { damageSystem.onImpact(node1, effMag, dt, local1 ? { localPoint: local1 } : undefined); } catch {}
             } else if (record) {
@@ -332,7 +333,7 @@ export async function buildDestructibleCore({
       if (h2 != null) {
         if (node2 != null && node1 == null) {
           if (params.injectSolverForces) addForceForCollider(h2, -1, tf, pForNode2 ?? pForNode1 ?? relAnchor);
-          if (damageSystem.isEnabled()) {
+          if (damageEnabled) {
             if (applyDamage) {
               try { damageSystem.onImpact(node2, effMag, dt, local2 ? { localPoint: local2 } : undefined); } catch {}
             } else if (record) {
@@ -340,7 +341,7 @@ export async function buildDestructibleCore({
             }
           }
         }
-        if (node1 != null && node2 != null && damageSystem.isEnabled()) {
+        if (node1 != null && node2 != null && damageEnabled) {
           if (applyDamage) {
             try { damageSystem.onInternalImpact(node1, node2, effMag, dt, { localPointA: local1 ?? undefined, localPointB: local2 ?? undefined }); } catch {}
           } else if (record) {
@@ -557,35 +558,121 @@ export async function buildDestructibleCore({
   }
 
   // --- Per-body snapshot helpers (Plan A default) ---
-  type BodySnapshot = Map<number, {
-    t: {x:number;y:number;z:number};
-    r: {x:number;y:number;z:number;w:number};
-    lv: {x:number;y:number;z:number};
-    av: {x:number;y:number;z:number};
+  type BodySnapshotEntry = {
+    translation: Float32Array;
+    rotation: Float32Array;
+    linvel: Float32Array;
+    angvel: Float32Array;
     asleep: boolean;
-  }>;
+    version: number;
+  };
+  type BodySnapshot = {
+    version: number;
+    handles: number[];
+    entries: Map<number, BodySnapshotEntry>;
+  };
+
+  const bodySnapshotEntries = new Map<number, BodySnapshotEntry>();
+  const bodySnapshotHandles: number[] = [];
+  let bodySnapshotVersion = 0;
+  const reusableTranslation = { x: 0, y: 0, z: 0 };
+  const reusableRotation = { x: 0, y: 0, z: 0, w: 1 };
+  const reusableLinvel = { x: 0, y: 0, z: 0 };
+  const reusableAngvel = { x: 0, y: 0, z: 0 };
+  const reusableSnapshot: BodySnapshot = {
+    version: 0,
+    handles: bodySnapshotHandles,
+    entries: bodySnapshotEntries,
+  };
+
   function captureBodySnapshot(): BodySnapshot {
-    const snap = new Map<number, { t:{x:number;y:number;z:number}; r:{x:number;y:number;z:number;w:number}; lv:{x:number;y:number;z:number}; av:{x:number;y:number;z:number}; asleep:boolean }>();
+    bodySnapshotVersion += 1;
+    reusableSnapshot.version = bodySnapshotVersion;
+    bodySnapshotHandles.length = 0;
     world.forEachRigidBody((b: RAPIER.RigidBody) => {
-      const h = b.handle;
+      const handle = b.handle;
+      let entry = bodySnapshotEntries.get(handle);
+      if (!entry) {
+        entry = {
+          translation: new Float32Array(3),
+          rotation: new Float32Array(4),
+          linvel: new Float32Array(3),
+          angvel: new Float32Array(3),
+          asleep: false,
+          version: bodySnapshotVersion,
+        };
+        bodySnapshotEntries.set(handle, entry);
+      }
+      entry.version = bodySnapshotVersion;
+      bodySnapshotHandles.push(handle);
       const t = b.translation();
       const r = b.rotation();
-      const lv = b.linvel?.() ?? { x: 0, y: 0, z: 0 };
-      const av = b.angvel?.() ?? { x: 0, y: 0, z: 0 };
-      snap.set(h, { t: { x: t.x, y: t.y, z: t.z }, r: { x: r.x, y: r.y, z: r.z, w: r.w }, lv, av, asleep: b.isSleeping?.() ?? false });
+      const lv = b.linvel?.();
+      const av = b.angvel?.();
+      entry.translation[0] = t.x;
+      entry.translation[1] = t.y;
+      entry.translation[2] = t.z;
+      entry.rotation[0] = r.x;
+      entry.rotation[1] = r.y;
+      entry.rotation[2] = r.z;
+      entry.rotation[3] = r.w;
+      entry.linvel[0] = lv?.x ?? 0;
+      entry.linvel[1] = lv?.y ?? 0;
+      entry.linvel[2] = lv?.z ?? 0;
+      entry.angvel[0] = av?.x ?? 0;
+      entry.angvel[1] = av?.y ?? 0;
+      entry.angvel[2] = av?.z ?? 0;
+      entry.asleep = b.isSleeping?.() ?? false;
     });
-    return snap;
+    if (bodySnapshotEntries.size !== bodySnapshotHandles.length) {
+      const staleHandles: number[] = [];
+      bodySnapshotEntries.forEach((entry, handle) => {
+        if (entry.version !== bodySnapshotVersion) {
+          staleHandles.push(handle);
+        }
+      });
+      for (let i = 0; i < staleHandles.length; i += 1) {
+        bodySnapshotEntries.delete(staleHandles[i]);
+      }
+    }
+    return reusableSnapshot;
   }
-  function restoreBodySnapshot(snap: BodySnapshot) {
-    world.forEachRigidBody((b: RAPIER.RigidBody) => {
-      const s = snap.get(b.handle);
-      if (!s) return;
-      try { b.setTranslation(s.t, true); } catch {}
-      try { b.setRotation(s.r, true); } catch {}
-      try { b.setLinvel(s.lv, true); } catch {}
-      try { b.setAngvel(s.av, true); } catch {}
-      try { if (s.asleep) b.sleep(); else b.wakeUp(); } catch {}
-    });
+  function restoreBodySnapshot(snap: BodySnapshot | null) {
+    if (!snap) return;
+    const { handles, entries, version } = snap;
+    for (let i = 0; i < handles.length; i += 1) {
+      const handle = handles[i];
+      const entry = entries.get(handle);
+      if (!entry || entry.version !== version) continue;
+      const body = world.getRigidBody(handle);
+      if (!body) continue;
+      try {
+        reusableTranslation.x = entry.translation[0];
+        reusableTranslation.y = entry.translation[1];
+        reusableTranslation.z = entry.translation[2];
+        body.setTranslation(reusableTranslation, true);
+      } catch {}
+      try {
+        reusableRotation.x = entry.rotation[0];
+        reusableRotation.y = entry.rotation[1];
+        reusableRotation.z = entry.rotation[2];
+        reusableRotation.w = entry.rotation[3];
+        body.setRotation(reusableRotation, true);
+      } catch {}
+      try {
+        reusableLinvel.x = entry.linvel[0];
+        reusableLinvel.y = entry.linvel[1];
+        reusableLinvel.z = entry.linvel[2];
+        body.setLinvel(reusableLinvel, true);
+      } catch {}
+      try {
+        reusableAngvel.x = entry.angvel[0];
+        reusableAngvel.y = entry.angvel[1];
+        reusableAngvel.z = entry.angvel[2];
+        body.setAngvel(reusableAngvel, true);
+      } catch {}
+      try { if (entry.asleep) body.sleep(); else body.wakeUp(); } catch {}
+    }
   }
 
   function step() {
@@ -865,13 +952,18 @@ export async function buildDestructibleCore({
     }
   }
 
+  const colliderSweepScratch: number[] = [];
   function preStepSweep() {
-    // Cull invalid collider → node mappings only when collider truly no longer exists
-    for (const [h] of Array.from(colliderToNode.entries())) {
-      const c = world.getCollider(h);
-      if (!c) {
-        colliderToNode.delete(h);
+    if (colliderToNode.size === 0) return;
+    colliderSweepScratch.length = 0;
+    colliderToNode.forEach((_, handle) => {
+      if (!world.getCollider(handle)) {
+        colliderSweepScratch.push(handle);
       }
+    });
+    if (colliderSweepScratch.length === 0) return;
+    for (let i = 0; i < colliderSweepScratch.length; i += 1) {
+      colliderToNode.delete(colliderSweepScratch[i]);
     }
   }
 

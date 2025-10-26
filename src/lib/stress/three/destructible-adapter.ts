@@ -1,6 +1,10 @@
 import * as THREE from 'three';
 import type { DestructibleCore } from '@/lib/stress/core/types';
 
+const HEALTHY_COLOR = new THREE.Color(0x2fbf71);
+const CRITICAL_COLOR = new THREE.Color(0xd72638);
+const DAMAGE_LERP_COLOR = new THREE.Color();
+
 export function buildChunkMeshes(core: DestructibleCore, materials?: { deck?: THREE.Material; support?: THREE.Material }) {
   const deckMat = (materials?.deck ?? new THREE.MeshStandardMaterial({ color: 0x4b6fe8, roughness: 0.4, metalness: 0.45 }));
   const supportMat = (materials?.support ?? new THREE.MeshStandardMaterial({ color: 0x2f3e56, roughness: 0.6, metalness: 0.25 }));
@@ -82,10 +86,8 @@ export function updateChunkMeshes(core: DestructibleCore, meshes: THREE.Mesh[]) 
         const info = healthGetter(chunk.nodeIndex);
         if (info && info.maxHealth > 0) {
           const ratio = Math.max(0, Math.min(1, info.health / info.maxHealth));
-          const healthy = new THREE.Color(0x2fbf71);
-          const critical = new THREE.Color(0xd72638);
-          const lerped = healthy.clone().lerp(critical, 1 - ratio);
-          mat.color.copy(lerped);
+          DAMAGE_LERP_COLOR.lerpColors(HEALTHY_COLOR, CRITICAL_COLOR, 1 - ratio);
+          mat.color.copy(DAMAGE_LERP_COLOR);
           continue;
         } else {
           console.warn("[Adapter] Missing health for chunk", chunk.nodeIndex);
