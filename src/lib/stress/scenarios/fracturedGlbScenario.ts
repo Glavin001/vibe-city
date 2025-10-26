@@ -124,6 +124,25 @@ function normalizeFractureAreasByAxis(
   });
 }
 
+function uniformizeBondAreasByAxis(
+  list: Array<{ a?: number; b?: number; centroid: Vec3; normal: Vec3; area: number }>,
+  dims: { span: number; height: number; thickness: number }
+) {
+  const target = { x: dims.height * dims.thickness, y: dims.span * dims.thickness, z: dims.span * dims.height };
+  const pick = (n: Vec3): 'x' | 'y' | 'z' => {
+    const ax = Math.abs(n.x), ay = Math.abs(n.y), az = Math.abs(n.z);
+    return ax >= ay && ax >= az ? 'x' : (ay >= az ? 'y' : 'z');
+  };
+  const counts = { x: 0, y: 0, z: 0 } as { x: number; y: number; z: number };
+  for (const b of list) counts[pick(b.normal)] += 1;
+  const areaPerAxis = {
+    x: counts.x > 0 ? Math.max(1e-8, target.x / counts.x) : 0,
+    y: counts.y > 0 ? Math.max(1e-8, target.y / counts.y) : 0,
+    z: counts.z > 0 ? Math.max(1e-8, target.z / counts.z) : 0,
+  } as const;
+  return list.map((b) => ({ ...b, area: areaPerAxis[pick(b.normal)] || Math.max(1e-8, b.area) }));
+}
+
 async function loadMergedGeometryFromGlb(url: string): Promise<THREE.BufferGeometry | null> {
   const loader = new GLTFLoader();
   try {
@@ -156,8 +175,8 @@ export async function buildFracturedGlbScenario({
   // url = '/models/building.glb',
   // url = '/models/atlanta_corperate_office_building.glb',
   // url = '/models/big_soviet_panel_house_lowpoly.glb',
-  // fragmentCount = 120,
-  fragmentCount = 300,
+  fragmentCount = 120,
+  // fragmentCount = 300,
   objectMass = 10_000,
 }: { url?: string; fragmentCount?: number; objectMass?: number } = {}): Promise<ScenarioDesc> {
   // 1) Load GLB and merge meshes to a single geometry in world space
@@ -252,8 +271,10 @@ export async function buildFracturedGlbScenario({
   bbox.getSize(size);
 
   // 2) Fracture the merged geometry
-  const opts = new FractureOptions();
-  opts.fragmentCount = fragmentCount;
+  const opts = new FractureOptions({
+    fragmentCount: fragmentCount,
+    fractureMode: "Non-Convex" as const,
+  });
   // three-pinata expects BufferGeometry with a non-null Float32Array position
   // Some pipelines produce interleaved attributes; ensure plain arrays on a clone
   const fractureInput = merged.clone();
@@ -282,6 +303,7 @@ export async function buildFracturedGlbScenario({
     try { if (!g.getAttribute('normal')) g.computeVertexNormals(); } catch {}
   })(fractureInput);
   const pieces = fracture(fractureInput, opts);
+  console.log('Fractured pieces', pieces.length);
 
   // Placement above foundation
   const foundationHeight = Math.min(0.08, size.y * 0.06);
@@ -374,7 +396,8 @@ export async function buildFracturedGlbScenario({
       area: approxArea,
     });
   }
-  const normBonds = normalizeFractureAreasByAxis(rawBonds, { span: size.x, height: size.y, thickness: size.z });
+  // Replace area magnitudes with uniform per-axis values so material behaves uniformly
+  const normBonds = uniformizeBondAreasByAxis(rawBonds, { span: size.x, height: size.y, thickness: size.z });
 
   // 6) Emit ScenarioDesc: nodes, mass scaling with objectMass, bonds, colliders, and parameters
   const nodes: ScenarioDesc['nodes'] = [];

@@ -60,6 +60,7 @@ type SceneProps = {
   projType: 'ball' | 'box';
   projectileSpeed: number;
   projectileMass: number;
+  projectileRadius: number;
   materialScale: number;
   resimulateOnFracture: boolean;
   maxResimulationPasses: number;
@@ -129,7 +130,9 @@ const SCENARIO_BUILDERS: Record<StressPresetId, ScenarioBuilder> = {
     buildVaultedLoftScenario({ bondsX: bondsXEnabled, bondsY: bondsYEnabled, bondsZ: bondsZEnabled }),
   fracturedWall: ({ wallSpan, wallHeight, wallThickness }) =>
     buildFracturedWallScenario({ span: wallSpan, height: wallHeight, thickness: wallThickness, fragmentCount: 120 }),
-  fracturedGlb: async () => buildFracturedGlbScenario({ fragmentCount: 120, objectMass: 10_000 }),
+  fracturedGlb: async () => buildFracturedGlbScenario({
+    // fragmentCount: 120, objectMass: 10_000,
+  }),
 };
 
 function Scene({
@@ -157,6 +160,7 @@ function Scene({
   projType,
   projectileSpeed,
   projectileMass,
+  projectileRadius,
   materialScale,
   resimulateOnFracture,
   maxResimulationPasses,
@@ -355,13 +359,13 @@ function Scene({
       const dir = target.clone().sub(start).normalize();
       const vel = dir.multiplyScalar(projectileSpeed);
       if (isDev) console.debug('[Page] onSpawn', { start, target, vel });
-      core.enqueueProjectile({ start: { x: start.x, y: start.y, z: start.z }, linvel: { x: vel.x, y: vel.y, z: vel.z }, x: target.x, z: target.z, type: 'ball', radius: 0.5, mass: projectileMass, friction: 0.6, restitution: 0.2 });
+      core.enqueueProjectile({ start: { x: start.x, y: start.y, z: start.z }, linvel: { x: vel.x, y: vel.y, z: vel.z }, x: target.x, z: target.z, type: 'ball', radius: projectileRadius, mass: projectileMass, friction: 0.6, restitution: 0.2 });
     };
     window.addEventListener('spawnTestProjectile', onSpawn, { once: true });
     return () => {
       window.removeEventListener('spawnTestProjectile', onSpawn as EventListener);
     };
-  }, [projectileSpeed, projectileMass]);
+  }, [projectileSpeed, projectileMass, projectileRadius]);
 
   // Toggle Rapier wireframe on/off when checkbox changes
   useEffect(() => {
@@ -504,7 +508,7 @@ function Scene({
         const start = camPos.clone().addScaledVector(dir, 6).add(new THREE.Vector3(0, 2.5, 0));
         const linvel = new THREE.Vector3().subVectors(target, start).normalize().multiplyScalar(projectileSpeed);
         // if (isDev) console.debug('[Page] Click fire', { target, start, linvel, projType });
-        core.enqueueProjectile({ start: { x: start.x, y: start.y, z: start.z }, linvel: { x: linvel.x, y: linvel.y, z: linvel.z }, x: target.x, z: target.z, type: projType, radius: 0.5, mass: projectileMass, friction: 0.6, restitution: 0.2 });
+        core.enqueueProjectile({ start: { x: start.x, y: start.y, z: start.z }, linvel: { x: linvel.x, y: linvel.y, z: linvel.z }, x: target.x, z: target.z, type: projType, radius: projectileRadius, mass: projectileMass, friction: 0.6, restitution: 0.2 });
       } else if (mode === 'cutter') {
         // Cutter: choose first intersected mesh with nodeIndex
         let hitNodeIndex: number | null = null;
@@ -575,7 +579,7 @@ function Scene({
     };
     canvas.addEventListener('pointerdown', handle);
     return () => canvas.removeEventListener('pointerdown', handle);
-  }, [mode, pushForce, projType, camera, projectileSpeed, projectileMass, placeClickMarker, damageClickRatio, damageEnabled]);
+  }, [mode, pushForce, projType, camera, projectileSpeed, projectileMass, projectileRadius, placeClickMarker, damageClickRatio, damageEnabled]);
 
   const hasCrashed = useRef(false);
   useFrame(() => {
@@ -614,10 +618,10 @@ function Scene({
   );
 }
 
-function HtmlOverlay({ debug, setDebug, physicsWireframe, setPhysicsWireframe, gravity, setGravity, solverGravityEnabled, setSolverGravityEnabled, limitSinglesCollisions, setLimitSinglesCollisions, damageEnabled, setDamageEnabled, mode, setMode, projType, setProjType, reset, projectileSpeed, setProjectileSpeed, projectileMass, setProjectileMass, materialScale, setMaterialScale, wallSpan, setWallSpan, wallHeight, setWallHeight, wallThickness, setWallThickness, wallSpanSeg, setWallSpanSeg, wallHeightSeg, setWallHeightSeg, wallLayers, setWallLayers, showAllDebugLines, setShowAllDebugLines, bondsXEnabled, setBondsXEnabled, bondsYEnabled, setBondsYEnabled, bondsZEnabled, setBondsZEnabled, structureId, setStructureId, structures, structureDescription, pushForce, setPushForce, damageClickRatio, setDamageClickRatio, contactDamageScale, setContactDamageScale, minImpulseThreshold, setMinImpulseThreshold, contactCooldownMs, setContactCooldownMs, internalContactScale, setInternalContactScale, speedMinExternal, setSpeedMinExternal, speedMinInternal, setSpeedMinInternal, speedMax, setSpeedMax, speedExponent, setSpeedExponent, slowSpeedFactor, setSlowSpeedFactor, fastSpeedFactor, setFastSpeedFactor, resimulateOnFracture, setResimulateOnFracture, maxResimulationPasses, setMaxResimulationPasses, snapshotMode, setSnapshotMode }: { debug: boolean; setDebug: (v: boolean) => void; physicsWireframe: boolean; setPhysicsWireframe: (v: boolean) => void; gravity: number; setGravity: (v: number) => void; solverGravityEnabled: boolean; setSolverGravityEnabled: (v: boolean) => void; limitSinglesCollisions: boolean; setLimitSinglesCollisions: (v: boolean) => void; damageEnabled: boolean; setDamageEnabled: (v: boolean) => void; mode: 'projectile' | 'cutter' | 'push' | 'damage'; setMode: (v: 'projectile' | 'cutter' | 'push' | 'damage') => void; projType: 'ball' | 'box'; setProjType: (v: 'ball' | 'box') => void; reset: () => void; projectileSpeed: number; setProjectileSpeed: (v: number) => void; projectileMass: number; setProjectileMass: (v: number) => void; materialScale: number; setMaterialScale: (v: number) => void; wallSpan: number; setWallSpan: (v: number) => void; wallHeight: number; setWallHeight: (v: number) => void; wallThickness: number; setWallThickness: (v: number) => void; wallSpanSeg: number; setWallSpanSeg: (v: number) => void; wallHeightSeg: number; setWallHeightSeg: (v: number) => void; wallLayers: number; setWallLayers: (v: number) => void; showAllDebugLines: boolean; setShowAllDebugLines: (v: boolean) => void; bondsXEnabled: boolean; setBondsXEnabled: (v: boolean) => void; bondsYEnabled: boolean; setBondsYEnabled: (v: boolean) => void; bondsZEnabled: boolean; setBondsZEnabled: (v: boolean) => void; structureId: StressPresetId; setStructureId: (v: StressPresetId) => void; structures: typeof STRESS_PRESET_METADATA; structureDescription?: string; pushForce: number; setPushForce: (v: number) => void; damageClickRatio: number; setDamageClickRatio: (v: number) => void; contactDamageScale: number; setContactDamageScale: (v: number) => void; minImpulseThreshold: number; setMinImpulseThreshold: (v: number) => void; contactCooldownMs: number; setContactCooldownMs: (v: number) => void; internalContactScale: number; setInternalContactScale: (v: number) => void; speedMinExternal: number; setSpeedMinExternal: (v:number)=>void; speedMinInternal: number; setSpeedMinInternal: (v:number)=>void; speedMax: number; setSpeedMax: (v:number)=>void; speedExponent: number; setSpeedExponent: (v:number)=>void; slowSpeedFactor: number; setSlowSpeedFactor: (v:number)=>void; fastSpeedFactor: number; setFastSpeedFactor: (v:number)=>void; resimulateOnFracture: boolean; setResimulateOnFracture: (v:boolean)=>void; maxResimulationPasses: number; setMaxResimulationPasses: (v:number)=>void; snapshotMode: 'perBody'|'world'; setSnapshotMode: (v:'perBody'|'world')=>void }) {
+function HtmlOverlay({ debug, setDebug, physicsWireframe, setPhysicsWireframe, gravity, setGravity, solverGravityEnabled, setSolverGravityEnabled, limitSinglesCollisions, setLimitSinglesCollisions, damageEnabled, setDamageEnabled, mode, setMode, projType, setProjType, reset, projectileSpeed, setProjectileSpeed, projectileMass, setProjectileMass, projectileRadius, setProjectileRadius, materialScale, setMaterialScale, wallSpan, setWallSpan, wallHeight, setWallHeight, wallThickness, setWallThickness, wallSpanSeg, setWallSpanSeg, wallHeightSeg, setWallHeightSeg, wallLayers, setWallLayers, showAllDebugLines, setShowAllDebugLines, bondsXEnabled, setBondsXEnabled, bondsYEnabled, setBondsYEnabled, bondsZEnabled, setBondsZEnabled, structureId, setStructureId, structures, structureDescription, pushForce, setPushForce, damageClickRatio, setDamageClickRatio, contactDamageScale, setContactDamageScale, minImpulseThreshold, setMinImpulseThreshold, contactCooldownMs, setContactCooldownMs, internalContactScale, setInternalContactScale, speedMinExternal, setSpeedMinExternal, speedMinInternal, setSpeedMinInternal, speedMax, setSpeedMax, speedExponent, setSpeedExponent, slowSpeedFactor, setSlowSpeedFactor, fastSpeedFactor, setFastSpeedFactor, resimulateOnFracture, setResimulateOnFracture, maxResimulationPasses, setMaxResimulationPasses, snapshotMode, setSnapshotMode }: { debug: boolean; setDebug: (v: boolean) => void; physicsWireframe: boolean; setPhysicsWireframe: (v: boolean) => void; gravity: number; setGravity: (v: number) => void; solverGravityEnabled: boolean; setSolverGravityEnabled: (v: boolean) => void; limitSinglesCollisions: boolean; setLimitSinglesCollisions: (v: boolean) => void; damageEnabled: boolean; setDamageEnabled: (v: boolean) => void; mode: 'projectile' | 'cutter' | 'push' | 'damage'; setMode: (v: 'projectile' | 'cutter' | 'push' | 'damage') => void; projType: 'ball' | 'box'; setProjType: (v: 'ball' | 'box') => void; reset: () => void; projectileSpeed: number; setProjectileSpeed: (v: number) => void; projectileMass: number; setProjectileMass: (v: number) => void; projectileRadius: number; setProjectileRadius: (v: number) => void; materialScale: number; setMaterialScale: (v: number) => void; wallSpan: number; setWallSpan: (v: number) => void; wallHeight: number; setWallHeight: (v: number) => void; wallThickness: number; setWallThickness: (v: number) => void; wallSpanSeg: number; setWallSpanSeg: (v: number) => void; wallHeightSeg: number; setWallHeightSeg: (v: number) => void; wallLayers: number; setWallLayers: (v: number) => void; showAllDebugLines: boolean; setShowAllDebugLines: (v: boolean) => void; bondsXEnabled: boolean; setBondsXEnabled: (v: boolean) => void; bondsYEnabled: boolean; setBondsYEnabled: (v: boolean) => void; bondsZEnabled: boolean; setBondsZEnabled: (v: boolean) => void; structureId: StressPresetId; setStructureId: (v: StressPresetId) => void; structures: typeof STRESS_PRESET_METADATA; structureDescription?: string; pushForce: number; setPushForce: (v: number) => void; damageClickRatio: number; setDamageClickRatio: (v: number) => void; contactDamageScale: number; setContactDamageScale: (v: number) => void; minImpulseThreshold: number; setMinImpulseThreshold: (v: number) => void; contactCooldownMs: number; setContactCooldownMs: (v: number) => void; internalContactScale: number; setInternalContactScale: (v: number) => void; speedMinExternal: number; setSpeedMinExternal: (v:number)=>void; speedMinInternal: number; setSpeedMinInternal: (v:number)=>void; speedMax: number; setSpeedMax: (v:number)=>void; speedExponent: number; setSpeedExponent: (v:number)=>void; slowSpeedFactor: number; setSlowSpeedFactor: (v:number)=>void; fastSpeedFactor: number; setFastSpeedFactor: (v:number)=>void; resimulateOnFracture: boolean; setResimulateOnFracture: (v:boolean)=>void; maxResimulationPasses: number; setMaxResimulationPasses: (v:number)=>void; snapshotMode: 'perBody'|'world'; setSnapshotMode: (v:'perBody'|'world')=>void }) {
   const isWallStructure = structureId === "wall" || structureId === "fracturedWall";
   return (
-    <div style={{ position: 'absolute', top: 110, left: 16, zIndex: 10, display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 360 }}>
+    <div style={{ position: 'absolute', top: 110, left: 16, bottom: 16, zIndex: 10, display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 360, overflowY: 'auto', paddingRight: 8 }}>
       <div style={{ display: 'flex', gap: 8 }}>
         <button type="button" onClick={reset} style={{ padding: '8px 14px', background: '#0d0d0d', color: 'white', borderRadius: 6, border: '1px solid #303030' }}>Reset</button>
         <select value={mode} onChange={(e) => setMode(e.target.value as 'projectile' | 'cutter' | 'push' | 'damage')} style={{ background: '#111', color: '#eee', border: '1px solid #333', borderRadius: 6, padding: '8px 10px', flex: 1 }}>
@@ -754,6 +758,11 @@ function HtmlOverlay({ debug, setDebug, physicsWireframe, setPhysicsWireframe, g
         <option value="box">Box</option>
       </select>
       <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#d1d5db', fontSize: 14 }}>
+        Size (radius, m)
+        <input type="range" min={0.1} max={3.0} step={0.05} value={projectileRadius} onChange={(e) => setProjectileRadius(parseFloat(e.target.value))} style={{ flex: 1 }} />
+        <span style={{ color: '#9ca3af', width: 80, textAlign: 'right' }}>{projectileRadius.toFixed(2)}m</span>
+      </label>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#d1d5db', fontSize: 14 }}>
         Speed
         <input type="range" min={1} max={100} step={1} value={projectileSpeed} onChange={(e) => setProjectileSpeed(parseFloat(e.target.value))} style={{ flex: 1 }} />
         <span style={{ color: '#9ca3af', width: 60, textAlign: 'right' }}>{projectileSpeed.toFixed(0)}</span>
@@ -854,6 +863,7 @@ export default function Page() {
   const [projType, setProjType] = useState<'ball' | 'box'>("ball");
   const [projectileSpeed, setProjectileSpeed] = useState(36);
   const [projectileMass, setProjectileMass] = useState(15000);
+  const [projectileRadius, setProjectileRadius] = useState(0.5);
   const [materialScale, setMaterialScale] = useState(1.0);
   const [pushForce, setPushForce] = useState(8000);
   const [resimulateOnFracture, setResimulateOnFracture] = useState(true);
@@ -900,6 +910,8 @@ export default function Page() {
         setProjectileSpeed={setProjectileSpeed}
         projectileMass={projectileMass}
         setProjectileMass={setProjectileMass}
+        projectileRadius={projectileRadius}
+        setProjectileRadius={setProjectileRadius}
         materialScale={materialScale}
         setMaterialScale={setMaterialScale}
         wallSpan={wallSpan}
@@ -980,6 +992,7 @@ export default function Page() {
           projType={projType}
           projectileSpeed={projectileSpeed}
           projectileMass={projectileMass}
+          projectileRadius={projectileRadius}
           materialScale={materialScale}
           resimulateOnFracture={resimulateOnFracture}
           maxResimulationPasses={maxResimulationPasses}
