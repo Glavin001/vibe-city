@@ -246,7 +246,7 @@ export async function buildDestructibleCore({
   }
 
   function drainContactForces(params: { injectSolverForces: boolean }) {
-    eventQueue.drainContactForceEvents((ev: { totalForce: () => {x:number;y:number;z:number}; totalForceMagnitude: () => number; collider1: () => number; collider2: () => number; worldContactPoint?: () => {x:number;y:number;z:number}; worldContactPoint2?: () => {x:number;y:number;z:number} }) => {
+    eventQueue.drainContactForceEvents((ev: { totalForce: () => {x:number;y:number;z:number}; totalForceMagnitude: () => number; collider1: () => number; collider2: () => number; worldContactPoint?: () => {x:number; y:number; z:number}; worldContactPoint2?: () => {x:number; y:number; z:number} }) => {
       const tf = ev.totalForce?.();
       const mag = ev.totalForceMagnitude?.();
       if (!tf || !(mag > 0)) {
@@ -265,23 +265,44 @@ export async function buildDestructibleCore({
       const isInternal = (node1 != null && node2 != null);
 
       const dt = getDt();
-      const relSpeed = computeRelativeSpeed(world, h1, h2, p1 ?? p2);
+      // Use reported contact points if present; otherwise approximate by chunk world center
+      const pForNode1 = node1 != null ? (wp ?? wp2 ?? chunkWorldCenter(node1) ?? p1) : undefined;
+      const pForNode2 = node2 != null ? (wp2 ?? wp ?? chunkWorldCenter(node2) ?? p2) : undefined;
+      const relAnchor = pForNode1 ?? pForNode2 ?? (p1 ?? p2);
+      const relSpeed = computeRelativeSpeed(world, h1, h2, relAnchor);
       const speedFactor = computeSpeedFactor(relSpeed, isInternal);
-      const effMag = (mag ?? 0) * speedFactor;
+      let effMag = (mag ?? 0) * speedFactor;
 
-      const local1 = (node1 != null && p1) ? worldPointToActorLocal(node1, p1) : null;
-      const local2 = (node2 != null && p2) ? worldPointToActorLocal(node2, p2) : null;
+      // Projectile momentum boost on initial impact for broader splash
+      try {
+        const b1 = getBodyForColliderHandle(h1);
+        const b2 = getBodyForColliderHandle(h2);
+        const ud1 = (b1 as unknown as { userData?: { projectile?: boolean } } | null)?.userData;
+        const ud2 = (b2 as unknown as { userData?: { projectile?: boolean } } | null)?.userData;
+        const projBody = (ud1?.projectile ? b1 : (ud2?.projectile ? b2 : null));
+        if (projBody && (node1 != null || node2 != null)) {
+          let m = 1;
+          try { m = typeof (projBody as unknown as { mass: () => number }).mass === 'function' ? (projBody as unknown as { mass: () => number }).mass() : m; } catch {}
+          const impulseEstimate = Math.max(0, m) * Math.max(0, relSpeed);
+          const forceFromMomentum = impulseEstimate / Math.max(1e-6, dt);
+          if (Number.isFinite(forceFromMomentum) && forceFromMomentum > 0) {
+            effMag = Math.max(effMag, forceFromMomentum);
+          }
+        }
+      } catch {}
 
-      // External: one side is ours, other is not
+      const local1 = (node1 != null && pForNode1) ? worldPointToActorLocal(node1, pForNode1) : null;
+      const local2 = (node2 != null && pForNode2) ? worldPointToActorLocal(node2, pForNode2) : null;
+
       if (h1 != null) {
         if (node1 != null && node2 == null) {
-          if (params.injectSolverForces) addForceForCollider(h1, +1, tf, p1 ?? p2);
+          if (params.injectSolverForces) addForceForCollider(h1, +1, tf, pForNode1 ?? pForNode2 ?? relAnchor);
           try { if (damageSystem.isEnabled()) damageSystem.onImpact(node1, effMag, dt, local1 ? { localPoint: local1 } : undefined); } catch {}
         }
       }
       if (h2 != null) {
         if (node2 != null && node1 == null) {
-          if (params.injectSolverForces) addForceForCollider(h2, -1, tf, p2 ?? p1);
+          if (params.injectSolverForces) addForceForCollider(h2, -1, tf, pForNode2 ?? pForNode1 ?? relAnchor);
           try { if (damageSystem.isEnabled()) damageSystem.onImpact(node2, effMag, dt, local2 ? { localPoint: local2 } : undefined); } catch {}
         }
         if (node1 != null && node2 != null) {
@@ -480,6 +501,20 @@ export async function buildDestructibleCore({
     } catch {
       return null;
     }
+  }
+
+  function chunkWorldCenter(nodeIndex: number): { x:number; y:number; z:number } | null {
+    try {
+      const seg = chunks[nodeIndex];
+      if (!seg) return null;
+      const { body } = actorBodyForNode(nodeIndex);
+      const rb = body ?? world.getRigidBody(rootBody.handle);
+      if (!rb) return null;
+      const t = rb.translation();
+      const r = rb.rotation();
+      const local = applyQuatToVec3(seg.baseLocalOffset, r as unknown as { x:number; y:number; z:number; w:number });
+      return { x: (t.x ?? 0) + local.x, y: (t.y ?? 0) + local.y, z: (t.z ?? 0) + local.z };
+    } catch { return null; }
   }
 
   function stepEventful() {
