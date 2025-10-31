@@ -20,7 +20,17 @@ import {
   buildVaultedLoftScenario,
   type StressPresetId,
 } from "@/lib/stress/scenarios/structurePresets";
-import { buildChunkMeshes, buildChunkMeshesFromGeometries, buildSolverDebugHelper, updateChunkMeshes, updateProjectileMeshes, computeWorldDebugLines } from "@/lib/stress/three/destructible-adapter";
+import {
+  buildChunkMeshes,
+  buildChunkMeshesFromGeometries,
+  buildChunkMeshesInstanced,
+  updateInstancedChunkMeshes,
+  buildSolverDebugHelper,
+  updateChunkMeshes,
+  updateProjectileMeshes,
+  computeWorldDebugLines,
+  type InstancedState,
+} from "@/lib/stress/three/destructible-adapter";
 import RapierDebugRenderer from "@/lib/rapier/rapier-debug-renderer";
 import { debugPrintSolver } from "@/lib/stress/core/printSolver";
 
@@ -171,6 +181,7 @@ function Scene({
   const coreRef = useRef<DestructibleCore | null>(null);
   const debugHelperRef = useRef<ReturnType<typeof buildSolverDebugHelper> | null>(null);
   const chunkMeshesRef = useRef<THREE.Mesh[] | null>(null);
+  const instancedRef = useRef<InstancedState | null>(null);
   const groupRef = useRef<THREE.Group>(null);
   const camera = useThree((s) => s.camera as THREE.Camera);
   const scene = useThree((s) => s.scene as THREE.Scene);
@@ -296,11 +307,17 @@ function Scene({
       try { core.setLimitSinglesCollisions(limitSinglesRef.current); } catch {}
 
       const params = scenario.parameters as unknown as { fragmentGeometries?: THREE.BufferGeometry[] } | undefined;
-      const { objects } = params?.fragmentGeometries?.length
-        ? buildChunkMeshesFromGeometries(core, params.fragmentGeometries)
-        : buildChunkMeshes(core);
-      chunkMeshesRef.current = objects;
-      for (const o of objects) groupRef.current?.add(o);
+      if (params?.fragmentGeometries?.length) {
+        const { objects } = buildChunkMeshesFromGeometries(core, params.fragmentGeometries);
+        chunkMeshesRef.current = objects;
+        instancedRef.current = null;
+        for (const o of objects) groupRef.current?.add(o);
+      } else {
+        const { group, state } = buildChunkMeshesInstanced(core);
+        instancedRef.current = state;
+        chunkMeshesRef.current = null;
+        groupRef.current?.add(group);
+      }
 
       const helper = buildSolverDebugHelper();
       debugHelperRef.current = helper;
@@ -343,6 +360,7 @@ function Scene({
           }
         }
         chunkMeshesRef.current = null;
+        instancedRef.current = null;
       } catch {}
       if (coreRef.current) coreRef.current.dispose();
       coreRef.current = null;
@@ -464,27 +482,45 @@ function Scene({
         return;
       }
       // Intersect only with pickable chunk meshes that currently have active colliders/bodies
-      const pickTargets: THREE.Object3D[] = (chunkMeshesRef.current ?? []).filter((mesh) => {
+      const pickTargets: THREE.Object3D[] = [];
+      for (const mesh of chunkMeshesRef.current ?? []) {
         const idx = (mesh as THREE.Object3D & { userData?: Record<string, unknown> })?.userData?.nodeIndex as number | undefined;
-        if (typeof idx !== 'number') return false;
+        if (typeof idx !== 'number') continue;
         const seg = core.chunks[idx];
-        if (!seg || seg.destroyed) return false;
+        if (!seg || seg.destroyed) continue;
         const ch = seg.colliderHandle;
-        if (ch == null) return false;
+        if (ch == null) continue;
         try {
           const col = core.world.getCollider(ch);
-          if (!col) return false;
-          // If collider exposes isEnabled, respect it
+          if (!col) continue;
           const anyCol = col as unknown as { isEnabled?: () => boolean };
-          if (typeof anyCol.isEnabled === 'function' && !anyCol.isEnabled()) return false;
-        } catch { return false; }
+          if (typeof anyCol.isEnabled === 'function' && !anyCol.isEnabled()) continue;
+        } catch { continue; }
         const bh = seg.bodyHandle;
-        if (bh == null) return false;
+        if (bh == null) continue;
         const body = core.world.getRigidBody(bh);
-        if (!body) return false;
-        return true;
-      }) as unknown as THREE.Object3D[];
+        if (!body) continue;
+        pickTargets.push(mesh);
+      }
+      if (instancedRef.current?.deck) pickTargets.push(instancedRef.current.deck);
+      if (instancedRef.current?.support) pickTargets.push(instancedRef.current.support);
       const intersects: THREE.Intersection[] = raycaster.intersectObjects(pickTargets, true);
+      const getNodeIndexFromIntersection = (intr: THREE.Intersection): number | undefined => {
+        if (typeof intr.instanceId === 'number' && instancedRef.current) {
+          const state = instancedRef.current;
+          if (state.deck && intr.object === state.deck && state.deckNodes) {
+            const idx = state.deckNodes[intr.instanceId] ?? -1;
+            if (idx >= 0) return idx;
+          }
+          if (state.support && intr.object === state.support && state.supportNodes) {
+            const idx = state.supportNodes[intr.instanceId] ?? -1;
+            if (idx >= 0) return idx;
+          }
+        }
+        const obj = intr.object as THREE.Object3D & { userData?: Record<string, unknown> };
+        const idx = obj?.userData?.nodeIndex as number | undefined;
+        return typeof idx === 'number' ? idx : undefined;
+      };
       const target = new THREE.Vector3();
       if (intersects.length > 0) {
         target.copy(intersects[0].point);
@@ -513,8 +549,7 @@ function Scene({
         // Cutter: choose first intersected mesh with nodeIndex
         let hitNodeIndex: number | null = null;
         for (const intr of intersects) {
-          const obj = intr.object as THREE.Object3D & { userData?: Record<string, unknown> };
-          const idx = obj?.userData?.nodeIndex as number | undefined;
+          const idx = getNodeIndexFromIntersection(intr);
           if (typeof idx === 'number') { hitNodeIndex = idx; break; }
         }
         if (hitNodeIndex == null) {
@@ -526,17 +561,16 @@ function Scene({
         for (const b of bonds) core.cutBond(b.index);
       } else if (mode === 'push') {
         // Push: pick intersected chunk and apply external force along ray direction
-        let hit: THREE.Intersection | undefined;
+        let hit: { intersection: THREE.Intersection; nodeIndex: number } | null = null;
         for (const intr of intersects) {
-          const obj = intr.object as THREE.Object3D & { userData?: Record<string, unknown> };
-          const idx = obj?.userData?.nodeIndex as number | undefined;
-          if (typeof idx === 'number') { hit = intr; break; }
+          const idx = getNodeIndexFromIntersection(intr);
+          if (typeof idx === 'number') { hit = { intersection: intr, nodeIndex: idx }; break; }
         }
         if (!hit) {
           if (isDev) console.warn('[Page] Push: no nodeIndex on hit object');
           return;
         }
-        const nodeIndex = (hit.object as THREE.Object3D & { userData?: Record<string, unknown> }).userData.nodeIndex as number;
+        const nodeIndex = hit.nodeIndex;
         const dirWorld = raycaster.ray.direction.clone().normalize();
         const force = dirWorld.multiplyScalar(pushForce);
         // Apply to Rapier as a one-shot impulse at the hit point
@@ -547,25 +581,24 @@ function Scene({
           if (body) {
             const dt = core.world.timestep ?? core.world.integrationParameters?.dt ?? (1 / 60);
             const impulse = new THREE.Vector3(force.x * dt, force.y * dt, force.z * dt);
-            body.applyImpulseAtPoint({ x: impulse.x, y: impulse.y, z: impulse.z }, { x: hit.point.x, y: hit.point.y, z: hit.point.z }, true);
+            body.applyImpulseAtPoint({ x: impulse.x, y: impulse.y, z: impulse.z }, { x: hit.intersection.point.x, y: hit.intersection.point.y, z: hit.intersection.point.z }, true);
           }
         }
         // Mirror to solver only (solver consumes and clears per-frame)
-        core.applyExternalForce(nodeIndex, { x: hit.point.x, y: hit.point.y, z: hit.point.z }, { x: force.x, y: force.y, z: force.z });
-        if (isDev) console.debug('[Page] Push: applied', { nodeIndex, point: hit.point, force });
+        core.applyExternalForce(nodeIndex, { x: hit.intersection.point.x, y: hit.intersection.point.y, z: hit.intersection.point.z }, { x: force.x, y: force.y, z: force.z });
+        if (isDev) console.debug('[Page] Push: applied', { nodeIndex, point: hit.intersection.point, force });
       } else if (mode === 'damage') {
         // Damage: pick intersected chunk and apply direct damage percent of max health
-        let hit: THREE.Intersection | undefined;
+        let hit: { intersection: THREE.Intersection; nodeIndex: number } | null = null;
         for (const intr of intersects) {
-          const obj = intr.object as THREE.Object3D & { userData?: Record<string, unknown> };
-          const idx = obj?.userData?.nodeIndex as number | undefined;
-          if (typeof idx === 'number') { hit = intr; break; }
+          const idx = getNodeIndexFromIntersection(intr);
+          if (typeof idx === 'number') { hit = { intersection: intr, nodeIndex: idx }; break; }
         }
         if (!hit) {
           if (isDev) console.warn('[Page] Damage: no nodeIndex on hit object');
           return;
         }
-        const nodeIndex = (hit.object as THREE.Object3D & { userData?: Record<string, unknown> }).userData.nodeIndex as number;
+        const nodeIndex = hit.nodeIndex;
         if (!damageEnabled || typeof core.applyNodeDamage !== 'function' || typeof core.getNodeHealth !== 'function') {
           if (isDev) console.warn('[Page] Damage: damage system not enabled');
           return;
@@ -589,15 +622,18 @@ function Scene({
     try {
       core.step();
       // Update scene meshes first, then debug renderers to avoid Rapier aliasing issues
-      if (chunkMeshesRef.current) updateChunkMeshes(core, chunkMeshesRef.current);
+      if (instancedRef.current) updateInstancedChunkMeshes(core, instancedRef.current);
+      else if (chunkMeshesRef.current) updateChunkMeshes(core, chunkMeshesRef.current);
       if (groupRef.current) updateProjectileMeshes(core, groupRef.current);
     } catch (e) {
       console.error(e);
       hasCrashed.current = true;
     }
 
-    // Update Rapier wireframe last
-    if (rapierDebugRef.current) rapierDebugRef.current.update();
+    // Update Rapier wireframe last when enabled
+    if (physicsWireframeStateRef.current && rapierDebugRef.current) {
+      try { rapierDebugRef.current.update(); } catch {}
+    }
     if (debug && debugHelperRef.current) {
       const lines = core.getSolverDebugLines();
       const worldLines = computeWorldDebugLines(core, lines);
@@ -610,15 +646,13 @@ function Scene({
   return (
     <>
       <group ref={groupRef} />
-      <ambientLight intensity={0.35} />
-      <directionalLight castShadow position={[6, 8, 6]} intensity={1.2} shadow-mapSize-width={2048} shadow-mapSize-height={2048} />
       <Ground />
       <OrbitControls makeDefault enableDamping dampingFactor={0.15} />
     </>
   );
 }
 
-function HtmlOverlay({ debug, setDebug, physicsWireframe, setPhysicsWireframe, gravity, setGravity, solverGravityEnabled, setSolverGravityEnabled, limitSinglesCollisions, setLimitSinglesCollisions, damageEnabled, setDamageEnabled, mode, setMode, projType, setProjType, reset, projectileSpeed, setProjectileSpeed, projectileMass, setProjectileMass, projectileRadius, setProjectileRadius, materialScale, setMaterialScale, wallSpan, setWallSpan, wallHeight, setWallHeight, wallThickness, setWallThickness, wallSpanSeg, setWallSpanSeg, wallHeightSeg, setWallHeightSeg, wallLayers, setWallLayers, showAllDebugLines, setShowAllDebugLines, bondsXEnabled, setBondsXEnabled, bondsYEnabled, setBondsYEnabled, bondsZEnabled, setBondsZEnabled, structureId, setStructureId, structures, structureDescription, pushForce, setPushForce, damageClickRatio, setDamageClickRatio, contactDamageScale, setContactDamageScale, minImpulseThreshold, setMinImpulseThreshold, contactCooldownMs, setContactCooldownMs, internalContactScale, setInternalContactScale, speedMinExternal, setSpeedMinExternal, speedMinInternal, setSpeedMinInternal, speedMax, setSpeedMax, speedExponent, setSpeedExponent, slowSpeedFactor, setSlowSpeedFactor, fastSpeedFactor, setFastSpeedFactor, resimulateOnFracture, setResimulateOnFracture, maxResimulationPasses, setMaxResimulationPasses, snapshotMode, setSnapshotMode }: { debug: boolean; setDebug: (v: boolean) => void; physicsWireframe: boolean; setPhysicsWireframe: (v: boolean) => void; gravity: number; setGravity: (v: number) => void; solverGravityEnabled: boolean; setSolverGravityEnabled: (v: boolean) => void; limitSinglesCollisions: boolean; setLimitSinglesCollisions: (v: boolean) => void; damageEnabled: boolean; setDamageEnabled: (v: boolean) => void; mode: 'projectile' | 'cutter' | 'push' | 'damage'; setMode: (v: 'projectile' | 'cutter' | 'push' | 'damage') => void; projType: 'ball' | 'box'; setProjType: (v: 'ball' | 'box') => void; reset: () => void; projectileSpeed: number; setProjectileSpeed: (v: number) => void; projectileMass: number; setProjectileMass: (v: number) => void; projectileRadius: number; setProjectileRadius: (v: number) => void; materialScale: number; setMaterialScale: (v: number) => void; wallSpan: number; setWallSpan: (v: number) => void; wallHeight: number; setWallHeight: (v: number) => void; wallThickness: number; setWallThickness: (v: number) => void; wallSpanSeg: number; setWallSpanSeg: (v: number) => void; wallHeightSeg: number; setWallHeightSeg: (v: number) => void; wallLayers: number; setWallLayers: (v: number) => void; showAllDebugLines: boolean; setShowAllDebugLines: (v: boolean) => void; bondsXEnabled: boolean; setBondsXEnabled: (v: boolean) => void; bondsYEnabled: boolean; setBondsYEnabled: (v: boolean) => void; bondsZEnabled: boolean; setBondsZEnabled: (v: boolean) => void; structureId: StressPresetId; setStructureId: (v: StressPresetId) => void; structures: typeof STRESS_PRESET_METADATA; structureDescription?: string; pushForce: number; setPushForce: (v: number) => void; damageClickRatio: number; setDamageClickRatio: (v: number) => void; contactDamageScale: number; setContactDamageScale: (v: number) => void; minImpulseThreshold: number; setMinImpulseThreshold: (v: number) => void; contactCooldownMs: number; setContactCooldownMs: (v: number) => void; internalContactScale: number; setInternalContactScale: (v: number) => void; speedMinExternal: number; setSpeedMinExternal: (v:number)=>void; speedMinInternal: number; setSpeedMinInternal: (v:number)=>void; speedMax: number; setSpeedMax: (v:number)=>void; speedExponent: number; setSpeedExponent: (v:number)=>void; slowSpeedFactor: number; setSlowSpeedFactor: (v:number)=>void; fastSpeedFactor: number; setFastSpeedFactor: (v:number)=>void; resimulateOnFracture: boolean; setResimulateOnFracture: (v:boolean)=>void; maxResimulationPasses: number; setMaxResimulationPasses: (v:number)=>void; snapshotMode: 'perBody'|'world'; setSnapshotMode: (v:'perBody'|'world')=>void }) {
+function HtmlOverlay({ debug, setDebug, physicsWireframe, setPhysicsWireframe, showStats, setShowStats, gravity, setGravity, solverGravityEnabled, setSolverGravityEnabled, limitSinglesCollisions, setLimitSinglesCollisions, damageEnabled, setDamageEnabled, mode, setMode, projType, setProjType, reset, projectileSpeed, setProjectileSpeed, projectileMass, setProjectileMass, projectileRadius, setProjectileRadius, materialScale, setMaterialScale, wallSpan, setWallSpan, wallHeight, setWallHeight, wallThickness, setWallThickness, wallSpanSeg, setWallSpanSeg, wallHeightSeg, setWallHeightSeg, wallLayers, setWallLayers, showAllDebugLines, setShowAllDebugLines, bondsXEnabled, setBondsXEnabled, bondsYEnabled, setBondsYEnabled, bondsZEnabled, setBondsZEnabled, structureId, setStructureId, structures, structureDescription, pushForce, setPushForce, damageClickRatio, setDamageClickRatio, contactDamageScale, setContactDamageScale, minImpulseThreshold, setMinImpulseThreshold, contactCooldownMs, setContactCooldownMs, internalContactScale, setInternalContactScale, speedMinExternal, setSpeedMinExternal, speedMinInternal, setSpeedMinInternal, speedMax, setSpeedMax, speedExponent, setSpeedExponent, slowSpeedFactor, setSlowSpeedFactor, fastSpeedFactor, setFastSpeedFactor, resimulateOnFracture, setResimulateOnFracture, maxResimulationPasses, setMaxResimulationPasses, snapshotMode, setSnapshotMode }: { debug: boolean; setDebug: (v: boolean) => void; physicsWireframe: boolean; setPhysicsWireframe: (v: boolean) => void; showStats: boolean; setShowStats: (v: boolean) => void; gravity: number; setGravity: (v: number) => void; solverGravityEnabled: boolean; setSolverGravityEnabled: (v: boolean) => void; limitSinglesCollisions: boolean; setLimitSinglesCollisions: (v: boolean) => void; damageEnabled: boolean; setDamageEnabled: (v: boolean) => void; mode: 'projectile' | 'cutter' | 'push' | 'damage'; setMode: (v: 'projectile' | 'cutter' | 'push' | 'damage') => void; projType: 'ball' | 'box'; setProjType: (v: 'ball' | 'box') => void; reset: () => void; projectileSpeed: number; setProjectileSpeed: (v: number) => void; projectileMass: number; setProjectileMass: (v: number) => void; projectileRadius: number; setProjectileRadius: (v: number) => void; materialScale: number; setMaterialScale: (v: number) => void; wallSpan: number; setWallSpan: (v: number) => void; wallHeight: number; setWallHeight: (v: number) => void; wallThickness: number; setWallThickness: (v: number) => void; wallSpanSeg: number; setWallSpanSeg: (v: number) => void; wallHeightSeg: number; setWallHeightSeg: (v: number) => void; wallLayers: number; setWallLayers: (v: number) => void; showAllDebugLines: boolean; setShowAllDebugLines: (v: boolean) => void; bondsXEnabled: boolean; setBondsXEnabled: (v: boolean) => void; bondsYEnabled: boolean; setBondsYEnabled: (v: boolean) => void; bondsZEnabled: boolean; setBondsZEnabled: (v: boolean) => void; structureId: StressPresetId; setStructureId: (v: StressPresetId) => void; structures: typeof STRESS_PRESET_METADATA; structureDescription?: string; pushForce: number; setPushForce: (v: number) => void; damageClickRatio: number; setDamageClickRatio: (v: number) => void; contactDamageScale: number; setContactDamageScale: (v: number) => void; minImpulseThreshold: number; setMinImpulseThreshold: (v: number) => void; contactCooldownMs: number; setContactCooldownMs: (v: number) => void; internalContactScale: number; setInternalContactScale: (v: number) => void; speedMinExternal: number; setSpeedMinExternal: (v:number)=>void; speedMinInternal: number; setSpeedMinInternal: (v:number)=>void; speedMax: number; setSpeedMax: (v:number)=>void; speedExponent: number; setSpeedExponent: (v:number)=>void; slowSpeedFactor: number; setSlowSpeedFactor: (v:number)=>void; fastSpeedFactor: number; setFastSpeedFactor: (v:number)=>void; resimulateOnFracture: boolean; setResimulateOnFracture: (v:boolean)=>void; maxResimulationPasses: number; setMaxResimulationPasses: (v:number)=>void; snapshotMode: 'perBody'|'world'; setSnapshotMode: (v:'perBody'|'world')=>void }) {
   const isWallStructure = structureId === "wall" || structureId === "fracturedWall";
   return (
     <div style={{ position: 'absolute', top: 110, left: 16, bottom: 16, zIndex: 10, display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 360, overflowY: 'auto', paddingRight: 8 }}>
@@ -648,6 +682,10 @@ function HtmlOverlay({ debug, setDebug, physicsWireframe, setPhysicsWireframe, g
       <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#d1d5db', fontSize: 14 }}>
         <input type="checkbox" checked={physicsWireframe} onChange={(e) => setPhysicsWireframe(e.target.checked)} style={{ accentColor: '#4da2ff', width: 16, height: 16 }} />
         Physics wireframe
+      </label>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#d1d5db', fontSize: 14 }}>
+        <input type="checkbox" checked={showStats} onChange={(e) => setShowStats(e.target.checked)} style={{ accentColor: '#4da2ff', width: 16, height: 16 }} />
+        Show GPU/CPU stats
       </label>
       <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#d1d5db', fontSize: 14 }}>
         <input type="checkbox" checked={showAllDebugLines} onChange={(e) => setShowAllDebugLines(e.target.checked)} style={{ accentColor: '#4da2ff', width: 16, height: 16 }} />
@@ -844,6 +882,7 @@ export default function Page() {
   const [gravity, setGravity] = useState(-9.81);
   const [solverGravityEnabled, setSolverGravityEnabled] = useState(true);
   const [limitSinglesCollisions, setLimitSinglesCollisions] = useState(false);
+  const [showStats, setShowStats] = useState(true);
   const [damageEnabled, setDamageEnabled] = useState(false);
   const [iteration, setIteration] = useState(0);
   const [mode, setMode] = useState<'projectile' | 'cutter' | 'push' | 'damage'>('projectile');
@@ -889,6 +928,8 @@ export default function Page() {
         setDebug={setDebug}
         physicsWireframe={physicsWireframe}
         setPhysicsWireframe={setPhysicsWireframe}
+        showStats={showStats}
+        setShowStats={setShowStats}
         gravity={gravity}
         setGravity={setGravity}
         solverGravityEnabled={solverGravityEnabled}
@@ -965,8 +1006,22 @@ export default function Page() {
         snapshotMode={snapshotMode}
         setSnapshotMode={setSnapshotMode}
       />
-      <Canvas shadows camera={{ position: [7, 5, 9], fov: 45 }}>
+      <Canvas
+        shadows
+        gl={{
+          powerPreference: "high-performance",
+          antialias: false,
+          alpha: false,
+          stencil: false,
+          depth: true,
+        }}
+        camera={{ position: [7, 5, 9], fov: 45 }}
+      >
         <color attach="background" args={["#0e0e12"]} />
+        <hemisphereLight args={[0xb0c7ff, 0x121217, 0.6]} />
+        <ambientLight intensity={0.25} />
+        <directionalLight castShadow position={[6, 8, 6]} intensity={1.05} shadow-mapSize-width={1024} shadow-mapSize-height={1024} />
+        <directionalLight position={[-6, 5, -6]} intensity={0.7} />
         <Scene
           debug={debug}
           physicsWireframe={physicsWireframe}
@@ -1009,7 +1064,7 @@ export default function Page() {
           bondsZEnabled={bondsZEnabled}
           onReset={() => setIteration((v) => v + 1)}
         />
-        <StatsGl className="absolute top-2 left-2" />
+        {showStats ? <StatsGl className="absolute top-2 left-2" /> : null}
       </Canvas>
     </div>
   );

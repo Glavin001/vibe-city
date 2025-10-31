@@ -33,6 +33,7 @@ export class DestructibleDamageSystem {
   private materialScale: number;
   private timeMs = 0;
   private nextAllowedImpactTimeMs: number[];
+  private massPow: Float64Array;
 
   constructor(args: { chunks: ChunkData[]; scenario: ScenarioDesc; materialScale: number; options?: DamageOptions }) {
     const defaults: Required<DamageOptions> = {
@@ -61,6 +62,7 @@ export class DestructibleDamageSystem {
     this.options = opts;
     this.materialScale = Math.max(1e-9, args.materialScale ?? 1);
     this.nextAllowedImpactTimeMs = new Array(this.chunks.length).fill(0);
+    this.massPow = new Float64Array(this.chunks.length);
 
     // Initialize per-node health if enabled
     if (opts.enabled) {
@@ -75,6 +77,11 @@ export class DestructibleDamageSystem {
         ch.pendingDamage = 0;
         ch.destroyed = false;
       }
+    }
+    const me = Math.max(0, opts.massExponent ?? 0.5);
+    for (let i = 0; i < this.nodes.length; i++) {
+      const nodeMass = Math.max(1, this.nodes[i]?.mass ?? 1);
+      this.massPow[i] = Math.max(1, Math.pow(nodeMass, me));
     }
   }
 
@@ -121,8 +128,7 @@ export class DestructibleDamageSystem {
     //   console.log("[DestructibleDamageSystem] onImpact early return: impact cooldown active", { nodeIndex, timeMs: this.timeMs, nextAllowed: this.nextAllowedImpactTimeMs[nodeIndex] });
       return;
     }
-    const nodeMass = Math.max(1, rawMass);
-    const denom = Math.max(1, Math.pow(nodeMass, this.options.massExponent));
+    const denom = this.massPow[nodeIndex] || Math.max(1, Math.pow(Math.max(1, rawMass), this.options.massExponent));
     const dmgBase = this.options.kImpact * (impulse / denom);
     const dmgScaled = dmgBase * this.options.contactDamageScale;
     const dmg = Number.isFinite(dmgScaled) ? dmgScaled : 0;

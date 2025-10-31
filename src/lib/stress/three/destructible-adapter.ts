@@ -1,9 +1,32 @@
 import * as THREE from 'three';
 import type { DestructibleCore } from '@/lib/stress/core/types';
 
+export type InstancedState = {
+  type: 'instanced';
+  deck?: THREE.InstancedMesh;
+  support?: THREE.InstancedMesh;
+  deckNodes?: Int32Array;
+  supportNodes?: Int32Array;
+  lastDeckCount: number;
+  lastSupportCount: number;
+  tmpMatrix: THREE.Matrix4;
+  tmpQuat: THREE.Quaternion;
+  tmpVec: THREE.Vector3;
+  tmpPos: THREE.Vector3;
+  tmpScale: THREE.Vector3;
+  tmpColor: THREE.Color;
+  healthyColor: THREE.Color;
+  criticalColor: THREE.Color;
+  dynamicColor: THREE.Color;
+  fixedColor: THREE.Color;
+  kinematicColor: THREE.Color;
+  sleepingColor: THREE.Color;
+  useHealthTint: boolean;
+};
+
 export function buildChunkMeshes(core: DestructibleCore, materials?: { deck?: THREE.Material; support?: THREE.Material }) {
-  const deckMat = (materials?.deck ?? new THREE.MeshStandardMaterial({ color: 0x4b6fe8, roughness: 0.4, metalness: 0.45 }));
-  const supportMat = (materials?.support ?? new THREE.MeshStandardMaterial({ color: 0x2f3e56, roughness: 0.6, metalness: 0.25 }));
+  const deckMat = (materials?.deck ?? new THREE.MeshStandardMaterial({ color: 0x4f7fff, roughness: 0.38, metalness: 0.5 }));
+  const supportMat = (materials?.support ?? new THREE.MeshStandardMaterial({ color: 0x3a4f6b, roughness: 0.58, metalness: 0.2 }));
   const meshes: THREE.Mesh[] = [];
   for (const chunk of core.chunks) {
     const mat = chunk.isSupport ? supportMat.clone() : deckMat.clone();
@@ -13,6 +36,132 @@ export function buildChunkMeshes(core: DestructibleCore, materials?: { deck?: TH
     meshes.push(mesh);
   }
   return { objects: meshes };
+}
+
+export function buildChunkMeshesInstanced(core: DestructibleCore, materials?: { deck?: THREE.Material; support?: THREE.Material }): { group: THREE.Group; state: InstancedState } {
+  const deckMat = (materials?.deck ?? new THREE.MeshStandardMaterial({ color: 0x4f7fff, roughness: 0.38, metalness: 0.5 }));
+  const supportMat = (materials?.support ?? new THREE.MeshStandardMaterial({ color: 0x3a4f6b, roughness: 0.58, metalness: 0.2 }));
+  const group = new THREE.Group();
+  const firstDeck = core.chunks.find((c) => !c.isSupport);
+  const firstSupport = core.chunks.find((c) => c.isSupport);
+  const deckCount = core.chunks.filter((c) => !c.isSupport && !c.destroyed).length;
+  const supportCount = core.chunks.filter((c) => c.isSupport && !c.destroyed).length;
+  const deckGeom = firstDeck ? new THREE.BoxGeometry(firstDeck.size.x, firstDeck.size.y, firstDeck.size.z) : null;
+  const supportGeom = firstSupport ? new THREE.BoxGeometry(firstSupport.size.x, firstSupport.size.y, firstSupport.size.z) : null;
+  const state: InstancedState = {
+    type: 'instanced',
+    deck: deckGeom && deckCount > 0 ? new THREE.InstancedMesh(deckGeom, deckMat, deckCount) : undefined,
+    support: supportGeom && supportCount > 0 ? new THREE.InstancedMesh(supportGeom, supportMat, supportCount) : undefined,
+    deckNodes: deckGeom && deckCount > 0 ? new Int32Array(deckCount).fill(-1) : undefined,
+    supportNodes: supportGeom && supportCount > 0 ? new Int32Array(supportCount).fill(-1) : undefined,
+    lastDeckCount: 0,
+    lastSupportCount: 0,
+    tmpMatrix: new THREE.Matrix4(),
+    tmpQuat: new THREE.Quaternion(),
+    tmpVec: new THREE.Vector3(),
+    tmpPos: new THREE.Vector3(),
+    tmpScale: new THREE.Vector3(1, 1, 1),
+    tmpColor: new THREE.Color(),
+    healthyColor: new THREE.Color(0x4dffae),
+    criticalColor: new THREE.Color(0xd72638),
+    dynamicColor: new THREE.Color(0xff9b5a),
+    fixedColor: new THREE.Color(0xbec4d5),
+    kinematicColor: new THREE.Color(0x6fd2ff),
+    sleepingColor: new THREE.Color(0x8a9aae),
+    useHealthTint: !!(core as unknown as { damageEnabled?: boolean }).damageEnabled,
+  };
+  if (state.deck) {
+    state.deck.castShadow = true;
+    state.deck.receiveShadow = true;
+    state.deck.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    const attr = new THREE.InstancedBufferAttribute(new Float32Array(deckCount * 3), 3);
+    attr.setUsage(THREE.DynamicDrawUsage);
+    state.deck.instanceColor = attr;
+    group.add(state.deck);
+  }
+  if (state.support) {
+    state.support.castShadow = true;
+    state.support.receiveShadow = true;
+    state.support.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    const attr = new THREE.InstancedBufferAttribute(new Float32Array(supportCount * 3), 3);
+    attr.setUsage(THREE.DynamicDrawUsage);
+    state.support.instanceColor = attr;
+    group.add(state.support);
+  }
+  return { group, state };
+}
+
+export function updateInstancedChunkMeshes(core: DestructibleCore, state: InstancedState) {
+  const deck = state.deck;
+  const support = state.support;
+  const damageEnabled = (core as unknown as { damageEnabled?: boolean }).damageEnabled === true && state.useHealthTint;
+  const getHealth = damageEnabled
+    ? (core as unknown as { getNodeHealth?: (idx:number) => { health:number; maxHealth:number; destroyed:boolean } | null }).getNodeHealth
+    : undefined;
+  let deckIndex = 0;
+  let supportIndex = 0;
+  for (const chunk of core.chunks) {
+    if (!chunk || chunk.destroyed) continue;
+    const handle = chunk.bodyHandle;
+    if (handle == null) continue;
+    const body = core.world.getRigidBody(handle);
+    if (!body) continue;
+    const t = body.translation();
+    const r = body.rotation();
+    state.tmpQuat.set(r.x, r.y, r.z, r.w);
+    state.tmpVec.set(chunk.baseLocalOffset.x, chunk.baseLocalOffset.y, chunk.baseLocalOffset.z).applyQuaternion(state.tmpQuat);
+    state.tmpPos.set(t.x + state.tmpVec.x, t.y + state.tmpVec.y, t.z + state.tmpVec.z);
+    state.tmpMatrix.compose(state.tmpPos, state.tmpQuat, state.tmpScale.set(1, 1, 1));
+    const matColor = (() => {
+      if (damageEnabled && typeof getHealth === 'function') {
+        const info = getHealth(chunk.nodeIndex);
+        if (info && info.maxHealth > 0) {
+          const ratio = Math.max(0, Math.min(1, info.health / info.maxHealth));
+          return state.tmpColor.copy(state.healthyColor).lerp(state.criticalColor, 1 - ratio);
+        }
+      }
+      if (body.isKinematic()) return state.tmpColor.copy(state.kinematicColor);
+      if (body.isFixed()) return state.tmpColor.copy(state.fixedColor);
+      if (!body.isSleeping()) return state.tmpColor.copy(state.dynamicColor);
+      return state.tmpColor.copy(state.sleepingColor);
+    })();
+
+    if (chunk.isSupport) {
+      if (!support) continue;
+      support.setMatrixAt(supportIndex, state.tmpMatrix);
+      if (state.supportNodes) state.supportNodes[supportIndex] = chunk.nodeIndex;
+      if (support.instanceColor) {
+        support.instanceColor.setXYZ(supportIndex, matColor.r, matColor.g, matColor.b);
+      }
+      supportIndex += 1;
+    } else {
+      if (!deck) continue;
+      deck.setMatrixAt(deckIndex, state.tmpMatrix);
+      if (state.deckNodes) state.deckNodes[deckIndex] = chunk.nodeIndex;
+      if (deck.instanceColor) {
+        deck.instanceColor.setXYZ(deckIndex, matColor.r, matColor.g, matColor.b);
+      }
+      deckIndex += 1;
+    }
+  }
+  if (deck) {
+    deck.count = deckIndex;
+    deck.instanceMatrix.needsUpdate = true;
+    if (state.deckNodes) {
+      for (let i = deckIndex; i < state.lastDeckCount; i++) state.deckNodes[i] = -1;
+      state.lastDeckCount = deckIndex;
+    }
+    if (deck.instanceColor) deck.instanceColor.needsUpdate = true;
+  }
+  if (support) {
+    support.count = supportIndex;
+    support.instanceMatrix.needsUpdate = true;
+    if (state.supportNodes) {
+      for (let i = supportIndex; i < state.lastSupportCount; i++) state.supportNodes[i] = -1;
+      state.lastSupportCount = supportIndex;
+    }
+    if (support.instanceColor) support.instanceColor.needsUpdate = true;
+  }
 }
 
 export function buildChunkMeshesFromGeometries(core: DestructibleCore, geometries: THREE.BufferGeometry[], materials?: { deck?: THREE.Material; support?: THREE.Material }) {
@@ -82,7 +231,7 @@ export function updateChunkMeshes(core: DestructibleCore, meshes: THREE.Mesh[]) 
         const info = healthGetter(chunk.nodeIndex);
         if (info && info.maxHealth > 0) {
           const ratio = Math.max(0, Math.min(1, info.health / info.maxHealth));
-          const healthy = new THREE.Color(0x2fbf71);
+          const healthy = new THREE.Color(0x4dffae);
           const critical = new THREE.Color(0xd72638);
           const lerped = healthy.clone().lerp(critical, 1 - ratio);
           mat.color.copy(lerped);
@@ -92,9 +241,10 @@ export function updateChunkMeshes(core: DestructibleCore, meshes: THREE.Mesh[]) 
         }
       }
       // Fallback when damage disabled or unknown
-      if (body.isKinematic()) mat.color.setHex(0x2a6ddb);
-      else if (body.isFixed()) mat.color.setHex(0xbababa);
-      else if (body.isDynamic()) mat.color.setHex(0xff9147);
+      if (body.isKinematic()) mat.color.setHex(0x6fd2ff);
+      else if (body.isFixed()) mat.color.setHex(0xbec4d5);
+      else if (!body.isSleeping()) mat.color.setHex(0xff9b5a);
+      else mat.color.setHex(0x8a9aae);
     }
   }
 }
@@ -106,6 +256,7 @@ export function buildSolverDebugHelper() {
   const material = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.95, depthTest: false });
   const object = new THREE.LineSegments(geometry, material);
   object.visible = false;
+  const boundingSphere = new THREE.Sphere(new THREE.Vector3(), 250);
   function update(lines: Array<{ p0:{x:number;y:number;z:number}; p1:{x:number;y:number;z:number}; color0:number; color1:number }>, visible: boolean) {
     const list = Array.isArray(lines) ? lines : [];
     const positions = new Float32Array(list.length * 2 * 3);
@@ -121,7 +272,7 @@ export function buildSolverDebugHelper() {
     });
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    geometry.computeBoundingSphere();
+    geometry.boundingSphere = boundingSphere;
     object.visible = visible !== false;
   }
   return { object, update };
