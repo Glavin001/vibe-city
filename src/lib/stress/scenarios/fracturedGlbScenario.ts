@@ -3,6 +3,8 @@ import RAPIER from '@dimforge/rapier3d-compat';
 import { FractureOptions, fracture } from '@dgreenheck/three-pinata';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
+import { VRMLLoader } from 'three/examples/jsm/loaders/VRMLLoader.js';
+import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import type { ScenarioDesc, Vec3, ColliderDescBuilder } from '@/lib/stress/core/types';
 
@@ -170,64 +172,134 @@ async function loadMergedGeometryFromGlb(url: string): Promise<THREE.BufferGeome
   return merged ?? null;
 }
 
+async function tryLoadAsync<T extends { loadAsync?: (u:string)=>Promise<unknown>; load: (u:string, onLoad:(r:unknown)=>void, onProgress?:(e:unknown)=>void, onError?:(e:unknown)=>void)=>void }>(loader: T, url: string): Promise<unknown> {
+  if (typeof loader.loadAsync === 'function') {
+    try { return await (loader.loadAsync as (u:string)=>Promise<unknown>)(url); } catch (e) { throw e; }
+  }
+  return new Promise((resolve, reject) => {
+    try { loader.load(url, resolve, undefined, reject); } catch (e) { reject(e); }
+  });
+}
+
+async function loadWorldGeometriesFromUrl(url: string, scale = 1): Promise<THREE.BufferGeometry[]> {
+  const lower = (url.split('?')[0] || '').toLowerCase();
+  const geoms: THREE.BufferGeometry[] = [];
+  const applyScale = (g: THREE.BufferGeometry) => { if (scale !== 1) try { g.scale(scale, scale, scale); } catch {} };
+  if (lower.endsWith('.wrl')) {
+    const loader = new VRMLLoader();
+    try {
+      const root = (await tryLoadAsync(loader as unknown as { loadAsync?: (u:string)=>Promise<unknown>; load: (u:string, onLoad:(r:unknown)=>void, onProgress?:(e:unknown)=>void, onError?:(e:unknown)=>void)=>void }, url)) as unknown as THREE.Object3D;
+      try { (root as THREE.Object3D).updateMatrixWorld(true); } catch {}
+      (root as THREE.Object3D).traverse?.((obj) => {
+        const mesh = obj as THREE.Mesh;
+        const geometry = mesh?.geometry as THREE.BufferGeometry | undefined;
+        if (!geometry) return;
+        const cloned = geometry.clone();
+        const m = mesh.matrixWorld?.clone?.() ?? new THREE.Matrix4();
+        try { cloned.applyMatrix4(m); } catch {}
+        applyScale(cloned);
+        geoms.push(cloned);
+      });
+      return geoms;
+    } catch (e) {
+      // Fallback: fetch as text and sanitize multiple headers, then parse
+      try {
+        const res = await fetch(url);
+        const textRaw = await res.text();
+        let text = textRaw.replace(/\r\n/g, '\n');
+        // Remove all #VRML headers and add a single one at the start
+        text = text.replace(/(^|\n)\s*#VRML[^\n]*/gi, '');
+        text = '#VRML V2.0 utf8\n' + text;
+        const parsedRoot = (loader as unknown as { parse: (s: string) => THREE.Object3D }).parse(text);
+        try { parsedRoot.updateMatrixWorld(true); } catch {}
+        parsedRoot.traverse?.((obj) => {
+          const mesh = obj as THREE.Mesh;
+          const geometry = mesh?.geometry as THREE.BufferGeometry | undefined;
+          if (!geometry) return;
+          const cloned = geometry.clone();
+          const m = mesh.matrixWorld?.clone?.() ?? new THREE.Matrix4();
+          try { cloned.applyMatrix4(m); } catch {}
+          applyScale(cloned);
+          geoms.push(cloned);
+        });
+        return geoms;
+      } catch (e2) {
+        console.error('[WRL] parse failed', e, e2);
+        throw e2;
+      }
+    }
+  }
+  if (lower.endsWith('.obj')) {
+    const loader = new OBJLoader();
+    const root = (await tryLoadAsync(loader as unknown as { loadAsync?: (u:string)=>Promise<unknown>; load: (u:string, onLoad:(r:unknown)=>void, onProgress?:(e:unknown)=>void, onError?:(e:unknown)=>void)=>void }, url)) as unknown as THREE.Object3D;
+    try { (root as THREE.Object3D).updateMatrixWorld(true); } catch {}
+    (root as THREE.Object3D).traverse?.((obj) => {
+      const mesh = obj as THREE.Mesh;
+      const geometry = mesh?.geometry as THREE.BufferGeometry | undefined;
+      if (!geometry) return;
+      const cloned = geometry.clone();
+      const m = mesh.matrixWorld?.clone?.() ?? new THREE.Matrix4();
+      try { cloned.applyMatrix4(m); } catch {}
+      applyScale(cloned);
+      geoms.push(cloned);
+    });
+    return geoms;
+  }
+  // Default: GLB/GLTF (collect all meshes in world space)
+  const loader = new GLTFLoader();
+  try {
+    const draco = new DRACOLoader();
+    draco.setDecoderPath('https://www.gstatic.com/draco/v1/decoders/');
+    loader.setDRACOLoader(draco);
+  } catch {}
+  const gltf = await loader.loadAsync(url);
+  try { gltf.scene.updateMatrixWorld(true); } catch {}
+  gltf.scene.traverse?.((obj) => {
+    const mesh = obj as THREE.Mesh;
+    const geometry = mesh?.geometry as THREE.BufferGeometry | undefined;
+    if (!geometry) return;
+    const cloned = geometry.clone();
+    const m = mesh.matrixWorld?.clone?.() ?? new THREE.Matrix4();
+    try { cloned.applyMatrix4(m); } catch {}
+    applyScale(cloned);
+    geoms.push(cloned);
+  });
+  return geoms;
+}
+
 export async function buildFracturedGlbScenario({
   url = '/models/lion.glb',
   // url = '/models/building.glb',
   // url = '/models/atlanta_corperate_office_building.glb',
   // url = '/models/big_soviet_panel_house_lowpoly.glb',
+  // url = '/models/building_brutalist_quadrhomb.glb',
+  // url = '/models/building_brutalist_rhomb.glb',
+  // url = '/models/house.glb',
+  // url = '/models/construction_site_building_site_architecture.glb',
+  // url = '/models/winchelsea_beach_concrete_block.glb',
+  // url = '/models/concrete_golden_tiles__tile_texture.glb',
+  // url = '/models/a_soviet_small_construction_wall.glb',
+  // url = '/models/korhal_overpass_-_starcraft_2.glb',
+  // url = '/models/footbridge.glb',
+  // url = '/models/american_road_overpass_underpass_bridge.glb',
   fragmentCount = 120,
   // fragmentCount = 300,
+  // fragmentCount = 500,
   objectMass = 10_000,
-}: { url?: string; fragmentCount?: number; objectMass?: number } = {}): Promise<ScenarioDesc> {
-  // 1) Load GLB and merge meshes to a single geometry in world space
-  const merged = await (async () => {
-    const loader = new GLTFLoader();
-    try {
-      const draco = new DRACOLoader();
-      draco.setDecoderPath('https://www.gstatic.com/draco/v1/decoders/');
-      loader.setDRACOLoader(draco);
-    } catch {}
-    const gltf = await loader.loadAsync(url);
-    try { gltf.scene.updateMatrixWorld(true); } catch {}
-    // Pick the largest Mesh geometry with a valid position attribute
-    let bestGeom: THREE.BufferGeometry | null = null;
-    let bestVolume = -Infinity;
-    gltf.scene.traverse((obj) => {
-      const mesh = obj as THREE.Mesh;
-      const geometry = mesh?.geometry as THREE.BufferGeometry | undefined;
-      if (!geometry) return;
-      const hasPos = !!geometry.getAttribute('position');
-      if (!hasPos) return;
-      const cloned = geometry.clone();
-      const m = mesh.matrixWorld?.clone?.() ?? new THREE.Matrix4();
-      try { cloned.applyMatrix4(m); } catch {}
-      try { cloned.computeBoundingBox(); } catch {}
-      const bb = cloned.boundingBox as THREE.Box3 | null;
-      if (!bb) return;
-      const s = new THREE.Vector3();
-      bb.getSize(s);
-      const vol = Math.max(0, s.x) * Math.max(0, s.y) * Math.max(0, s.z);
-      if (vol > bestVolume) {
-        bestVolume = vol;
-        bestGeom = cloned;
-      }
-    });
-    if (bestGeom) return bestGeom;
-    // Fallback: merge everything
-    const geoms: THREE.BufferGeometry[] = [];
-    gltf.scene.traverse((obj) => {
-      const mesh = obj as THREE.Mesh;
-      const geometry = mesh?.geometry as THREE.BufferGeometry | undefined;
-      if (!geometry) return;
-      const cloned = geometry.clone();
-      const m = mesh.matrixWorld?.clone?.() ?? new THREE.Matrix4();
-      try { cloned.applyMatrix4(m); } catch {}
-      geoms.push(cloned);
-    });
-    if (!geoms.length) return null;
-    const mergedGeom = mergeGeometries(geoms, false);
-    return mergedGeom ?? null;
-  })();
+  physicsUrl,
+  physicsScale = 1,
+  maxMicroPerPiece = 6,
+}: { url?: string; fragmentCount?: number; objectMass?: number; physicsUrl?: string; physicsScale?: number; maxMicroPerPiece?: number } = {}): Promise<ScenarioDesc> {
+  // 1) Load visual reference geometries (GLB/OBJ/WRL) and merge for sizing/optional fracture
+  const visualGeoms = await loadWorldGeometriesFromUrl(url);
+  let merged: THREE.BufferGeometry | null = null;
+  if (visualGeoms.length > 0) {
+    if (visualGeoms.length === 1) {
+      merged = visualGeoms[0];
+    } else {
+      try { merged = mergeGeometries(visualGeoms, false) ?? null; } catch { merged = visualGeoms[0]; }
+    }
+  }
   if (!merged) {
     // Fallback: tiny cube at origin to avoid crashing callers
     const g = new THREE.BoxGeometry(1, 1, 1);
@@ -274,27 +346,19 @@ export async function buildFracturedGlbScenario({
   const size = new THREE.Vector3();
   bbox.getSize(size);
 
-  // 2) Fracture the merged geometry
-  const opts = new FractureOptions({
-    fragmentCount: fragmentCount,
-    fractureMode: "Non-Convex" as const,
-  });
-  // three-pinata expects BufferGeometry with a non-null Float32Array position
-  // Some pipelines produce interleaved attributes; ensure plain arrays on a clone
-  const fractureInput = merged.clone();
-  (function ensureAttributes(g: THREE.BufferGeometry) {
-    const pos = g.getAttribute('position') as THREE.BufferAttribute | null;
-    if (!pos) {
-      // If no position, nothing to fracture
-        
-    }
-    const names: string[] = ['position', 'normal', 'uv'];
+  // 2) Choose fragment source: physicsUrl (WRL/OBJ/GLB) or fracture visual merged geometry
+  function ensureGeometryCompat(geom: THREE.BufferGeometry): THREE.BufferGeometry {
+    // Work on a local reference; convert to non-indexed to simplify attribute access
+    let g = geom;
+
+    // Ensure Float32-backed attributes
+    const names: Array<'position'|'normal'|'uv'> = ['position', 'normal', 'uv'];
     for (const n of names) {
       const attr = g.getAttribute(n) as THREE.BufferAttribute | null;
       if (!attr) continue;
       if (!(attr.array instanceof Float32Array)) {
         const count = attr.count ?? 0;
-        const itemSize = attr.itemSize ?? 3;
+        const itemSize = attr.itemSize ?? (n === 'uv' ? 2 : 3);
         const data = new Float32Array(Math.max(0, count * itemSize));
         for (let i = 0; i < count; i += 1) {
           if (itemSize >= 1) data[i * itemSize + 0] = attr.getX(i) ?? 0;
@@ -304,10 +368,150 @@ export async function buildFracturedGlbScenario({
         g.setAttribute(n, new THREE.BufferAttribute(data, itemSize));
       }
     }
+
+    // If normals missing, try compute; if still missing, synthesize zero normals
     try { if (!g.getAttribute('normal')) g.computeVertexNormals(); } catch {}
-  })(fractureInput);
-  const pieces = fracture(fractureInput, opts);
-  console.log('Fractured pieces', pieces.length);
+    if (!g.getAttribute('normal')) {
+      const pos = g.getAttribute('position') as THREE.BufferAttribute | null;
+      const count = pos?.count ?? 0;
+      if (count > 0) g.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(count * 3), 3));
+    }
+
+    // If uvs missing, synthesize placeholder zeros so three-pinata doesn't crash
+    if (!g.getAttribute('uv')) {
+      const pos = g.getAttribute('position') as THREE.BufferAttribute | null;
+      const count = pos?.count ?? 0;
+      if (count > 0) g.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(count * 2), 2));
+    }
+    // Ensure index exists (three-pinata expects geometry.index.array)
+    const posAttr = g.getAttribute('position') as THREE.BufferAttribute | null;
+    const vtxCount = posAttr?.count ?? 0;
+    if (!g.index) {
+      // Clamp index length to multiple of 3 (triangles)
+      const triIndexCount = Math.max(0, Math.floor(vtxCount / 3) * 3);
+      const IndexArray = triIndexCount > 65535 ? Uint32Array : Uint16Array;
+      const idx = new IndexArray(triIndexCount);
+      for (let i = 0; i < triIndexCount; i += 1) idx[i] = i as unknown as number;
+      try { g.setIndex(new THREE.BufferAttribute(idx, 1)); } catch {}
+    }
+    return g;
+  }
+  function fractureGeometry(geom: THREE.BufferGeometry, count: number, mode: "Non-Convex" | "Convex"): THREE.BufferGeometry[] {
+    // Guard: require position attribute
+    const clone = geom.clone();
+    const input = ensureGeometryCompat(clone);
+    const pos = input.getAttribute('position') as THREE.BufferAttribute | null;
+    if (!pos || !(pos.array instanceof Float32Array) || pos.count <= 0) return [ensureGeometryCompat(geom.clone())];
+    const options = new FractureOptions({ fragmentCount: Math.max(1, Math.floor(count)), fractureMode: mode });
+    try {
+      // Preflight: skip fracture when geometry is too simple to split
+      if (count <= 1) return [input];
+      if (!isFracturable(input, 4)) return [input];
+      const out = fracture(input, options);
+      if (count <= 1 || (Array.isArray(out) && out.length >= 2)) return out;
+    } catch (e) {
+      console.error('[Fracture] failed; returning original piece', e);
+    }
+    // Adaptive fallback: iteratively split the largest piece until we reach desired count or no progress
+    const target = Math.max(1, Math.floor(count));
+    let list: THREE.BufferGeometry[] = [input.clone()];
+    let guard = 0;
+    while (list.length < target && guard++ < 24) {
+      // pick largest by bbox volume
+      let bestIdx = 0;
+      let bestVol = -Infinity;
+      for (let i = 0; i < list.length; i += 1) {
+        const v = approxVolume(list[i]);
+        if (v > bestVol) { bestVol = v; bestIdx = i; }
+      }
+      const toSplit = list.splice(bestIdx, 1)[0];
+      let subs: THREE.BufferGeometry[] = [];
+      try {
+        const two = new FractureOptions({ fragmentCount: 2, fractureMode: mode });
+        subs = fracture(ensureGeometryCompat(toSplit.clone()), two);
+      } catch {}
+      if (!subs || subs.length < 2) { list.push(toSplit); break; }
+      for (const s of subs) list.push(ensureGeometryCompat(s));
+    }
+    return list;
+  }
+  function approxVolume(g: THREE.BufferGeometry): number {
+    try { g.computeBoundingBox(); } catch {}
+    const bb = g.boundingBox as THREE.Box3 | null;
+    if (!bb) return 0;
+    const s = new THREE.Vector3();
+    bb.getSize(s);
+    return Math.max(0, s.x) * Math.max(0, s.y) * Math.max(0, s.z);
+  }
+  function isFracturable(g: THREE.BufferGeometry, minTriangles = 4): boolean {
+    try {
+      const pos = g.getAttribute('position') as THREE.BufferAttribute | null;
+      if (!pos || !(pos.array instanceof Float32Array)) return false;
+      const tri = Math.floor((pos.count ?? 0) / 3);
+      if (tri < minTriangles) return false;
+      g.computeBoundingBox();
+      const bb = g.boundingBox as THREE.Box3 | null;
+      if (!bb) return false;
+      const sx = Math.abs((bb.max.x ?? 0) - (bb.min.x ?? 0));
+      const sy = Math.abs((bb.max.y ?? 0) - (bb.min.y ?? 0));
+      const sz = Math.abs((bb.max.z ?? 0) - (bb.min.z ?? 0));
+      const eps = 1e-5;
+      if (sx < eps || sy < eps || sz < eps) return false;
+      return true;
+    } catch { return false; }
+  }
+  function topUpFragments(base: THREE.BufferGeometry[], target: number, capPerPiece = 4, mode: "Non-Convex" | "Convex" = "Non-Convex"): THREE.BufferGeometry[] {
+    const out: THREE.BufferGeometry[] = [];
+    const n = base.length;
+    if (n >= target) return base.slice(0, target);
+    if (n === 0) return [];
+    const vols = base.map((g) => approxVolume(g));
+    const sumV = vols.reduce((a, b) => a + b, 0) || 1;
+    const missing = Math.max(0, Math.floor(target - n));
+    const quotas = new Array(n).fill(1);
+    const fractional: Array<{ i:number; frac:number }> = [];
+    // Initial integer allocation
+    for (let i = 0; i < n; i += 1) {
+      const idealExtra = (missing * (vols[i] / sumV));
+      const extraInt = Math.min(capPerPiece - 1, Math.floor(idealExtra));
+      quotas[i] += Math.max(0, extraInt);
+      fractional.push({ i, frac: idealExtra - extraInt });
+    }
+    // Fix sum to match target by distributing remaining to highest fractions
+    let current = quotas.reduce((a, b) => a + b, 0);
+    const need = Math.max(0, target - current);
+    fractional.sort((a, b) => b.frac - a.frac);
+    for (let k = 0; k < need; k += 1) {
+      const idx = fractional[k % fractional.length]?.i ?? 0;
+      if (quotas[idx] < capPerPiece) quotas[idx] += 1;
+      else {
+        // find next under cap
+        for (let j = 0; j < n; j += 1) { if (quotas[j] < capPerPiece) { quotas[j] += 1; break; } }
+      }
+    }
+    // Build output by fracturing pieces that need more than 1
+    for (let i = 0; i < n; i += 1) {
+      const q = Math.max(1, Math.floor(quotas[i]));
+      if (q === 1) out.push(base[i]);
+      else {
+        let subs: THREE.BufferGeometry[] = [];
+        try { subs = fractureGeometry(base[i], q, mode); }
+        catch (e) { console.error('[TopUp] fracture failed for piece', i, e); subs = [ensureGeometryCompat(base[i].clone())]; }
+        for (const s of subs) out.push(s);
+      }
+    }
+    return out;
+  }
+
+  let pieces: THREE.BufferGeometry[] = [];
+  if (physicsUrl) {
+    const physicsPieces = (await loadWorldGeometriesFromUrl(physicsUrl, physicsScale)).map((g) => ensureGeometryCompat(g));
+    if (fragmentCount === 0 || physicsPieces.length >= fragmentCount) pieces = physicsPieces;
+    else pieces = topUpFragments(physicsPieces, fragmentCount, Math.max(1, Math.floor(maxMicroPerPiece)), "Convex");
+  } else {
+    pieces = fractureGeometry(merged.clone(), fragmentCount, "Non-Convex");
+  }
+  console.log('Fragment pieces', pieces.length);
 
   // Placement above foundation
   const foundationHeight = Math.min(0.08, size.y * 0.06);
@@ -457,6 +661,7 @@ export async function buildFracturedGlbScenario({
       fragmentGeometries,
       objectMass,
       sourceUrl: url,
+      physicsUrl,
     },
     colliderDescForNode,
   } satisfies ScenarioDesc;
