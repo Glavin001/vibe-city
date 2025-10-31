@@ -222,6 +222,8 @@ export async function buildDestructibleCore({
   }
 
   solver.actors().forEach((actor) => { actorMap.set(actor.actorIndex, { bodyHandle: rootBody.handle }); });
+  // In case there are no live supports at start, migrate actors to dynamic bodies immediately
+  try { ensureDynamicBodiesForSupportlessActors(); } catch {}
 
   // Queues and scratch
   const pendingBodiesToCreate: Array<{ actorIndex: number; inheritFromBodyHandle: number; nodes: number[]; isSupport: boolean }> = [];
@@ -460,13 +462,12 @@ export async function buildDestructibleCore({
   const actorNodesContainSupport = (nodesList: number[]): boolean => {
     for (const n of nodesList) {
       const ch = chunks[n];
-      if (!ch) {
-        console.error('chunk not found', n, ch, chunks);
-        throw new Error('chunk not found');
-      }
-      if (ch?.isSupport) return true;
+      if (!ch) continue;
+      // Ignore supports that are already destroyed or have no collider
+      if (ch.destroyed || ch.colliderHandle == null) continue;
       const mass = scenario.nodes[n]?.mass ?? 0;
-      if (!(mass > 0)) return true;
+      // Live support: explicitly flagged or mass===0
+      if (ch.isSupport || !(mass > 0)) return true;
     }
     return false;
   };
@@ -813,7 +814,8 @@ export async function buildDestructibleCore({
       .setLinearDamping(0.0)
       .setAngularDamping(0.0)
       .setUserData({ projectile: true });
-    try { (bodyDesc as unknown as { setCcdEnabled?: (v:boolean)=>unknown }).setCcdEnabled?.(true); } catch {}
+    bodyDesc.setCcdEnabled(true);
+
     if (params.linvel) {
       bodyDesc.setLinvel(params.linvel.x, params.linvel.y, params.linvel.z);
     } else if (typeof params.linvelY === 'number') {
@@ -913,6 +915,32 @@ export async function buildDestructibleCore({
       }
       // Do not proactively remove bodies here; allow existing sweeps to handle
     }
+  }
+
+  // Ensure that any actor that no longer has live supports is migrated to a dynamic body
+  function ensureDynamicBodiesForSupportlessActors() {
+    try {
+      const actors = (solver as unknown as { actors: () => Array<{ actorIndex:number; nodes:number[] }> }).actors?.() ?? [];
+      for (const a of actors) {
+        const nodes = Array.isArray(a.nodes) ? a.nodes.filter((n) => {
+          const ch = chunks[n];
+          return ch && !ch.destroyed && ch.colliderHandle != null;
+        }) : [];
+        if (nodes.length === 0) continue;
+        if (actorNodesContainSupport(nodes)) continue;
+        const entry = actorMap.get(a.actorIndex);
+        const bh = entry?.bodyHandle ?? rootBody.handle;
+        const body = world.getRigidBody(bh);
+        const isDynamic = body?.isDynamic?.() ?? false;
+        if (!isDynamic) {
+          pendingBodiesToCreate.push({ actorIndex: a.actorIndex, inheritFromBodyHandle: bh, nodes: nodes.slice(), isSupport: false });
+        }
+      }
+      if (pendingBodiesToCreate.length > 0 || pendingColliderMigrations.length > 0) {
+        applyPendingMigrations();
+        removeDisabledHandles();
+      }
+    } catch {}
   }
 
   function removeDisabledHandles() {
@@ -1045,6 +1073,8 @@ export async function buildDestructibleCore({
 
     // Step safely for a couple frames
     safeFrames = Math.max(safeFrames, 2);
+    // If supports have been removed from any actor, migrate them off the fixed root so gravity applies
+    try { ensureDynamicBodiesForSupportlessActors(); } catch {}
   }
 
   let corePublic: DestructibleCore | null = null;
