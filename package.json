@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "npm run shader:check && next build",
     "start": "next start",
     "lint": "biome check",
     "format": "biome format --write",
@@ -14,6 +14,7 @@
     "build:planner": "bash ./scripts/build_fluidhtn_docker.sh",
     "build:planner:watch": "npm --prefix ../.. run fluidhtn:watch",
     "build:planner:watch:down": "npm --prefix ../.. run fluidhtn:watch:down",
+    "shader:check": "node scripts/validate-shaders.mjs",
     "storybook": "storybook dev -p 6006",
     "build-storybook": "storybook build"
   },
@@ -69,6 +70,7 @@
     "@storybook/addon-docs": "^9.1.5",
     "@storybook/addon-onboarding": "^9.1.5",
     "@storybook/addon-vitest": "^9.1.5",
+    "@shaderfrog/glsl-parser": "^6.1.0",
     "@storybook/nextjs-vite": "^9.1.5",
     "@tailwindcss/postcss": "^4",
     "@types/lodash": "^4.17.20",
