@@ -163,6 +163,13 @@ const demoCategories: DemoCategory[] = [
         description: "Advanced HTN planning with WASM performance. Fluid HTN allows dynamic replanning during execution."
       },
       {
+        href: "/bunker-htnai",
+        icon: "🧠",
+        title: "Bunker (HTN-AI)",
+        description:
+          "Pure TypeScript HTN planning using htn-ai with the bunker domain. No WASM worker required.",
+      },
+      {
         href: "/fluid-demo",
         icon: "🧩",
         title: "Fluid HTN Demo",
