@@ -289,7 +289,7 @@ export function buildTowerScenario({ bondsX = true, bondsY = true, bondsZ = true
   const floorHeights = [0, Math.floor(segments.y * 0.33), Math.floor(segments.y * 0.66), segments.y - 2];
   const columnPositions = [Math.floor(segments.x * 0.25), Math.floor(segments.x * 0.75)];
 
-  return buildRectilinearScenario({
+  const scenario = buildRectilinearScenario({
     size: makeVec(6.8, 9.2, 6.8),
     segments,
     deckMass: 280_000,
@@ -319,6 +319,124 @@ export function buildTowerScenario({ bondsX = true, bondsY = true, bondsZ = true
       return false;
     },
   });
+
+  const floorSet = new Set(floorHeights);
+  const columnSet = new Set(columnPositions);
+  const roofRow = segments.y - 1;
+  const gridCoordinates = scenario.gridCoordinates ?? [];
+  if (!scenario.gridCoordinates) {
+    scenario.gridCoordinates = gridCoordinates;
+  }
+
+  const nodeMassProfile: Array<{ index: number; multiplier: number; tags: string[] | undefined }> = [];
+  const nodeStiffnessProfile: Array<{ index: number; multiplier: number; tags: string[] | undefined }> = [];
+
+  scenario.nodes.forEach((node, index) => {
+    const coord = gridCoordinates[index];
+    if (!coord) return;
+
+    const { ix, iy, iz } = coord;
+    const tags: string[] = [];
+    let massMultiplier = 1;
+    let stiffnessMultiplier = 1;
+
+    const onShell = ix === 0 || ix === segments.x - 1 || iz === 0 || iz === segments.z - 1;
+    const onCorner = (ix === 0 || ix === segments.x - 1) && (iz === 0 || iz === segments.z - 1);
+    const inCoreColumn = columnSet.has(ix) && columnSet.has(iz);
+    const isFloor = floorSet.has(iy);
+    const isRoof = iy === roofRow;
+    const inWindowBand = iy === Math.floor(segments.y * 0.5) && (ix + iz) % 2 === 0 && !onShell;
+
+    if (onCorner && iy > 0) {
+      tags.push("cornerColumn");
+      massMultiplier *= 1.85;
+      stiffnessMultiplier *= 1.6;
+    } else if (onShell && iy > 0) {
+      tags.push("perimeterFrame");
+      massMultiplier *= 1.35;
+      stiffnessMultiplier *= 1.25;
+    }
+
+    if (inCoreColumn && iy > 0) {
+      tags.push("coreColumn");
+      massMultiplier *= 1.55;
+      stiffnessMultiplier *= 1.45;
+    }
+
+    if (isFloor && iy > 0) {
+      tags.push("floorSlab");
+      massMultiplier *= 1.25;
+      stiffnessMultiplier *= 1.3;
+    }
+
+    if (inWindowBand) {
+      tags.push("curtainWall");
+      massMultiplier *= 0.55;
+      stiffnessMultiplier *= 0.6;
+    }
+
+    if (isRoof) {
+      tags.push("roofFrame");
+      massMultiplier *= 0.75;
+      stiffnessMultiplier *= 0.8;
+    }
+
+    if (iy === 0) {
+      tags.push("foundation");
+      stiffnessMultiplier *= 1.35;
+    }
+
+    node.mass *= massMultiplier;
+    nodeMassProfile[index] = { index, multiplier: massMultiplier, tags: tags.length ? tags : undefined };
+    nodeStiffnessProfile[index] = { index, multiplier: stiffnessMultiplier, tags: tags.length ? tags : undefined };
+  });
+
+  const bondAdjustments: Array<{ index: number; multiplier: number }> = [];
+  scenario.bonds.forEach((bond, index) => {
+    const node0 = nodeStiffnessProfile[bond.node0];
+    const node1 = nodeStiffnessProfile[bond.node1];
+    if (!node0 || !node1) return;
+
+    const avgMultiplier = (node0.multiplier + node1.multiplier) * 0.5;
+    let multiplier = avgMultiplier;
+
+    const n0 = gridCoordinates[bond.node0];
+    const n1 = gridCoordinates[bond.node1];
+    if (n0 && n1) {
+      const verticalBond = n0.iy !== n1.iy;
+      const horizontalBond = n0.iy === n1.iy;
+      const isWithinCore = columnSet.has(n0.ix) && columnSet.has(n0.iz) && columnSet.has(n1.ix) && columnSet.has(n1.iz);
+      const isPerimeter =
+        (n0.ix === 0 || n0.ix === segments.x - 1 || n0.iz === 0 || n0.iz === segments.z - 1) &&
+        (n1.ix === 0 || n1.ix === segments.x - 1 || n1.iz === 0 || n1.iz === segments.z - 1);
+
+      if (verticalBond && (isWithinCore || isPerimeter)) {
+        multiplier *= 1.35;
+      } else if (horizontalBond && isPerimeter) {
+        multiplier *= 1.15;
+      }
+
+      const bothWindowBand =
+        n0.iy === Math.floor(segments.y * 0.5) &&
+        n1.iy === Math.floor(segments.y * 0.5) &&
+        ((n0.ix + n0.iz) % 2 === 0) &&
+        ((n1.ix + n1.iz) % 2 === 0);
+      if (bothWindowBand) {
+        multiplier *= 0.55;
+      }
+    }
+
+    bond.area *= multiplier;
+    bondAdjustments.push({ index, multiplier });
+  });
+
+  scenario.parameters = {
+    ...(scenario.parameters as Record<string, unknown>),
+    heterogeneousMass: nodeMassProfile,
+    heterogeneousBondAreas: bondAdjustments,
+  };
+
+  return scenario;
 }
 
 export function buildTownhouseScenario({ bondsX = true, bondsY = true, bondsZ = true }: PresetOptions = {}): ScenarioDesc {
