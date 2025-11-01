@@ -54,6 +54,39 @@ import { crowd, pathCorridor } from 'navcat/blocks';
 
 type Cleanup = () => void;
 
+type StaticObstacle = {
+    position: Vec3;
+    radius: number;
+    height?: number;
+};
+
+type EnvironmentContext = {
+    scene: THREE.Scene;
+    renderer: THREE.WebGPURenderer;
+    camera: THREE.PerspectiveCamera;
+};
+
+type EnvironmentResult = {
+    walkableMeshes: THREE.Mesh[];
+    navMeshGeometry?: {
+        positions: Float32Array | number[];
+        indices: Uint32Array | number[];
+    };
+    staticObstacles?: StaticObstacle[];
+    setupPhysicsWorld?: (params: { physicsWorld: Rapier.World }) => void;
+    cleanup?: () => void;
+};
+
+export type NavcatDynamicSceneOptions = {
+    createEnvironment?: (context: EnvironmentContext) => Promise<EnvironmentResult> | EnvironmentResult;
+    navMeshGeometry?: {
+        positions: Float32Array | number[];
+        indices: Uint32Array | number[];
+    };
+    initialCameraPosition?: Vec3;
+    initialCameraTarget?: Vec3;
+};
+
 export type NavcatDynamicObjectsHandle = {
     dispose: () => void;
 };
@@ -63,7 +96,10 @@ const loadGLTF = async (url: string) => {
     return loader.loadAsync(url);
 };
 
-export async function createNavcatDynamicObjectsScene(container: HTMLElement): Promise<NavcatDynamicObjectsHandle> {
+export async function createNavcatDynamicObjectsScene(
+    container: HTMLElement,
+    options: NavcatDynamicSceneOptions = {},
+): Promise<NavcatDynamicObjectsHandle> {
     await Rapier.init();
 
     const randomRange = (min: number, max: number) => Math.random() * (max - min) + min;
@@ -81,7 +117,8 @@ export async function createNavcatDynamicObjectsScene(container: HTMLElement): P
     scene.background = new THREE.Color(0x202020);
 
     const camera = new THREE.PerspectiveCamera(75, container.clientWidth / container.clientHeight, 0.1, 1000);
-    camera.position.set(-2, 10, 10);
+    const initialCameraPosition = options.initialCameraPosition ?? [-2, 10, 10];
+    camera.position.set(initialCameraPosition[0], initialCameraPosition[1], initialCameraPosition[2]);
 
     const renderer = new THREE.WebGPURenderer({ antialias: true });
     renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -124,21 +161,68 @@ export async function createNavcatDynamicObjectsScene(container: HTMLElement): P
 
     const orbitControls = new OrbitControls(camera, renderer.domElement);
     orbitControls.enableDamping = true;
+    const initialCameraTarget = options.initialCameraTarget ?? [0, 0, 0];
+    orbitControls.target.set(initialCameraTarget[0], initialCameraTarget[1], initialCameraTarget[2]);
+    orbitControls.update();
 
-    const levelModel = await loadGLTF('/models/nav-test.glb');
-    scene.add(levelModel.scene);
+    const createDefaultEnvironment = async (): Promise<EnvironmentResult> => {
+        const levelModel = await loadGLTF('/models/nav-test.glb');
+        scene.add(levelModel.scene);
+
+        const walkableMeshes: THREE.Mesh[] = [];
+        levelModel.scene.traverse((object) => {
+            if (object instanceof THREE.Mesh) {
+                walkableMeshes.push(object);
+            }
+        });
+
+        const [positions, indices] = getPositionsAndIndices(walkableMeshes);
+
+        return {
+            walkableMeshes,
+            navMeshGeometry: { positions, indices },
+            setupPhysicsWorld: ({ physicsWorld }) => {
+                const levelColliderDesc = Rapier.ColliderDesc.trimesh(new Float32Array(positions), new Uint32Array(indices));
+                levelColliderDesc.setMass(0);
+
+                const levelRigidBodyDesc = Rapier.RigidBodyDesc.fixed();
+                const levelRigidBody = physicsWorld.createRigidBody(levelRigidBodyDesc);
+
+                physicsWorld.createCollider(levelColliderDesc, levelRigidBody);
+            },
+            cleanup: () => {
+                scene.remove(levelModel.scene);
+            },
+        };
+    };
+
+    const environment = await (options.createEnvironment ?? createDefaultEnvironment)({
+        scene,
+        renderer,
+        camera,
+    });
+
+    const walkableMeshes = environment.walkableMeshes;
+    const staticObstacles = environment.staticObstacles ?? [];
+    const setupPhysicsWorld = environment.setupPhysicsWorld;
+
+    const navMeshGeometry = options.navMeshGeometry ?? environment.navMeshGeometry ?? (() => {
+        const [positions, indices] = getPositionsAndIndices(walkableMeshes);
+        return { positions, indices };
+    })();
+
+    const levelPositions =
+        navMeshGeometry.positions instanceof Float32Array
+            ? navMeshGeometry.positions
+            : new Float32Array(navMeshGeometry.positions);
+
+    const levelIndices =
+        navMeshGeometry.indices instanceof Uint32Array
+            ? navMeshGeometry.indices
+            : new Uint32Array(navMeshGeometry.indices);
 
     const catModel = await loadGLTF('/models/cat.gltf');
     const catAnimations = catModel.animations;
-
-    const walkableMeshes: THREE.Mesh[] = [];
-    scene.traverse((object) => {
-        if (object instanceof THREE.Mesh) {
-            walkableMeshes.push(object);
-        }
-    });
-
-    const [levelPositions, levelIndices] = getPositionsAndIndices(walkableMeshes);
 
     const cellSize = 0.15;
     const cellHeight = 0.15;
@@ -400,6 +484,15 @@ export async function createNavcatDynamicObjectsScene(container: HTMLElement): P
                     }
                 }
 
+                if (staticObstacles.length > 0) {
+                    for (const obstacle of staticObstacles) {
+                        const [ox, oy, oz] = obstacle.position;
+                        const radius = obstacle.radius;
+                        const height = obstacle.height ?? radius;
+                        markCylinderArea([ox, oy, oz], radius, height, NULL_AREA, chf);
+                    }
+                }
+
                 buildRegions(buildCtx, chf, borderSize, minRegionArea, mergeRegionArea);
 
                 const contourSet = buildContours(
@@ -537,13 +630,17 @@ export async function createNavcatDynamicObjectsScene(container: HTMLElement): P
 
     const physicsWorld = new Rapier.World(new Rapier.Vector3(0, -9.81, 0));
 
-    const levelColliderDesc = Rapier.ColliderDesc.trimesh(new Float32Array(levelPositions), new Uint32Array(levelIndices));
-    levelColliderDesc.setMass(0);
+    if (setupPhysicsWorld) {
+        setupPhysicsWorld({ physicsWorld });
+    } else {
+        const levelColliderDesc = Rapier.ColliderDesc.trimesh(new Float32Array(levelPositions), new Uint32Array(levelIndices));
+        levelColliderDesc.setMass(0);
 
-    const levelRigidBodyDesc = Rapier.RigidBodyDesc.fixed();
-    const levelRigidBody = physicsWorld.createRigidBody(levelRigidBodyDesc);
+        const levelRigidBodyDesc = Rapier.RigidBodyDesc.fixed();
+        const levelRigidBody = physicsWorld.createRigidBody(levelRigidBodyDesc);
 
-    physicsWorld.createCollider(levelColliderDesc, levelRigidBody);
+        physicsWorld.createCollider(levelColliderDesc, levelRigidBody);
+    }
 
     const obstacleCount = 60;
 
@@ -1178,7 +1275,7 @@ export async function createNavcatDynamicObjectsScene(container: HTMLElement): P
             physicsObjects.length = 0;
         },
         () => {
-            scene.remove(levelModel.scene);
+            environment.cleanup?.();
         },
         () => {
             for (const agentId in agentVisuals) {
