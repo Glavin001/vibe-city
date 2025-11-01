@@ -41,6 +41,7 @@
     "crypto-browserify": "^3.12.0",
     "encoding": "^0.1.13",
     "face-api.js": "^0.22.2",
+    "htn-ai": "^1.1.2",
     "kokoro-js": "^1.2.1",
     "leva": "^0.10.0",
     "lodash": "^4.17.21",
