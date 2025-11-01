@@ -13,10 +13,6 @@ jobs:
     permissions:
       contents: read
       deployments: write
-    # Create a GitHub Deployment with a "View deployment" button
-    environment:
-      name: preview
-      url: ${{ steps.deploy.outputs.preview_url }}
     env:
       VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
