@@ -139,6 +139,12 @@ const demoCategories: DemoCategory[] = [
         title: "Ragdoll Physics",
         description: "Spawn humanoid ragdolls with Rapier joints. Click to place them on varied terrain; toggle debug and gravity with Leva."
       }
+      ,{
+        href: "/map-3d",
+        icon: "🗺️",
+        title: "3D Tiles + Rapier (Cesium)",
+        description: "Cesium 3D Tiles with THREE + Rapier physics, sampled terrain heightfield, and character controller."
+      }
     ]
   },
   {

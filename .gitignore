@@ -24,6 +24,7 @@
 /src/generated/
 /src/lib/planner/types/
 /public/vad/
+/public/cesium/
 
 # misc
 .DS_Store
