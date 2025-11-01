@@ -145,6 +145,12 @@ const demoCategories: DemoCategory[] = [
         title: "Navcat Dynamic Obstacles",
         description: "Navmesh regeneration demo with Rapier physics cubes acting as moving obstacles for crowd agents."
       }
+      ,{
+        href: "/navcat-bunker",
+        icon: "🐾",
+        title: "Navcat Bunker Dynamics",
+        description: "Bunker courtyard rebuilt for Navcat crowds with Rapier debris carving live holes into the navmesh."
+      }
     ]
   },
   {
