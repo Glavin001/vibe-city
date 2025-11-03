@@ -47,11 +47,48 @@ export type RapierHeightfieldData = {
 /**
  * Result of extracting data from a Rapier world.
  */
+export type ColliderBodyKind = "fixed" | "kinematic" | "dynamic";
+
+export type DynamicNavMeshObstacle = {
+  handle: number;
+  bodyType: ColliderBodyKind;
+  /**
+   * Center of the obstacle in world space. For cylinders this is the center of the capsule.
+   */
+  center: Vec3;
+  /**
+   * Half extents of the obstacle's axis-aligned bounding box. Used for computing radius/height.
+   */
+  halfExtents: Vec3;
+  /**
+   * Radius used when projecting a cylinder onto the navmesh.
+   */
+  radius: number;
+  /**
+   * Height of the obstacle (full height, not half height).
+   */
+  height: number;
+};
+
 export type RapierExtractionResult = {
-  /** All collider geometry triangulated to triangles (includes static, kinematic, and dynamic) */
+  /** Static collider geometry triangulated to triangles */
   geometry: NavcatGeometry;
   /** Heightfields extracted from Rapier (use these directly as Navcat Heightfields, not triangles) */
   heightfields: RapierHeightfieldData[];
+  /** Dynamic colliders represented as cylindrical obstacles */
+  dynamicObstacles: DynamicNavMeshObstacle[];
+  /** Handles of all static colliders used for cache invalidation */
+  staticColliderHandles: number[];
+  /** Stable signature describing the static collider set */
+  staticSignature: string;
+  /** Indicates whether cached static geometry/heightfields were reused */
+  usedStaticCache: boolean;
+};
+
+export type RapierExtractionCache = {
+  staticSignature?: string;
+  geometry?: NavcatGeometry;
+  heightfields?: RapierHeightfieldData[];
 };
 
 /**
@@ -64,6 +101,8 @@ export type ExtractOptions = {
   includeKinematic?: boolean;
   /** Triangulation quality options */
   triangulation?: TriangulationOptions;
+  /** Cache object for reusing static extraction data */
+  cache?: RapierExtractionCache;
 };
 
 const DEFAULT_OPTIONS: Required<ExtractOptions> = {
@@ -438,6 +477,70 @@ function getAABBForComplexShape(
   };
 }
 
+function createDynamicObstacle(
+  collider: RapierType.Collider,
+  bodyType: ColliderBodyKind,
+  translation: { x: number; y: number; z: number },
+): DynamicNavMeshObstacle | null {
+  const aabb = getAABBForComplexShape(collider);
+
+  let center: Vec3 | null = null;
+  let halfExtents: Vec3 | null = null;
+
+  if (aabb) {
+    center = [aabb.center.x, aabb.center.y, aabb.center.z];
+    halfExtents = [aabb.halfExtents.x, aabb.halfExtents.y, aabb.halfExtents.z];
+  } else {
+    const shape = collider.shape;
+
+    switch (shape.type) {
+      case RapierType.ShapeType.Cuboid: {
+        const { x, y, z } = (shape as RapierType.Cuboid).halfExtents;
+        center = [translation.x, translation.y, translation.z];
+        halfExtents = [x, y, z];
+        break;
+      }
+      case RapierType.ShapeType.Ball: {
+        const radius = (shape as RapierType.Ball).radius;
+        center = [translation.x, translation.y, translation.z];
+        halfExtents = [radius, radius, radius];
+        break;
+      }
+      case RapierType.ShapeType.Capsule: {
+        const { radius, halfHeight } = shape as RapierType.Capsule;
+        center = [translation.x, translation.y, translation.z];
+        halfExtents = [radius, halfHeight + radius, radius];
+        break;
+      }
+      case RapierType.ShapeType.Cylinder: {
+        const { radius, halfHeight } = shape as RapierType.Cylinder;
+        center = [translation.x, translation.y, translation.z];
+        halfExtents = [radius, halfHeight, radius];
+        break;
+      }
+      default: {
+        return null;
+      }
+    }
+  }
+
+  if (!center || !halfExtents) {
+    return null;
+  }
+
+  const radius = Math.max(Math.abs(halfExtents[0]), Math.abs(halfExtents[2]));
+  const height = Math.max(0.0001, Math.abs(halfExtents[1]) * 2);
+
+  return {
+    handle: collider.handle,
+    bodyType,
+    center,
+    halfExtents,
+    radius,
+    height,
+  };
+}
+
 /**
  * Triangulates a TriMesh shape by extracting its vertices and indices.
  */
@@ -668,90 +771,197 @@ export function extractRapierToNavcat(
   const extractStartTime = performance.now();
   
   // Merge options with defaults
-  const opts: Required<ExtractOptions> = {
+  const opts: Required<Omit<ExtractOptions, "cache">> & { cache?: RapierExtractionCache } = {
     includeDynamic: options.includeDynamic ?? DEFAULT_OPTIONS.includeDynamic,
     includeKinematic: options.includeKinematic ?? DEFAULT_OPTIONS.includeKinematic,
     triangulation: {
       ...DEFAULT_OPTIONS.triangulation,
       ...options.triangulation,
     },
+    cache: options.cache ?? undefined,
   };
 
-  const positions: number[] = [];
-  const indices: number[] = [];
-  const heightfields: RapierHeightfieldData[] = [];
+  type ColliderEntry = {
+    collider: RapierType.Collider;
+    kind: ColliderBodyKind;
+  };
 
+  const colliderEntries: ColliderEntry[] = [];
   let colliderCount = 0;
   let processedCount = 0;
-  const processStartTime = performance.now();
-  
+  const gatherStartTime = performance.now();
+
   world.forEachCollider((collider) => {
     colliderCount++;
     const parent = collider.parent();
     if (!parent) return;
 
     const bodyType = parent.bodyType();
-    
-    // Filter by body type
+    let kind: ColliderBodyKind | null = null;
+
     if (bodyType === rapier.RigidBodyType.Fixed) {
-      // Always include fixed bodies
-    } else if (bodyType === rapier.RigidBodyType.KinematicPositionBased || 
-               bodyType === rapier.RigidBodyType.KinematicVelocityBased) {
-      if (!opts.includeKinematic) return;
+      kind = "fixed";
+    } else if (
+      bodyType === rapier.RigidBodyType.KinematicPositionBased ||
+      bodyType === rapier.RigidBodyType.KinematicVelocityBased
+    ) {
+      if (!opts.includeKinematic) {
+        return;
+      }
+      kind = "kinematic";
     } else if (bodyType === rapier.RigidBodyType.Dynamic) {
-      if (!opts.includeDynamic) return;
-    } else {
-      // Unknown body type, skip
+      if (!opts.includeDynamic) {
+        return;
+      }
+      kind = "dynamic";
+    }
+
+    if (!kind) {
       return;
     }
 
     processedCount++;
-    const translation = collider.translation();
-    const rotation = collider.rotation();
-    const shape = collider.shape;
-
-    const result = processColliderShape(
-      shape,
-      collider,
-      rotation,
-      translation,
-      rapier,
-      opts,
-      positions,
-      indices,
-    );
-
-    // Collect heightfield if present
-    if (result.heightfield) {
-      heightfields.push(result.heightfield);
-    }
+    colliderEntries.push({ collider, kind });
   });
 
-  const processTime = performance.now() - processStartTime;
-  console.log(`[Extract] Processed ${processedCount}/${colliderCount} colliders in ${processTime.toFixed(2)}ms`);
+  const gatherTime = performance.now() - gatherStartTime;
 
-  // Return null only if we have nothing useful
-  const hasGeometry = positions.length > 0 && indices.length > 0;
-  const hasHeightfields = heightfields.length > 0;
-  
-  if (!hasGeometry && !hasHeightfields) {
+  const staticColliderHandles = colliderEntries
+    .filter((entry) => entry.kind === "fixed")
+    .map((entry) => entry.collider.handle)
+    .sort((a, b) => a - b);
+
+  const staticHandlesKey = staticColliderHandles.join(",");
+  const cacheRef = opts.cache;
+  const cachedSignatureKey = cacheRef?.staticSignature?.split("|")[0];
+  const canReuseStatic =
+    !!cacheRef &&
+    cachedSignatureKey === staticHandlesKey &&
+    cacheRef.geometry &&
+    cacheRef.heightfields;
+
+  const positions: number[] = [];
+  const indices: number[] = [];
+  const heightfields: RapierHeightfieldData[] = [];
+  let usedStaticCache = false;
+
+  if (!canReuseStatic) {
+    const staticProcessStart = performance.now();
+
+    for (const entry of colliderEntries) {
+      if (entry.kind !== "fixed") {
+        continue;
+      }
+
+      const collider = entry.collider;
+      const translation = collider.translation();
+      const rotation = collider.rotation();
+      const shape = collider.shape;
+
+      const result = processColliderShape(
+        shape,
+        collider,
+        rotation,
+        translation,
+        rapier,
+        opts,
+        positions,
+        indices,
+      );
+
+      if (result.heightfield) {
+        heightfields.push(result.heightfield);
+      }
+    }
+
+    const staticProcessTime = performance.now() - staticProcessStart;
+    console.log(
+      `[Extract] Processed ${processedCount}/${colliderCount} colliders (static build ${staticProcessTime.toFixed(
+        2,
+      )}ms, gather ${gatherTime.toFixed(2)}ms)`,
+    );
+  } else {
+    usedStaticCache = true;
+    console.log(
+      `[Extract] Reused cached static geometry for ${staticColliderHandles.length} colliders (gather ${gatherTime.toFixed(
+        2,
+      )}ms)`,
+    );
+  }
+
+  const dynamicObstacles: DynamicNavMeshObstacle[] = [];
+  const dynamicProcessStart = performance.now();
+
+  for (const entry of colliderEntries) {
+    if (entry.kind === "fixed") {
+      continue;
+    }
+
+    const translation = entry.collider.translation();
+    const obstacle = createDynamicObstacle(entry.collider, entry.kind, translation);
+    if (obstacle) {
+      dynamicObstacles.push(obstacle);
+    }
+  }
+
+  const dynamicProcessTime = performance.now() - dynamicProcessStart;
+
+  let geometry: NavcatGeometry;
+  let finalHeightfields: RapierHeightfieldData[];
+
+  if (canReuseStatic && cacheRef) {
+    geometry = cacheRef.geometry!;
+    finalHeightfields = cacheRef.heightfields!;
+  } else {
+    geometry = {
+      positions: new Float32Array(positions),
+      indices: new Uint32Array(indices),
+    };
+    finalHeightfields = heightfields;
+
+    if (cacheRef) {
+      cacheRef.geometry = geometry;
+      cacheRef.heightfields = finalHeightfields;
+    }
+  }
+
+  const staticSignature = [
+    staticHandlesKey,
+    geometry.positions.length,
+    geometry.indices.length,
+    finalHeightfields.length,
+  ].join("|");
+
+  if (cacheRef) {
+    cacheRef.staticSignature = staticSignature;
+  }
+
+  const hasGeometry = geometry.positions.length > 0 && geometry.indices.length > 0;
+  const hasHeightfields = finalHeightfields.length > 0;
+
+  if (!hasGeometry && !hasHeightfields && dynamicObstacles.length === 0) {
     const totalTime = performance.now() - extractStartTime;
     console.log(`[Extract] No data extracted (${totalTime.toFixed(2)}ms)`);
     return null;
   }
 
   const totalTime = performance.now() - extractStartTime;
-  console.log(`[Extract] Extraction complete: ${totalTime.toFixed(2)}ms (process: ${processTime.toFixed(2)}ms)`, {
-    triangles: indices.length / 3,
-    vertices: positions.length / 3,
-    heightfields: heightfields.length,
-  });
+  console.log(
+    `[Extract] Extraction complete: ${totalTime.toFixed(2)}ms (dynamic ${dynamicProcessTime.toFixed(2)}ms)`,
+    {
+      triangles: geometry.indices.length / 3,
+      vertices: geometry.positions.length / 3,
+      heightfields: finalHeightfields.length,
+      usedStaticCache,
+    },
+  );
 
   return {
-    geometry: {
-      positions: new Float32Array(positions),
-      indices: new Uint32Array(indices),
-    },
-    heightfields,
+    geometry,
+    heightfields: finalHeightfields,
+    dynamicObstacles,
+    staticColliderHandles,
+    staticSignature,
+    usedStaticCache,
   };
 }
