@@ -22,13 +22,20 @@ export type HeightfieldArgs = [
 ```11:15:src/components/SimpleHeightfieldDemo.tsx
 // IMPORTANT: For a heightfield with widthQuads x depthQuads quads, you must supply
 // (widthQuads+1) * (depthQuads+1) height values in ROW-MAJOR order.
-// Example: widthQuads=2, depthQuads=2 => 3x3 heights = 9 values.
+// Example: widthQuads=2, depthQuads=2 => 3x3 vertices = 9 values.
 // <HeightfieldCollider args={[2, 2, heights, { x: 1, y: 1, z: 1 }]} />
 ```
 
-- **widthQuads / depthQuads**: number of quads along X and Z.
-- **heights length**: must be (widthQuads + 1) × (depthQuads + 1).
-- **row-major order**: index as `heights[row * cols + col]` where `rows = depthQuads + 1`, `cols = widthQuads + 1`. Rows advance along Z; columns along X.
+**CRITICAL**: The `width` and `height` parameters in `@react-three/rapier`'s `HeightfieldArgs` represent the **number of quads/cells**, NOT the number of vertices.
+
+- **widthQuads / depthQuads**: number of quads along X and Z (these are the `width` and `height` args).
+- **Number of vertices**: `(widthQuads + 1) × (depthQuads + 1)` - one height value per vertex.
+  - Example: `widthQuads=2, depthQuads=2` → `3×3 = 9` vertices/height values.
+- **heights length**: must be exactly `(widthQuads + 1) × (depthQuads + 1)`.
+- **row-major order**: index as `heights[row * cols + col]` where:
+  - `rows = depthQuads + 1` (number of vertex rows along Z)
+  - `cols = widthQuads + 1` (number of vertex columns along X)
+  - Rows advance along Z; columns along X.
 - **scale**
   - **scale.x**: size per quad along X (cell size).
   - **scale.z**: size per quad along Z (cell size).
@@ -101,17 +108,79 @@ const geometry = useMemo(() => {
 ```
 
 ### Common pitfalls to avoid
-- Heights array length not equal to `(widthQuads + 1) * (depthQuads + 1)`.
+- **Heights array length incorrect**: Must be exactly `(widthQuads + 1) * (depthQuads + 1)`, not `widthQuads * depthQuads`.
+  - Using `nrows * ncols` when `nrows`/`ncols` represent quads will cause "RuntimeError: unreachable" in WASM.
 - Wrong ordering (must be row-major: advance X inside the row, then advance Z to next row).
 - Swapping width/depth in `args[0]`/`args[1]`.
-- Not rotating the visual mesh by `-Math.PI / 2` around X (heights won’t appear as vertical).
+- Not rotating the visual mesh by `-Math.PI / 2` around X (heights won't appear as vertical).
 - Mismatched scale: remember `scale.x`/`scale.z` are per-quad sizes (not total), and `scale.y` scales vertical height.
 - Forgetting `colliders={false}` on the `RigidBody` when you add your own `HeightfieldCollider` (auto-colliders would be added otherwise).
+- **Confusing quads vs vertices**: `widthQuads`/`depthQuads` are quad counts; you need `+1` for vertex counts.
 
 ### Quick checklist
-- Width/depth quads set correctly.
-- `heights.length === (widthQuads + 1) * (depthQuads + 1)`.
-- Row-major indexing used when generating heights.
+- Width/depth quads set correctly (number of cells, not vertices).
+- **`heights.length === (widthQuads + 1) * (depthQuads + 1)`** (critical: must be +1, not just widthQuads * depthQuads).
+- Row-major indexing used when generating heights: `heights[row * cols + col]`.
 - `scale` chosen so total extents are correct.
 - Visual plane built with matching segments and rotated `-Math.PI / 2` around X.
 - `RigidBody` is `fixed` and `colliders={false}`; transforms match collider and mesh.
+
+## Raw Rapier.js API (ColliderDesc.heightfield)
+
+When using the raw Rapier.js API (not `@react-three/rapier`), the API is different:
+
+### API Signature
+```typescript
+ColliderDesc.heightfield(
+  nrows: number,      // Number of quads along Z (NOT vertices!)
+  ncols: number,      // Number of quads along X (NOT vertices!)
+  heights: Float32Array,  // Must be (nrows + 1) * (ncols + 1) values
+  scale: Vector3      // Scale vector
+)
+```
+
+### Critical Differences
+- **`nrows` and `ncols` represent quads, not vertices**: Like `@react-three/rapier`, these parameters count quads/cells.
+- **Heights array size**: Must be `(nrows + 1) * (ncols + 1)` elements (one per vertex).
+- **Column-major storage**: Raw Rapier stores heights internally in column-major order.
+  - **When creating**: You can fill the array in row-major order (simpler, as shown in the pattern below).
+  - **When reading**: The extracted heights array from a Rapier shape is in column-major order.
+  - **When accessing**: Use `heights[col * nrows + row]` where nrows/ncols represent the quad counts.
+  - This differs from `@react-three/rapier` which uses row-major for both input and output.
+- **Example**: `nrows=3, ncols=3` (3×3 quads) requires `(3+1)*(3+1) = 16` height values.
+
+### Common Error
+Using `nrows * ncols` for the heights array size will cause:
+- `RuntimeError: unreachable` in WASM environments
+- The heights array is too small (missing the `+1` vertices)
+
+### Correct Pattern
+```typescript
+const nrows = 3;  // quads along Z
+const ncols = 3;  // quads along X
+const heights = new Float32Array((nrows + 1) * (ncols + 1));
+
+// Fill heights array - can use simple row-major iteration
+// The array will have (nrows + 1) * (ncols + 1) elements
+function generateHeightfield(nrows: number, ncols: number): Float32Array {
+  const heights: number[] = [];
+  
+  // Simple pattern: iterate over all vertices (row-major is fine for creation)
+  for (let row = 0; row <= nrows; row++) {
+    for (let col = 0; col <= ncols; col++) {
+      heights.push(/* your height value at vertex (row, col) */);
+    }
+  }
+  
+  return new Float32Array(heights);
+}
+
+const floatHeights = generateHeightfield(nrows, ncols);
+const collider = rapier.ColliderDesc.heightfield(nrows, ncols, floatHeights, scale);
+```
+
+**Important Notes**:
+- When creating: Fill the array in row-major order (outer loop rows, inner loop columns) as shown above.
+- The critical part is the array size: `(nrows + 1) * (ncols + 1)` where nrows/ncols are quad counts.
+- Rapier will accept the array and store it internally in column-major order.
+- When reading back from a Rapier heightfield shape, the heights array is already in column-major order.
