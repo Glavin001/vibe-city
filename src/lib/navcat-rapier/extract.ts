@@ -483,45 +483,46 @@ function createDynamicObstacle(
   translation: { x: number; y: number; z: number },
   rapier: typeof RapierType,
 ): DynamicNavMeshObstacle | null {
-  const aabb = getAABBForComplexShape(collider);
+  const shape = collider.shape;
 
+  const translatedCenter: Vec3 = [translation.x, translation.y, translation.z];
   let center: Vec3 | null = null;
   let halfExtents: Vec3 | null = null;
 
-  if (aabb) {
-    center = [aabb.center.x, aabb.center.y, aabb.center.z];
-    halfExtents = [aabb.halfExtents.x, aabb.halfExtents.y, aabb.halfExtents.z];
-  } else {
-    const shape = collider.shape;
-
-    switch (shape.type) {
-      case rapier.ShapeType.Cuboid: {
-        const { x, y, z } = (shape as RapierType.Cuboid).halfExtents;
-        center = [translation.x, translation.y, translation.z];
-        halfExtents = [x, y, z];
-        break;
-      }
-      case rapier.ShapeType.Ball: {
-        const radius = (shape as RapierType.Ball).radius;
-        center = [translation.x, translation.y, translation.z];
-        halfExtents = [radius, radius, radius];
-        break;
-      }
-      case rapier.ShapeType.Capsule: {
-        const { radius, halfHeight } = shape as RapierType.Capsule;
-        center = [translation.x, translation.y, translation.z];
-        halfExtents = [radius, halfHeight + radius, radius];
-        break;
-      }
-      case rapier.ShapeType.Cylinder: {
-        const { radius, halfHeight } = shape as RapierType.Cylinder;
-        center = [translation.x, translation.y, translation.z];
-        halfExtents = [radius, halfHeight, radius];
-        break;
-      }
-      default: {
+  switch (shape.type) {
+    case rapier.ShapeType.Cuboid: {
+      const { x, y, z } = (shape as RapierType.Cuboid).halfExtents;
+      center = translatedCenter;
+      halfExtents = [x, y, z];
+      break;
+    }
+    case rapier.ShapeType.Ball: {
+      const radius = (shape as RapierType.Ball).radius;
+      center = translatedCenter;
+      halfExtents = [radius, radius, radius];
+      break;
+    }
+    case rapier.ShapeType.Capsule: {
+      const { radius, halfHeight } = shape as RapierType.Capsule;
+      center = translatedCenter;
+      halfExtents = [radius, halfHeight + radius, radius];
+      break;
+    }
+    case rapier.ShapeType.Cylinder: {
+      const { radius, halfHeight } = shape as RapierType.Cylinder;
+      center = translatedCenter;
+      halfExtents = [radius, halfHeight, radius];
+      break;
+    }
+    default: {
+      const aabb = getAABBForComplexShape(collider);
+      if (!aabb) {
         return null;
       }
+
+      center = [aabb.center.x, aabb.center.y, aabb.center.z];
+      halfExtents = [aabb.halfExtents.x, aabb.halfExtents.y, aabb.halfExtents.z];
+      break;
     }
   }
 
