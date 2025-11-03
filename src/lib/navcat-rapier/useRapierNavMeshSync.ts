@@ -15,6 +15,11 @@ import {
 } from "./generate";
 import type { RapierExtractionResult } from "./extract";
 import type RapierType from "@dimforge/rapier3d-compat";
+import type {
+  NavMeshWorkerOptions,
+  NavMeshWorkerRequest,
+  NavMeshWorkerResponse,
+} from "./navmesh.worker.types";
 
 export type NavMeshSyncState = {
   navMesh: NavMesh | null;
@@ -56,6 +61,107 @@ export function useRapierNavMeshSync(options?: {
   const lastLogTimeRef = useRef(0);
   const navMeshCacheRef = useRef<NavMeshBuildCache>({});
   const extractionCacheRef = useRef<RapierExtractionCache>({});
+  const workerRef = useRef<Worker | null>(null);
+  const workerRequestIdRef = useRef(0);
+  const workerResolversRef = useRef(
+    new Map<
+      number,
+      {
+        resolve: (value: NavMeshGenerationResult | null) => void;
+        reject: (error: Error) => void;
+      }
+    >(),
+  );
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    let terminated = false;
+
+    try {
+      const worker = new Worker(new URL("./navmesh.worker.ts", import.meta.url), {
+        type: "module",
+      });
+
+      const handleMessage = (event: MessageEvent<NavMeshWorkerResponse>) => {
+        const data = event.data;
+        if (!data) {
+          return;
+        }
+
+        const resolver = workerResolversRef.current.get(data.id);
+        if (!resolver) {
+          console.warn(`[NavMeshSync] ⚠️ Received worker response for unknown request ${data.id}`);
+          return;
+        }
+
+        workerResolversRef.current.delete(data.id);
+
+        if (data.type === "result") {
+          resolver.resolve(data.result ?? null);
+          return;
+        }
+
+        const error = new Error(data.message);
+        if (data.stack) {
+          try {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+            (error as { stack?: string }).stack = data.stack;
+          } catch {
+            // Ignore if stack is readonly in this environment
+          }
+        }
+        resolver.reject(error);
+      };
+
+      const handleError = (event: ErrorEvent) => {
+        console.error("[NavMeshSync] ❌ Navmesh worker error", event.error ?? event.message);
+        event.preventDefault();
+
+        workerResolversRef.current.forEach(({ reject }) => {
+          reject(event.error instanceof Error ? event.error : new Error(event.message));
+        });
+        workerResolversRef.current.clear();
+      };
+
+      worker.addEventListener("message", handleMessage);
+      worker.addEventListener("error", handleError);
+      workerRef.current = worker;
+
+      return () => {
+        if (terminated) {
+          return;
+        }
+        terminated = true;
+        worker.removeEventListener("message", handleMessage);
+        worker.removeEventListener("error", handleError);
+        workerResolversRef.current.forEach(({ reject }) => {
+          reject(new Error("Navmesh worker terminated"));
+        });
+        workerResolversRef.current.clear();
+        worker.terminate();
+        workerRef.current = null;
+      };
+    } catch (error) {
+      console.warn("[NavMeshSync] ⚠️ Failed to initialize navmesh worker", error);
+      workerRef.current = null;
+    }
+
+    return () => {
+      if (terminated) {
+        return;
+      }
+      terminated = true;
+      workerResolversRef.current.forEach(({ reject }) => {
+        reject(new Error("Navmesh worker cleanup"));
+      });
+      workerResolversRef.current.clear();
+      workerRef.current?.terminate();
+      workerRef.current = null;
+    };
+  }, []);
 
   const updateNavMesh = useCallback((force = false) => {
     if (!world || !rapier || !enabled) {
@@ -92,115 +198,155 @@ export function useRapierNavMeshSync(options?: {
     isUpdatingRef.current = true;
     setState((prev) => ({ ...prev, isUpdating: true }));
 
-    const totalStartTime = performance.now();
-    console.log("[NavMeshSync] Starting navmesh update...");
+    const runUpdate = async () => {
+      const totalStartTime = performance.now();
+      console.log("[NavMeshSync] Starting navmesh update...");
 
-    try {
-      // Extract geometry from Rapier world
-      const extractStartTime = performance.now();
-      console.log("[NavMeshSync] Extracting from Rapier world...");
-      const extractionOptions: ExtractOptions = {
-        ...options?.extractOptions,
-        cache: extractionCacheRef.current,
-      };
+      try {
+        const extractStartTime = performance.now();
+        console.log("[NavMeshSync] Extracting from Rapier world...");
+        const extractionOptions: ExtractOptions = {
+          ...options?.extractOptions,
+          cache: extractionCacheRef.current,
+        };
 
-      const rapierModule = rapier as unknown as typeof RapierType;
-      const rapierWorld = world as unknown as RapierType.World;
-      const extraction = extractRapierToNavcat(
-        rapierWorld,
-        rapierModule,
-        extractionOptions,
-      );
-      const extractTime = performance.now() - extractStartTime;
-      
-      if (!extraction) {
-        const totalTime = performance.now() - totalStartTime;
-        console.log(`[NavMeshSync] Extraction returned null (${extractTime.toFixed(2)}ms), total: ${totalTime.toFixed(2)}ms`);
-        // Update ref before returning
-        lastUpdateTimeRef.current = now;
-        setState({
-          navMesh: null,
-          extraction: null,
-          lastUpdateTime: now,
-          buildTime: totalTime,
-          isUpdating: false,
+        const rapierModule = rapier as unknown as typeof RapierType;
+        const rapierWorld = world as unknown as RapierType.World;
+        const extraction = extractRapierToNavcat(
+          rapierWorld,
+          rapierModule,
+          extractionOptions,
+        );
+        const extractTime = performance.now() - extractStartTime;
+
+        if (!extraction) {
+          const totalTime = performance.now() - totalStartTime;
+          console.log(
+            `[NavMeshSync] Extraction returned null (${extractTime.toFixed(2)}ms), total: ${totalTime.toFixed(2)}ms`,
+          );
+          lastUpdateTimeRef.current = now;
+          setState({
+            navMesh: null,
+            extraction: null,
+            lastUpdateTime: now,
+            buildTime: totalTime,
+            isUpdating: false,
+          });
+          return;
+        }
+        console.log(`[NavMeshSync] Extraction complete: ${extractTime.toFixed(2)}ms`, {
+          geometry: {
+            positions: extraction.geometry.positions.length / 3,
+            indices: extraction.geometry.indices.length / 3,
+          },
+          heightfields: extraction.heightfields.length,
         });
-        isUpdatingRef.current = false;
-        return;
-      }
-      console.log(`[NavMeshSync] Extraction complete: ${extractTime.toFixed(2)}ms`, {
-        geometry: {
-          positions: extraction.geometry.positions.length / 3,
-          indices: extraction.geometry.indices.length / 3,
-        },
-        heightfields: extraction.heightfields.length,
-      });
 
-      // Generate navmesh from extraction
-      const generateStartTime = performance.now();
-      console.log("[NavMeshSync] Generating navmesh from extraction...");
-      const genOptions: NavMeshGenOptions = options?.navMeshOptions ?? {
-        preset: options?.navMeshPreset ?? "default", // Default to full-quality navmesh
-      };
-      const result: NavMeshGenerationResult | null = generateSoloNavMeshFromGeometry(extraction, {
-        ...genOptions,
-        cache: navMeshCacheRef.current,
-      });
-      const generateTime = performance.now() - generateStartTime;
-      
-      if (!result) {
-        const totalTime = performance.now() - totalStartTime;
-        console.log(`[NavMeshSync] Generation returned null (${generateTime.toFixed(2)}ms), total: ${totalTime.toFixed(2)}ms`);
-        // Update ref before returning
+        const generateStartTime = performance.now();
+        console.log("[NavMeshSync] Generating navmesh from extraction...");
+        const baseGenOptions: NavMeshGenOptions = options?.navMeshOptions
+          ? { ...options.navMeshOptions }
+          : { preset: options?.navMeshPreset ?? "default" };
+
+        const fallbackOptions: NavMeshGenOptions = {
+          ...baseGenOptions,
+          cache: baseGenOptions.cache ?? navMeshCacheRef.current,
+        };
+        const { cache: _unusedCache, ...workerOptionsRest } = fallbackOptions;
+        const workerOptions = workerOptionsRest as NavMeshWorkerOptions;
+
+        const executeGeneration = async (): Promise<NavMeshGenerationResult | null> => {
+          const worker = workerRef.current;
+          const externalCache = options?.navMeshOptions?.cache;
+
+          if (!worker || externalCache) {
+            if (externalCache && worker) {
+              console.log("[NavMeshSync] ℹ️ External navmesh cache provided, using main thread generation");
+            }
+            return generateSoloNavMeshFromGeometry(extraction, fallbackOptions);
+          }
+
+          const requestId = ++workerRequestIdRef.current;
+          const message: NavMeshWorkerRequest = {
+            id: requestId,
+            type: "build",
+            extraction,
+            options: workerOptions,
+          };
+
+          return new Promise<NavMeshGenerationResult | null>((resolve, reject) => {
+            workerResolversRef.current.set(requestId, { resolve, reject });
+            try {
+              worker.postMessage(message);
+            } catch (postError) {
+              workerResolversRef.current.delete(requestId);
+              reject(postError instanceof Error ? postError : new Error(String(postError)));
+            }
+          }).catch((workerError) => {
+            console.error("[NavMeshSync] ❌ Worker generation failed, falling back to main thread", workerError);
+            return generateSoloNavMeshFromGeometry(extraction, fallbackOptions);
+          });
+        };
+
+        const result = await executeGeneration();
+        const generateTime = performance.now() - generateStartTime;
+
+        if (!result) {
+          const totalTime = performance.now() - totalStartTime;
+          console.log(
+            `[NavMeshSync] Generation returned null (${generateTime.toFixed(2)}ms), total: ${totalTime.toFixed(2)}ms`,
+          );
+          lastUpdateTimeRef.current = now;
+          setState({
+            navMesh: null,
+            extraction,
+            lastUpdateTime: now,
+            buildTime: totalTime,
+            isUpdating: false,
+          });
+          return;
+        }
+        console.log(`[NavMeshSync] Generation complete: ${generateTime.toFixed(2)}ms`);
+
+        if (extraction.usedStaticCache) {
+          console.log("[NavMeshSync] ♻️ Reused cached static extraction");
+        }
+
+        if (result.stats.reusedNavMesh) {
+          console.log("[NavMeshSync] ♻️ Reused cached navmesh (dynamic obstacles unchanged)");
+        }
+
+        const buildTime = performance.now() - totalStartTime;
+        console.log(
+          `[NavMeshSync] ✅ Navmesh update complete! Total: ${buildTime.toFixed(2)}ms (Extract: ${extractTime.toFixed(2)}ms, Generate: ${generateTime.toFixed(2)}ms)`,
+        );
+        console.log(`[NavMeshSync] Navmesh tiles: ${Object.keys(result.navMesh.tiles).length}`);
+
         lastUpdateTimeRef.current = now;
+
         setState({
-          navMesh: null,
+          navMesh: result.navMesh,
           extraction,
           lastUpdateTime: now,
-          buildTime: totalTime,
+          buildTime,
           isUpdating: false,
         });
+      } catch (error) {
+        const totalTime = performance.now() - totalStartTime;
+        console.error(`[NavMeshSync] ❌ Failed to update navmesh (${totalTime.toFixed(2)}ms):`, error);
+        lastUpdateTimeRef.current = now;
+        setState((prev) => ({
+          ...prev,
+          lastUpdateTime: now,
+          buildTime: totalTime,
+          isUpdating: false,
+        }));
+      } finally {
         isUpdatingRef.current = false;
-        return;
       }
-      console.log(`[NavMeshSync] Generation complete: ${generateTime.toFixed(2)}ms`);
+    };
 
-      if (extraction.usedStaticCache) {
-        console.log("[NavMeshSync] ♻️ Reused cached static extraction");
-      }
-
-      if (result.stats.reusedNavMesh) {
-        console.log("[NavMeshSync] ♻️ Reused cached navmesh (dynamic obstacles unchanged)");
-      }
-
-      const buildTime = performance.now() - totalStartTime;
-      console.log(`[NavMeshSync] ✅ Navmesh update complete! Total: ${buildTime.toFixed(2)}ms (Extract: ${extractTime.toFixed(2)}ms, Generate: ${generateTime.toFixed(2)}ms)`);
-      console.log(`[NavMeshSync] Navmesh tiles: ${Object.keys(result.navMesh.tiles).length}`);
-
-      // Update refs BEFORE setState to prevent race conditions
-      lastUpdateTimeRef.current = now;
-      
-      setState({
-        navMesh: result.navMesh,
-        extraction,
-        lastUpdateTime: now,
-        buildTime,
-        isUpdating: false,
-      });
-    } catch (error) {
-      const totalTime = performance.now() - totalStartTime;
-      console.error(`[NavMeshSync] ❌ Failed to update navmesh (${totalTime.toFixed(2)}ms):`, error);
-      // Update ref even on error
-      lastUpdateTimeRef.current = now;
-      setState((prev) => ({
-        ...prev,
-        lastUpdateTime: now,
-        buildTime: totalTime,
-        isUpdating: false,
-      }));
-    } finally {
-      isUpdatingRef.current = false;
-    }
+    void runUpdate();
   }, [world, rapier, updateThrottle, enabled, mode, options?.extractOptions, options?.navMeshPreset, options?.navMeshOptions]);
 
   // Manual refresh function (only used in manual mode)
