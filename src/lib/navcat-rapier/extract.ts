@@ -105,7 +105,7 @@ export type ExtractOptions = {
   cache?: RapierExtractionCache;
 };
 
-const DEFAULT_OPTIONS: Required<ExtractOptions> = {
+const DEFAULT_OPTIONS: Required<Omit<ExtractOptions, "cache">> = {
   includeDynamic: true,
   includeKinematic: true,
   triangulation: {
