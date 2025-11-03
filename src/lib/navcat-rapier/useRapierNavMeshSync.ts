@@ -14,6 +14,7 @@ import {
   type NavMeshGenerationResult,
 } from "./generate";
 import type { RapierExtractionResult } from "./extract";
+import type RapierType from "@dimforge/rapier3d-compat";
 
 export type NavMeshSyncState = {
   navMesh: NavMesh | null;
@@ -98,13 +99,18 @@ export function useRapierNavMeshSync(options?: {
       // Extract geometry from Rapier world
       const extractStartTime = performance.now();
       console.log("[NavMeshSync] Extracting from Rapier world...");
-      // @ts-expect-error - Duplicate Rapier types from nested @dimforge/rapier3d-compat dependencies
       const extractionOptions: ExtractOptions = {
         ...options?.extractOptions,
         cache: extractionCacheRef.current,
       };
 
-      const extraction = extractRapierToNavcat(world, rapier, extractionOptions);
+      const rapierModule = rapier as unknown as typeof RapierType;
+      const rapierWorld = world as unknown as RapierType.World;
+      const extraction = extractRapierToNavcat(
+        rapierWorld,
+        rapierModule,
+        extractionOptions,
+      );
       const extractTime = performance.now() - extractStartTime;
       
       if (!extraction) {

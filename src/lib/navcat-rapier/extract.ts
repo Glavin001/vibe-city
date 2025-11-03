@@ -656,7 +656,7 @@ function processColliderShape(
   rotation: { x: number; y: number; z: number; w: number },
   translation: { x: number; y: number; z: number },
   rapier: typeof RapierType,
-  options: Required<ExtractOptions>,
+  options: Required<Omit<ExtractOptions, "cache">>,
   positions: number[],
   indices: number[],
 ): { heightfield: RapierHeightfieldData | null } {
