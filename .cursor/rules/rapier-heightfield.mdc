@@ -1,0 +1,117 @@
+---
+description: Using HeightfieldCollider correctly with rapier.js & @react-three/rapier
+alwaysApply: false
+---
+## Using HeightfieldCollider correctly with @react-three/rapier
+
+### API (exact args)
+```20:29:node_modules/@react-three/rapier/dist/declarations/src/types.d.ts
+export type HeightfieldArgs = [
+    width: number,
+    height: number,
+    heights: number[],
+    scale: {
+        x: number;
+        y: number;
+        z: number;
+    }
+];
+```
+
+### Data layout and dimensions
+```11:15:src/components/SimpleHeightfieldDemo.tsx
+// IMPORTANT: For a heightfield with widthQuads x depthQuads quads, you must supply
+// (widthQuads+1) * (depthQuads+1) height values in ROW-MAJOR order.
+// Example: widthQuads=2, depthQuads=2 => 3x3 heights = 9 values.
+// <HeightfieldCollider args={[2, 2, heights, { x: 1, y: 1, z: 1 }]} />
+```
+
+- **widthQuads / depthQuads**: number of quads along X and Z.
+- **heights length**: must be (widthQuads + 1) × (depthQuads + 1).
+- **row-major order**: index as `heights[row * cols + col]` where `rows = depthQuads + 1`, `cols = widthQuads + 1`. Rows advance along Z; columns along X.
+- **scale**
+  - **scale.x**: size per quad along X (cell size).
+  - **scale.z**: size per quad along Z (cell size).
+  - **scale.y**: vertical height multiplier.
+  - World extents: width = `widthQuads * scale.x`, depth = `depthQuads * scale.z`.
+
+### Minimal usage
+```tsx
+import { Physics, RigidBody, HeightfieldCollider } from '@react-three/rapier'
+import { useMemo } from 'react'
+
+const widthQuads = 2
+const depthQuads = 2
+const rows = depthQuads + 1
+const cols = widthQuads + 1
+
+// 3x3 heights (row-major)
+const heights = useMemo(() => [
+  0, 1, 0,
+  1, 2, 1,
+  0, 1, 0
+], [])
+
+const scale = { x: 1, y: 1, z: 1 }
+
+export function Scene() {
+  return (
+    <Physics>
+      <RigidBody type="fixed" colliders={false} position={[0, 0, 0]}>
+        <HeightfieldCollider args={[widthQuads, depthQuads, heights, scale]} />
+      </RigidBody>
+    </Physics>
+  )
+}
+```
+
+### Adding a matching visual mesh
+- Height is along world Y. To build a visual `PlaneGeometry` that matches:
+  - Create a plane sized `scale.x * widthQuads` by `scale.z * depthQuads` with segments `widthQuads`, `depthQuads`.
+  - Write heights to the plane’s local Z coordinate.
+  - Rotate the mesh by `-Math.PI / 2` around X so local +Z becomes world +Y.
+
+```tsx
+import * as THREE from 'three'
+import { useMemo } from 'react'
+
+const geometry = useMemo(() => {
+  const geo = new THREE.PlaneGeometry(
+    scale.x * widthQuads,
+    scale.z * depthQuads,
+    widthQuads,
+    depthQuads
+  )
+  const position = geo.attributes.position
+  for (let i = 0; i < position.count; i++) {
+    const col = i % cols
+    const row = Math.floor(i / cols)
+    position.setZ(i, heights[row * cols + col] * scale.y)
+  }
+  geo.computeVertexNormals()
+  return geo
+}, [cols, heights, scale.x, scale.y, scale.z, widthQuads, depthQuads])
+
+<RigidBody type="fixed" colliders={false}>
+  <HeightfieldCollider args={[widthQuads, depthQuads, heights, scale]} />
+  <mesh geometry={geometry} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+    <meshStandardMaterial color="#4a7c59" />
+  </mesh>
+</RigidBody>
+```
+
+### Common pitfalls to avoid
+- Heights array length not equal to `(widthQuads + 1) * (depthQuads + 1)`.
+- Wrong ordering (must be row-major: advance X inside the row, then advance Z to next row).
+- Swapping width/depth in `args[0]`/`args[1]`.
+- Not rotating the visual mesh by `-Math.PI / 2` around X (heights won’t appear as vertical).
+- Mismatched scale: remember `scale.x`/`scale.z` are per-quad sizes (not total), and `scale.y` scales vertical height.
+- Forgetting `colliders={false}` on the `RigidBody` when you add your own `HeightfieldCollider` (auto-colliders would be added otherwise).
+
+### Quick checklist
+- Width/depth quads set correctly.
+- `heights.length === (widthQuads + 1) * (depthQuads + 1)`.
+- Row-major indexing used when generating heights.
+- `scale` chosen so total extents are correct.
+- Visual plane built with matching segments and rotated `-Math.PI / 2` around X.
+- `RigidBody` is `fixed` and `colliders={false}`; transforms match collider and mesh.
