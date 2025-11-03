@@ -45,6 +45,20 @@ export type NavMeshBuildCache = {
   baseCompactHeightfield?: ReturnType<typeof buildCompactHeightfield>;
   bounds?: ReturnType<typeof calculateMeshBounds>;
   heightfieldSize?: [number, number];
+  lastDynamicSignature?: string;
+  lastNavMesh?: NavMesh | null;
+};
+
+export type NavMeshGenerationStats = {
+  totalTime: number;
+  reusedStatic: boolean;
+  reusedNavMesh: boolean;
+  dynamicObstacleCount: number;
+};
+
+export type NavMeshGenerationResult = {
+  navMesh: NavMesh;
+  stats: NavMeshGenerationStats;
 };
 
 export type NavMeshGenOptions = Partial<SoloNavMeshOptions> & {
@@ -215,7 +229,7 @@ function convertRapierHeightfieldToTriangles(
 export function generateSoloNavMeshFromGeometry(
   extraction: RapierExtractionResult,
   options?: NavMeshGenOptions,
-): { navMesh: NavMesh } | null {
+): NavMeshGenerationResult | null {
   const preset = options?.preset ?? "default";
   const skipDetailMesh = options?.skipDetailMesh ?? (preset === "fast");
   const obstacleMargin = options?.obstacleMargin;
@@ -234,12 +248,7 @@ export function generateSoloNavMeshFromGeometry(
     return null;
   }
 
-  const staticSignature = [
-    extraction.staticColliderHandles.join(","),
-    extraction.geometry.positions.length,
-    extraction.geometry.indices.length,
-    extraction.heightfields.length,
-  ].join("|");
+  const staticSignature = extraction.staticSignature;
 
   const optionsSignature = [
     finalOpts.cellSize,
@@ -258,12 +267,57 @@ export function generateSoloNavMeshFromGeometry(
     cacheRef.staticSignature !== staticSignature ||
     cacheRef.optionsSignature !== optionsSignature;
 
+  const reusedStatic = !needsRebuild;
+
+  const dynamicSignature = extraction.dynamicObstacles
+    .map((obstacle) => {
+      const centerKey = obstacle.center.map((value) => value.toFixed(3)).join(",");
+      const halfKey = obstacle.halfExtents
+        .map((value) => value.toFixed(3))
+        .join(",");
+      return [
+        obstacle.handle,
+        centerKey,
+        halfKey,
+        obstacle.radius.toFixed(3),
+        obstacle.height.toFixed(3),
+      ].join(":");
+    })
+    .sort()
+    .join("|");
+
+  const canReuseNavMesh =
+    reusedStatic &&
+    !!cacheRef?.lastNavMesh &&
+    cacheRef.lastDynamicSignature === dynamicSignature;
+
   let baseCompact = cacheRef?.baseCompactHeightfield ?? null;
   let cachedBounds = cacheRef?.bounds ?? null;
   let heightfieldWidth = cacheRef?.heightfieldSize?.[0];
   let heightfieldHeight = cacheRef?.heightfieldSize?.[1];
 
   const generateStartTime = performance.now();
+
+  if (canReuseNavMesh) {
+    const totalTime = performance.now() - generateStartTime;
+    console.log(
+      `[Generate] ♻️ Reusing cached navmesh (static + dynamic unchanged): ${totalTime.toFixed(2)}ms`,
+    );
+
+    if (cacheRef) {
+      cacheRef.lastDynamicSignature = dynamicSignature;
+    }
+
+    return {
+      navMesh: cacheRef!.lastNavMesh!,
+      stats: {
+        totalTime,
+        reusedStatic,
+        reusedNavMesh: true,
+        dynamicObstacleCount: extraction.dynamicObstacles.length,
+      },
+    };
+  }
 
   let boundsTime = 0;
   let heightfieldTime = 0;
@@ -649,7 +703,19 @@ export function generateSoloNavMeshFromGeometry(
   console.log(`  📌 Add tile: ${tileTime.toFixed(2)}ms`);
   console.groupEnd();
 
-  return { navMesh };
+  if (cacheRef) {
+    cacheRef.lastNavMesh = navMesh;
+    cacheRef.lastDynamicSignature = dynamicSignature;
+  }
+
+  const stats: NavMeshGenerationStats = {
+    totalTime,
+    reusedStatic,
+    reusedNavMesh: false,
+    dynamicObstacleCount: extraction.dynamicObstacles.length,
+  };
+
+  return { navMesh, stats };
 }
 
 /**
@@ -665,7 +731,7 @@ export function generateSoloNavMeshFromRapier(
   world: Rapier.World,
   rapier: typeof Rapier,
   options?: NavMeshGenOptions,
-): { navMesh: NavMesh } | null {
+): NavMeshGenerationResult | null {
   const extraction = extractRapierToNavcat(world, rapier);
   if (!extraction) {
     return null;

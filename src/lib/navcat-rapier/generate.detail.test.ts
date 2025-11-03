@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach } from "vitest";
 import Rapier from "@dimforge/rapier3d-compat";
 import { extractRapierToNavcat } from "./extract";
-import { generateSoloNavMeshFromGeometry } from "./generate";
+import { generateSoloNavMeshFromGeometry, type NavMeshGenerationResult } from "./generate";
 
 describe("generateSoloNavMeshFromGeometry - detail mesh behavior", () => {
   let rapier: typeof Rapier;
@@ -39,10 +39,13 @@ describe("generateSoloNavMeshFromGeometry - detail mesh behavior", () => {
     const extraction = extractRapierToNavcat(w, rapier);
     expect(extraction).not.toBeNull();
 
-    const result = generateSoloNavMeshFromGeometry(extraction!, { skipDetailMesh: true });
+    const result: NavMeshGenerationResult | null = generateSoloNavMeshFromGeometry(extraction!, {
+      skipDetailMesh: true,
+    });
     expect(result).not.toBeNull();
     expect(result!.navMesh).toBeDefined();
     expect(Object.keys(result!.navMesh.tiles).length).toBeGreaterThan(0);
+    expect(result!.stats.reusedNavMesh).toBe(false);
 
     const tile = Object.values(result!.navMesh.tiles)[0] as any;
     // Detail arrays should be empty when skipped
@@ -59,7 +62,9 @@ describe("generateSoloNavMeshFromGeometry - detail mesh behavior", () => {
     const extraction = extractRapierToNavcat(w, rapier);
     expect(extraction).not.toBeNull();
 
-    const result = generateSoloNavMeshFromGeometry(extraction!, { preset: "default" });
+    const result: NavMeshGenerationResult | null = generateSoloNavMeshFromGeometry(extraction!, {
+      preset: "default",
+    });
     expect(result).not.toBeNull();
     expect(result!.navMesh).toBeDefined();
     expect(Object.keys(result!.navMesh.tiles).length).toBeGreaterThan(0);
@@ -92,7 +97,9 @@ describe("generateSoloNavMeshFromGeometry - detail mesh behavior", () => {
     const extraction = extractRapierToNavcat(w, rapier);
     expect(extraction).not.toBeNull();
 
-    const result = generateSoloNavMeshFromGeometry(extraction!, { preset: "crisp" });
+    const result: NavMeshGenerationResult | null = generateSoloNavMeshFromGeometry(extraction!, {
+      preset: "crisp",
+    });
     expect(result).not.toBeNull();
     expect(result!.navMesh).toBeDefined();
     expect(Object.keys(result!.navMesh.tiles).length).toBeGreaterThan(0);

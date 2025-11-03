@@ -1,12 +1,17 @@
 import { useRef, useEffect, useState, useCallback } from "react";
 import { useRapier, useAfterPhysicsStep } from "@react-three/rapier";
 import type { NavMesh } from "navcat";
-import { extractRapierToNavcat, type ExtractOptions } from "./extract";
+import {
+  extractRapierToNavcat,
+  type ExtractOptions,
+  type RapierExtractionCache,
+} from "./extract";
 import {
   generateSoloNavMeshFromGeometry,
   type NavMeshPreset,
   type NavMeshGenOptions,
   type NavMeshBuildCache,
+  type NavMeshGenerationResult,
 } from "./generate";
 import type { RapierExtractionResult } from "./extract";
 
@@ -49,6 +54,7 @@ export function useRapierNavMeshSync(options?: {
   const callbackInvokeCountRef = useRef(0);
   const lastLogTimeRef = useRef(0);
   const navMeshCacheRef = useRef<NavMeshBuildCache>({});
+  const extractionCacheRef = useRef<RapierExtractionCache>({});
 
   const updateNavMesh = useCallback((force = false) => {
     if (!world || !rapier || !enabled) {
@@ -93,7 +99,12 @@ export function useRapierNavMeshSync(options?: {
       const extractStartTime = performance.now();
       console.log("[NavMeshSync] Extracting from Rapier world...");
       // @ts-expect-error - Duplicate Rapier types from nested @dimforge/rapier3d-compat dependencies
-      const extraction = extractRapierToNavcat(world, rapier, options?.extractOptions);
+      const extractionOptions: ExtractOptions = {
+        ...options?.extractOptions,
+        cache: extractionCacheRef.current,
+      };
+
+      const extraction = extractRapierToNavcat(world, rapier, extractionOptions);
       const extractTime = performance.now() - extractStartTime;
       
       if (!extraction) {
@@ -125,7 +136,7 @@ export function useRapierNavMeshSync(options?: {
       const genOptions: NavMeshGenOptions = options?.navMeshOptions ?? {
         preset: options?.navMeshPreset ?? "default", // Default to full-quality navmesh
       };
-      const result = generateSoloNavMeshFromGeometry(extraction, {
+      const result: NavMeshGenerationResult | null = generateSoloNavMeshFromGeometry(extraction, {
         ...genOptions,
         cache: navMeshCacheRef.current,
       });
@@ -147,6 +158,14 @@ export function useRapierNavMeshSync(options?: {
         return;
       }
       console.log(`[NavMeshSync] Generation complete: ${generateTime.toFixed(2)}ms`);
+
+      if (extraction.usedStaticCache) {
+        console.log("[NavMeshSync] ♻️ Reused cached static extraction");
+      }
+
+      if (result.stats.reusedNavMesh) {
+        console.log("[NavMeshSync] ♻️ Reused cached navmesh (dynamic obstacles unchanged)");
+      }
 
       const buildTime = performance.now() - totalStartTime;
       console.log(`[NavMeshSync] ✅ Navmesh update complete! Total: ${buildTime.toFixed(2)}ms (Extract: ${extractTime.toFixed(2)}ms, Generate: ${generateTime.toFixed(2)}ms)`);

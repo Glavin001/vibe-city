@@ -5,6 +5,7 @@ import {
   generateSoloNavMeshFromGeometry,
   type NavMeshPreset,
   type NavMeshBuildCache,
+  type NavMeshGenerationResult,
 } from "./generate";
 import { extractRapierToNavcat } from "./extract";
 import {
@@ -57,10 +58,13 @@ describe("generateSoloNavMeshFromRapier", () => {
     const groundCollider = rapier.ColliderDesc.cuboid(10, 0.1, 10);
     w.createCollider(groundCollider, groundBody);
 
-    const result = generateSoloNavMeshFromRapier(w, rapier, { preset: "fast" });
+    const result: NavMeshGenerationResult | null = generateSoloNavMeshFromRapier(w, rapier, {
+      preset: "fast",
+    });
     expect(result).not.toBeNull();
     expect(result!.navMesh).toBeDefined();
     expect(Object.keys(result!.navMesh.tiles).length).toBeGreaterThan(0);
+    expect(result!.stats.reusedNavMesh).toBe(false);
   });
 
   it("should skip detail mesh for fast preset", () => {
@@ -73,10 +77,13 @@ describe("generateSoloNavMeshFromRapier", () => {
     const extraction = extractRapierToNavcat(w, rapier);
     expect(extraction).not.toBeNull();
 
-    const result = generateSoloNavMeshFromGeometry(extraction!, { preset: "fast" });
+    const result: NavMeshGenerationResult | null = generateSoloNavMeshFromGeometry(extraction!, {
+      preset: "fast",
+    });
     expect(result).not.toBeNull();
     expect(result!.navMesh).toBeDefined();
     expect(Object.keys(result!.navMesh.tiles).length).toBeGreaterThan(0);
+    expect(result!.stats.reusedNavMesh).toBe(false);
   });
 
   it("should handle detail mesh generation error gracefully", () => {
@@ -91,10 +98,13 @@ describe("generateSoloNavMeshFromRapier", () => {
     expect(extraction).not.toBeNull();
 
     // Use a preset that would normally generate detail mesh, but with few polys it should skip
-    const result = generateSoloNavMeshFromGeometry(extraction!, { preset: "default" });
+    const result: NavMeshGenerationResult | null = generateSoloNavMeshFromGeometry(extraction!, {
+      preset: "default",
+    });
     expect(result).not.toBeNull();
     expect(result!.navMesh).toBeDefined();
     expect(Object.keys(result!.navMesh.tiles).length).toBeGreaterThan(0);
+    expect(result!.stats.reusedNavMesh).toBe(false);
   });
 
   it("should generate navmesh with static obstacles and find paths around them", () => {
@@ -145,9 +155,14 @@ describe("generateSoloNavMeshFromRapier", () => {
       bridgeBody,
     );
 
-    const result = generateSoloNavMeshFromRapier(w, rapier, { preset: "fast" });
+    const cache: NavMeshBuildCache = {};
+    const result: NavMeshGenerationResult | null = generateSoloNavMeshFromRapier(w, rapier, {
+      preset: "fast",
+      cache,
+    });
     expect(result).not.toBeNull();
     expect(result!.navMesh).toBeDefined();
+    expect(result!.stats.reusedNavMesh).toBe(false);
 
     const navMesh = result!.navMesh;
     expect(navMesh.tileWidth).toBeGreaterThan(0);
@@ -332,13 +347,27 @@ describe("generateSoloNavMeshFromRapier", () => {
     expect(extractionInitial).not.toBeNull();
     expect(extractionInitial!.dynamicObstacles.length).toBeGreaterThan(0);
 
-    const initialResult = generateSoloNavMeshFromGeometry(extractionInitial!, {
-      preset: "default",
-      cache,
-    });
+    const initialResult: NavMeshGenerationResult | null = generateSoloNavMeshFromGeometry(
+      extractionInitial!,
+      {
+        preset: "default",
+        cache,
+      },
+    );
     expect(initialResult).not.toBeNull();
+    expect(initialResult!.stats.reusedNavMesh).toBe(false);
     expect(cache?.baseCompactHeightfield).toBeDefined();
     const initialObstacleCenter = extractionInitial!.dynamicObstacles[0].center[0];
+
+    const repeatResult: NavMeshGenerationResult | null = generateSoloNavMeshFromGeometry(
+      extractionInitial!,
+      {
+        preset: "default",
+        cache,
+      },
+    );
+    expect(repeatResult).not.toBeNull();
+    expect(repeatResult!.stats.reusedNavMesh).toBe(true);
 
     // Move bridge far away
     bridgeBody.setTranslation({ x: 8, y: 0.5, z: 0 }, true);
@@ -348,12 +377,52 @@ describe("generateSoloNavMeshFromRapier", () => {
     expect(extractionUpdated!.dynamicObstacles.length).toBeGreaterThan(0);
     expect(extractionUpdated!.dynamicObstacles[0].center[0]).not.toBe(initialObstacleCenter);
 
-    const updatedResult = generateSoloNavMeshFromGeometry(extractionUpdated!, {
-      preset: "default",
+    const updatedResult: NavMeshGenerationResult | null = generateSoloNavMeshFromGeometry(
+      extractionUpdated!,
+      {
+        preset: "default",
+        cache,
+      },
+    );
+    expect(updatedResult).not.toBeNull();
+    expect(updatedResult!.stats.reusedNavMesh).toBe(false);
+    expect(cache?.baseCompactHeightfield).toBeDefined();
+  });
+
+  it("reuses navmesh output when nothing changes between generations", () => {
+    const w = getWorld();
+
+    const groundBody = w.createRigidBody(rapier.RigidBodyDesc.fixed());
+    w.createCollider(rapier.ColliderDesc.cuboid(10, 0.1, 10), groundBody);
+
+    const moverBody = w.createRigidBody(rapier.RigidBodyDesc.kinematicPositionBased());
+    w.createCollider(rapier.ColliderDesc.cuboid(1, 0.5, 1), moverBody);
+    moverBody.setTranslation({ x: 0, y: 0.5, z: 0 }, true);
+
+    const cache: NavMeshBuildCache = {};
+
+    const initial: NavMeshGenerationResult | null = generateSoloNavMeshFromRapier(w, rapier, {
+      preset: "fast",
       cache,
     });
-    expect(updatedResult).not.toBeNull();
-    expect(cache?.baseCompactHeightfield).toBeDefined();
+    expect(initial).not.toBeNull();
+    expect(initial!.stats.reusedNavMesh).toBe(false);
+
+    const repeat: NavMeshGenerationResult | null = generateSoloNavMeshFromRapier(w, rapier, {
+      preset: "fast",
+      cache,
+    });
+    expect(repeat).not.toBeNull();
+    expect(repeat!.stats.reusedNavMesh).toBe(true);
+
+    moverBody.setTranslation({ x: 3, y: 0.5, z: 0 }, true);
+
+    const afterMove: NavMeshGenerationResult | null = generateSoloNavMeshFromRapier(w, rapier, {
+      preset: "fast",
+      cache,
+    });
+    expect(afterMove).not.toBeNull();
+    expect(afterMove!.stats.reusedNavMesh).toBe(false);
   });
 });
 

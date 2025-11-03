@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach } from "vitest";
 import Rapier from "@dimforge/rapier3d-compat";
-import { extractRapierToNavcat } from "./extract";
+import { extractRapierToNavcat, type RapierExtractionCache } from "./extract";
 import {
   generateSoloNavMesh,
   type SoloNavMeshInput,
@@ -56,6 +56,8 @@ describe("extractRapierToNavcat", () => {
     expect(result!.heightfields.length).toBe(0);
     expect(result!.staticColliderHandles.length).toBe(1);
     expect(result!.dynamicObstacles.length).toBe(0);
+    expect(result!.staticSignature.length).toBeGreaterThan(0);
+    expect(result!.usedStaticCache).toBe(false);
   });
 
   it("should create triangles with upward-pointing normals for horizontal cuboids", () => {
@@ -417,6 +419,27 @@ describe("extractRapierToNavcat", () => {
     // Both should be triangulated as walkable surfaces
     expect(result!.geometry.positions.length).toBeGreaterThan(0);
     expect(result!.heightfields.length).toBe(0);
+  });
+
+  it("reuses cached static geometry when colliders are unchanged", () => {
+    const w = getWorld();
+
+    const groundBody = w.createRigidBody(rapier.RigidBodyDesc.fixed());
+    w.createCollider(rapier.ColliderDesc.cuboid(5, 0.1, 5), groundBody);
+
+    const cache: RapierExtractionCache = {};
+
+    const first = extractRapierToNavcat(w, rapier, { cache });
+    expect(first).not.toBeNull();
+    expect(first!.usedStaticCache).toBe(false);
+    expect(cache.staticSignature).toBe(first!.staticSignature);
+
+    const second = extractRapierToNavcat(w, rapier, { cache });
+    expect(second).not.toBeNull();
+    expect(second!.usedStaticCache).toBe(true);
+    expect(second!.geometry.positions).toBe(first!.geometry.positions);
+    expect(second!.geometry.indices).toBe(first!.geometry.indices);
+    expect(second!.staticSignature).toBe(first!.staticSignature);
   });
 
   it("should return null when no walkable surfaces exist", () => {
