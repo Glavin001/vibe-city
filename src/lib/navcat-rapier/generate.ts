@@ -24,6 +24,8 @@ import {
   polyMeshDetailToTileDetailMesh,
   buildTile,
   addTile,
+  markCylinderArea,
+  NULL_AREA,
   WALKABLE_AREA,
 } from "navcat";
 import { box3, vec2 } from "mathcat";
@@ -37,9 +39,19 @@ import type Rapier from "@dimforge/rapier3d-compat";
  */
 export type NavMeshPreset = "default" | "crisp" | "crispStrict" | "fast";
 
+export type NavMeshBuildCache = {
+  staticSignature?: string;
+  optionsSignature?: string;
+  baseCompactHeightfield?: ReturnType<typeof buildCompactHeightfield>;
+  bounds?: ReturnType<typeof calculateMeshBounds>;
+  heightfieldSize?: [number, number];
+};
+
 export type NavMeshGenOptions = Partial<SoloNavMeshOptions> & {
   preset?: NavMeshPreset;
   skipDetailMesh?: boolean; // Skip detail mesh generation for faster builds
+  cache?: NavMeshBuildCache;
+  obstacleMargin?: number; // Extra padding when stamping dynamic obstacles
 };
 
 /**
@@ -205,214 +217,258 @@ export function generateSoloNavMeshFromGeometry(
   options?: NavMeshGenOptions,
 ): { navMesh: NavMesh } | null {
   const preset = options?.preset ?? "default";
-  const skipDetailMesh = options?.skipDetailMesh ?? (preset === "fast"); // Auto-skip for fast preset
+  const skipDetailMesh = options?.skipDetailMesh ?? (preset === "fast");
+  const obstacleMargin = options?.obstacleMargin;
   const opts = { ...defaultSoloNavMeshOptions(preset), ...options };
-  // Remove custom options before passing to Navcat
-  const { preset: _, skipDetailMesh: __, ...navcatOptions } = opts as SoloNavMeshOptions & NavMeshGenOptions;
+  const { preset: _, skipDetailMesh: __, cache, obstacleMargin: ___, ...navcatOptions } =
+    opts as SoloNavMeshOptions & NavMeshGenOptions;
   const finalOpts = navcatOptions as SoloNavMeshOptions;
+  const cacheRef = cache ?? options?.cache ?? undefined;
 
-  const hasGeometry =
+  const hasStaticGeometry =
     extraction.geometry.positions.length > 0 &&
     extraction.geometry.indices.length > 0;
   const hasHeightfields = extraction.heightfields.length > 0;
 
-  if (!hasGeometry && !hasHeightfields) {
+  if (!hasStaticGeometry && !hasHeightfields && extraction.dynamicObstacles.length === 0) {
     return null;
   }
 
-  const generateStartTime = performance.now();
-  console.log("[Generate] Starting navmesh generation...");
+  const staticSignature = [
+    extraction.staticColliderHandles.join(","),
+    extraction.geometry.positions.length,
+    extraction.geometry.indices.length,
+    extraction.heightfields.length,
+  ].join("|");
 
-  // Initialize timing variables (will be set in conditional blocks)
+  const optionsSignature = [
+    finalOpts.cellSize,
+    finalOpts.cellHeight,
+    finalOpts.walkableSlopeAngleDegrees,
+    finalOpts.walkableClimbVoxels,
+    finalOpts.walkableHeightVoxels,
+    finalOpts.walkableRadiusVoxels,
+    skipDetailMesh ? 1 : 0,
+  ].join("|");
+
+  const needsRebuild =
+    !cacheRef?.baseCompactHeightfield ||
+    !cacheRef.bounds ||
+    !cacheRef.heightfieldSize ||
+    cacheRef.staticSignature !== staticSignature ||
+    cacheRef.optionsSignature !== optionsSignature;
+
+  let baseCompact = cacheRef?.baseCompactHeightfield ?? null;
+  let cachedBounds = cacheRef?.bounds ?? null;
+  let heightfieldWidth = cacheRef?.heightfieldSize?.[0];
+  let heightfieldHeight = cacheRef?.heightfieldSize?.[1];
+
+  const generateStartTime = performance.now();
+
+  let boundsTime = 0;
+  let heightfieldTime = 0;
   let markTriTime = 0;
   let rasterTriTime = 0;
   let rasterHfTime = 0;
+  let filterTime = 0;
+  let compactBuildTime = 0;
+  let erodeTime = 0;
+  let distanceTime = 0;
 
-  const ctx: BuildContextState = BuildContext.create();
-  BuildContext.start(ctx, "navmesh generation");
+  if (needsRebuild) {
+    const staticCtx: BuildContextState = BuildContext.create();
+    BuildContext.start(staticCtx, "static navmesh bake");
 
-  // Calculate combined bounds from geometry and heightfields
-  const boundsStartTime = performance.now();
-  let bounds = box3.create();
-  if (hasGeometry) {
-    bounds = calculateMeshBounds(
-      bounds,
-      extraction.geometry.positions,
-      extraction.geometry.indices,
-    );
-  }
-  if (hasHeightfields) {
-    for (const hf of extraction.heightfields) {
-      const hfBounds = hf.bounds;
-      box3.expandByPoint(bounds, bounds, hfBounds[0]);
-      box3.expandByPoint(bounds, bounds, hfBounds[1]);
+    const boundsStartTime = performance.now();
+    let bounds = box3.create();
+    if (hasStaticGeometry) {
+      bounds = calculateMeshBounds(
+        bounds,
+        extraction.geometry.positions,
+        extraction.geometry.indices,
+      );
     }
-  }
-  const boundsTime = performance.now() - boundsStartTime;
-  console.log(`[Generate] Calculated bounds: ${boundsTime.toFixed(2)}ms`);
+    if (hasHeightfields) {
+      for (const hf of extraction.heightfields) {
+        const hfBounds = hf.bounds;
+        box3.expandByPoint(bounds, bounds, hfBounds[0]);
+        box3.expandByPoint(bounds, bounds, hfBounds[1]);
+      }
+    }
+    boundsTime = performance.now() - boundsStartTime;
 
-  // Create heightfield
-  const heightfieldStartTime = performance.now();
-  const [heightfieldWidth, heightfieldHeight] = calculateGridSize(
-    vec2.create(),
-    bounds,
-    finalOpts.cellSize,
-  );
-  const heightfield = createHeightfield(
-    heightfieldWidth,
-    heightfieldHeight,
-    bounds,
-    finalOpts.cellSize,
-    finalOpts.cellHeight,
-  );
-  const heightfieldTime = performance.now() - heightfieldStartTime;
-  console.log(`[Generate] Created heightfield (${heightfieldWidth}x${heightfieldHeight}): ${heightfieldTime.toFixed(2)}ms`);
-
-  // Rasterize triangle geometry
-  if (hasGeometry) {
-    const markTriStartTime = performance.now();
-    BuildContext.start(ctx, "mark walkable triangles");
-    const triAreaIds = new Uint8Array(
-      extraction.geometry.indices.length / 3,
-    ).fill(0);
-    markWalkableTriangles(
-      extraction.geometry.positions,
-      extraction.geometry.indices,
-      triAreaIds,
-      finalOpts.walkableSlopeAngleDegrees,
+    const heightfieldStartTime = performance.now();
+    const [hfWidth, hfHeight] = calculateGridSize(vec2.create(), bounds, finalOpts.cellSize);
+    heightfieldWidth = hfWidth;
+    heightfieldHeight = hfHeight;
+    const heightfield = createHeightfield(
+      hfWidth,
+      hfHeight,
+      bounds,
+      finalOpts.cellSize,
+      finalOpts.cellHeight,
     );
-    BuildContext.end(ctx, "mark walkable triangles");
-    markTriTime = performance.now() - markTriStartTime;
-    console.log(`[Generate] Marked walkable triangles: ${markTriTime.toFixed(2)}ms`);
+    heightfieldTime = performance.now() - heightfieldStartTime;
 
-    const rasterTriStartTime = performance.now();
-    BuildContext.start(ctx, "rasterize triangles");
+    if (hasStaticGeometry) {
+      const markTriStartTime = performance.now();
+      BuildContext.start(staticCtx, "mark walkable triangles");
+      const triAreaIds = new Uint8Array(
+        extraction.geometry.indices.length / 3,
+      ).fill(0);
+      markWalkableTriangles(
+        extraction.geometry.positions,
+        extraction.geometry.indices,
+        triAreaIds,
+        finalOpts.walkableSlopeAngleDegrees,
+      );
+      BuildContext.end(staticCtx, "mark walkable triangles");
+      markTriTime = performance.now() - markTriStartTime;
+
+      const rasterTriStartTime = performance.now();
+      BuildContext.start(staticCtx, "rasterize triangles");
       rasterizeTriangles(
-        ctx,
+        staticCtx,
         heightfield,
         extraction.geometry.positions,
         extraction.geometry.indices,
         triAreaIds,
         finalOpts.walkableClimbVoxels,
       );
-    BuildContext.end(ctx, "rasterize triangles");
-    rasterTriTime = performance.now() - rasterTriStartTime;
-    console.log(`[Generate] Rasterized triangles: ${rasterTriTime.toFixed(2)}ms`);
-  }
-
-  // Rasterize Rapier heightfields as triangles (using Navcat's battle-tested rasterization)
-  if (hasHeightfields) {
-    const rasterHfStartTime = performance.now();
-    BuildContext.start(ctx, "rasterize heightfields");
-    for (const rapierHf of extraction.heightfields) {
-      // Convert heightfield quads to triangles
-      const { positions, indices } = convertRapierHeightfieldToTriangles(rapierHf);
-
-      // Mark all triangles as walkable (heightfields are typically ground terrain)
-      const triAreaIds = new Uint8Array(indices.length / 3).fill(WALKABLE_AREA);
-
-      // Use Navcat's rasterizeTriangles for accurate triangle clipping and span generation
-      rasterizeTriangles(
-        ctx,
-        heightfield,
-        positions,
-        indices,
-        triAreaIds,
-        finalOpts.walkableClimbVoxels,
-      );
+      BuildContext.end(staticCtx, "rasterize triangles");
+      rasterTriTime = performance.now() - rasterTriStartTime;
     }
-    BuildContext.end(ctx, "rasterize heightfields");
-    rasterHfTime = performance.now() - rasterHfStartTime;
-    console.log(`[Generate] Rasterized ${extraction.heightfields.length} heightfields: ${rasterHfTime.toFixed(2)}ms`);
+
+    if (hasHeightfields) {
+      const rasterHfStartTime = performance.now();
+      BuildContext.start(staticCtx, "rasterize heightfields");
+      for (const rapierHf of extraction.heightfields) {
+        const { positions, indices } = convertRapierHeightfieldToTriangles(rapierHf);
+        const triAreaIds = new Uint8Array(indices.length / 3).fill(WALKABLE_AREA);
+        rasterizeTriangles(
+          staticCtx,
+          heightfield,
+          positions,
+          indices,
+          triAreaIds,
+          finalOpts.walkableClimbVoxels,
+        );
+      }
+      BuildContext.end(staticCtx, "rasterize heightfields");
+      rasterHfTime = performance.now() - rasterHfStartTime;
+    }
+
+    const filterStartTime = performance.now();
+    BuildContext.start(staticCtx, "filter walkable surfaces");
+    filterLowHangingWalkableObstacles(heightfield, finalOpts.walkableClimbVoxels);
+    filterLedgeSpans(heightfield, finalOpts.walkableHeightVoxels, finalOpts.walkableClimbVoxels);
+    filterWalkableLowHeightSpans(heightfield, finalOpts.walkableHeightVoxels);
+    BuildContext.end(staticCtx, "filter walkable surfaces");
+    filterTime = performance.now() - filterStartTime;
+
+    const compactStartTime = performance.now();
+    BuildContext.start(staticCtx, "build compact heightfield");
+    const compactHeightfield = buildCompactHeightfield(
+      staticCtx,
+      finalOpts.walkableHeightVoxels,
+      finalOpts.walkableClimbVoxels,
+      heightfield,
+    );
+    compactBuildTime = performance.now() - compactStartTime;
+
+    const erodeStartTime = performance.now();
+    if (preset !== "crispStrict") {
+      erodeWalkableArea(finalOpts.walkableRadiusVoxels, compactHeightfield);
+    }
+    erodeTime = performance.now() - erodeStartTime;
+
+    const distanceStartTime = performance.now();
+    buildDistanceField(compactHeightfield);
+    distanceTime = performance.now() - distanceStartTime;
+
+    BuildContext.end(staticCtx, "build compact heightfield");
+    BuildContext.end(staticCtx, "static navmesh bake");
+
+    baseCompact = compactHeightfield;
+    cachedBounds = bounds;
+
+    if (cacheRef) {
+      cacheRef.staticSignature = staticSignature;
+      cacheRef.optionsSignature = optionsSignature;
+      cacheRef.baseCompactHeightfield = structuredClone(compactHeightfield);
+      cacheRef.bounds = structuredClone(bounds);
+      cacheRef.heightfieldSize = [hfWidth, hfHeight];
+    }
   }
 
-  // Filter walkable surfaces
-  const filterStartTime = performance.now();
-  BuildContext.start(ctx, "filter walkable surfaces");
-  filterLowHangingWalkableObstacles(heightfield, finalOpts.walkableClimbVoxels);
-  filterLedgeSpans(
-    heightfield,
-    finalOpts.walkableHeightVoxels,
-    finalOpts.walkableClimbVoxels,
-  );
-  filterWalkableLowHeightSpans(heightfield, finalOpts.walkableHeightVoxels);
-  BuildContext.end(ctx, "filter walkable surfaces");
-  const filterTime = performance.now() - filterStartTime;
-  console.log(`[Generate] Filtered walkable surfaces: ${filterTime.toFixed(2)}ms`);
-
-  // Build compact heightfield
-  const compactStartTime = performance.now();
-  BuildContext.start(ctx, "build compact heightfield");
-  const compactHeightfield = buildCompactHeightfield(
-    ctx,
-    finalOpts.walkableHeightVoxels,
-    finalOpts.walkableClimbVoxels,
-    heightfield,
-  );
-  const compactBuildTime = performance.now() - compactStartTime;
-  console.log(`[Generate] Built compact heightfield: ${compactBuildTime.toFixed(2)}ms`);
-
-  const erodeStartTime = performance.now();
-  // For crispStrict preset, skip erosion for pixel-perfect edges
-  if (preset !== "crispStrict") {
-    erodeWalkableArea(finalOpts.walkableRadiusVoxels, compactHeightfield);
-  }
-  const erodeTime = performance.now() - erodeStartTime;
-  if (preset === "crispStrict") {
-    console.log(`[Generate] Skipped erosion (crispStrict preset)`);
-  } else {
-    console.log(`[Generate] Eroded walkable area: ${erodeTime.toFixed(2)}ms`);
+  if (!baseCompact || !cachedBounds || heightfieldWidth === undefined || heightfieldHeight === undefined) {
+    return null;
   }
 
-  const distanceStartTime = performance.now();
-  buildDistanceField(compactHeightfield);
-  const distanceTime = performance.now() - distanceStartTime;
-  console.log(`[Generate] Built distance field: ${distanceTime.toFixed(2)}ms`);
-  
-  BuildContext.end(ctx, "build compact heightfield");
-  const compactTotalTime = performance.now() - compactStartTime;
-  console.log(`[Generate] Compact heightfield total: ${compactTotalTime.toFixed(2)}ms`);
+  const ctx: BuildContextState = BuildContext.create();
+  BuildContext.start(ctx, "navmesh generation");
 
-  // Build regions
+  const workingCompact = structuredClone(cacheRef?.baseCompactHeightfield ?? baseCompact);
+
+  if (extraction.dynamicObstacles.length > 0) {
+    const padding = obstacleMargin ?? finalOpts.cellSize * 0.5;
+    for (const obstacle of extraction.dynamicObstacles) {
+      if (obstacle.radius <= 0) {
+        continue;
+      }
+      const bottom: Vec3 = [
+        obstacle.center[0],
+        obstacle.center[1] - obstacle.height / 2,
+        obstacle.center[2],
+      ];
+
+      const radius = obstacle.radius + padding;
+      const height = obstacle.height + padding;
+
+      // Quick bounds check
+      if (
+        bottom[0] + radius < cachedBounds[0][0] ||
+        bottom[0] - radius > cachedBounds[1][0] ||
+        bottom[2] + radius < cachedBounds[0][2] ||
+        bottom[2] - radius > cachedBounds[1][2]
+      ) {
+        continue;
+      }
+
+      markCylinderArea(bottom, radius, height, NULL_AREA, workingCompact);
+    }
+  }
+
   const regionsStartTime = performance.now();
   BuildContext.start(ctx, "build regions");
   buildRegions(
     ctx,
-    compactHeightfield,
+    workingCompact,
     finalOpts.borderSize,
     finalOpts.minRegionArea,
     finalOpts.mergeRegionArea,
   );
   BuildContext.end(ctx, "build regions");
   const regionsTime = performance.now() - regionsStartTime;
-  console.log(`[Generate] Built regions: ${regionsTime.toFixed(2)}ms`);
 
-  // Build contours
   const contoursStartTime = performance.now();
   BuildContext.start(ctx, "build contours");
   const contourSet = buildContours(
     ctx,
-    compactHeightfield,
+    workingCompact,
     finalOpts.maxSimplificationError,
     finalOpts.maxEdgeLength,
     ContourBuildFlags.CONTOUR_TESS_WALL_EDGES,
   );
   BuildContext.end(ctx, "build contours");
   const contoursTime = performance.now() - contoursStartTime;
-  console.log(`[Generate] Built contours: ${contoursTime.toFixed(2)}ms`);
 
-  // Build poly mesh
   const polyMeshStartTime = performance.now();
   BuildContext.start(ctx, "build poly mesh");
   const polyMesh = buildPolyMesh(ctx, contourSet, finalOpts.maxVerticesPerPoly);
   BuildContext.end(ctx, "build poly mesh");
   const polyMeshTime = performance.now() - polyMeshStartTime;
-  console.log(`[Generate] Built poly mesh (${polyMesh.nPolys} polys): ${polyMeshTime.toFixed(2)}ms`);
 
-  // Build poly mesh detail (can be skipped for faster generation)
-  // When detailSampleDistance is 0, Navcat skips detail generation but still returns a valid structure
-  // Also skip automatically if we have very few polygons (< 20) AND we're in fast mode (fast preset auto-skips detail)
-  // For other presets, try to build detail even for small meshes (may fail, but that's handled)
   const shouldSkipDetail = skipDetailMesh || (polyMesh.nPolys < 20 && preset === "fast");
   const detailSampleDistance = shouldSkipDetail ? 0 : finalOpts.detailSampleDistance;
   const detailStartTime = performance.now();
@@ -439,7 +495,7 @@ export function generateSoloNavMeshFromGeometry(
       polyMeshDetail = buildPolyMeshDetail(
         ctx,
         polyMesh,
-        compactHeightfield,
+        workingCompact,
         detailSampleDistance,
         finalOpts.detailSampleMaxError,
       );
@@ -456,7 +512,7 @@ export function generateSoloNavMeshFromGeometry(
         polyMeshDetail = buildPolyMeshDetail(
           ctx,
           polyMesh,
-          compactHeightfield,
+          workingCompact,
           0,
           finalOpts.detailSampleMaxError,
         );
@@ -483,9 +539,7 @@ export function generateSoloNavMeshFromGeometry(
   }
   BuildContext.end(ctx, "build poly mesh detail");
 
-  // Create navmesh
   const navMesh = createNavMesh();
-  // Use polyMesh.bounds (same as generateSoloNavMesh does)
   const origin: Vec3 = [
     polyMesh.bounds[0][0],
     polyMesh.bounds[0][1],
@@ -503,10 +557,10 @@ export function generateSoloNavMeshFromGeometry(
     let meshIndex = 0;
     for (const poly of tilePolys.polys) {
       const nPolyVertices = poly.vertices.length;
-      meshes[meshIndex++] = 0; // verticesBase
-      meshes[meshIndex++] = nPolyVertices; // total detail verts (equal to nav poly verts)
-      meshes[meshIndex++] = 0; // trianglesBase
-      meshes[meshIndex++] = 0; // trianglesCount
+      meshes[meshIndex++] = 0;
+      meshes[meshIndex++] = nPolyVertices;
+      meshes[meshIndex++] = 0;
+      meshes[meshIndex++] = 0;
     }
 
     polyMeshDetail = {
@@ -518,32 +572,26 @@ export function generateSoloNavMeshFromGeometry(
       nTriangles: 0,
     } as unknown as ReturnType<typeof buildPolyMeshDetail>;
   }
-  
-  // Fix: Set flags to non-zero so DEFAULT_QUERY_FILTER accepts them
-  // DEFAULT_QUERY_FILTER requires (flags & includeFlags) !== 0
-  // Since includeFlags is 0xffffffff, we need flags to have at least one bit set
-  // Set flags to 1 (or any non-zero value) for all polygons
+
   for (const poly of tilePolys.polys) {
     if (poly.flags === 0) {
-      poly.flags = 1; // Set to non-zero so filter accepts it
+      poly.flags = 1;
     }
   }
-  
-  // Convert detail mesh - handle cases where detail mesh structure might be invalid
+
   let tileDetailMesh: ReturnType<typeof polyMeshDetailToTileDetailMesh>;
   try {
     tileDetailMesh = polyMeshDetailToTileDetailMesh(tilePolys.polys, polyMeshDetail);
   } catch (error) {
-    // If conversion fails (e.g., invalid detail mesh structure), provide empty arrays
     console.warn(`[Generate] ⚠️ Detail mesh conversion failed, using empty arrays: ${error instanceof Error ? error.message : String(error)}`);
-    tileDetailMesh = { 
-      detailMeshes: [], 
-      detailVertices: [] as number[], 
-      detailTriangles: [] as number[] 
+    tileDetailMesh = {
+      detailMeshes: [],
+      detailVertices: [] as number[],
+      detailTriangles: [] as number[],
     } as ReturnType<typeof polyMeshDetailToTileDetailMesh>;
   }
 
-  const tile = buildTile({
+  const tileParams = {
     bounds: polyMesh.bounds,
     vertices: tilePolys.vertices,
     polys: tilePolys.polys,
@@ -558,61 +606,48 @@ export function generateSoloNavMeshFromGeometry(
     walkableHeight: finalOpts.walkableHeightWorld,
     walkableRadius: finalOpts.walkableRadiusWorld,
     walkableClimb: finalOpts.walkableClimbWorld,
-  });
+  } as Parameters<typeof buildTile>[0];
+
   const tileStartTime = performance.now();
-  addTile(navMesh, tile);
+  addTile(navMesh, buildTile(tileParams));
   const tileTime = performance.now() - tileStartTime;
-  console.log(`[Generate] Added tile: ${tileTime.toFixed(2)}ms`);
 
   BuildContext.end(ctx, "navmesh generation");
 
   const totalTime = performance.now() - generateStartTime;
-  
-  // Log detailed breakdown - this is the most important log
   console.group(`[Generate] ✅ Navmesh generation complete! Total: ${totalTime.toFixed(2)}ms`);
-  console.log(`  📐 Bounds calculation: ${boundsTime.toFixed(2)}ms`);
-  console.log(`  📊 Heightfield creation (${heightfieldWidth}x${heightfieldHeight}): ${heightfieldTime.toFixed(2)}ms`);
-  if (hasGeometry && markTriTime > 0) {
-    console.log(`  ✓ Mark walkable triangles: ${markTriTime.toFixed(2)}ms`);
-    console.log(`  ✓ Rasterize triangles: ${rasterTriTime.toFixed(2)}ms`);
+  if (needsRebuild) {
+    console.log(`  📐 Bounds calculation: ${boundsTime.toFixed(2)}ms`);
+    console.log(`  📊 Heightfield creation (${heightfieldWidth}x${heightfieldHeight}): ${heightfieldTime.toFixed(2)}ms`);
+    if (hasStaticGeometry) {
+      console.log(`  ✓ Mark walkable triangles: ${markTriTime.toFixed(2)}ms`);
+      console.log(`  ✓ Rasterize triangles: ${rasterTriTime.toFixed(2)}ms`);
+    }
+    if (hasHeightfields) {
+      console.log(`  ✓ Rasterize ${extraction.heightfields.length} heightfields: ${rasterHfTime.toFixed(2)}ms`);
+    }
+    console.log(`  🔍 Filter walkable surfaces: ${filterTime.toFixed(2)}ms`);
+    console.log(`  📦 Compact heightfield build: ${compactBuildTime.toFixed(2)}ms`);
+    if (preset === "crispStrict") {
+      console.log(`  ⚡ Erode walkable area: skipped`);
+    } else {
+      console.log(`  ⚡ Erode walkable area: ${erodeTime.toFixed(2)}ms`);
+    }
+    console.log(`  📏 Distance field: ${distanceTime.toFixed(2)}ms`);
+  } else {
+    console.log(`  ♻️ Reused static compact heightfield from cache`);
   }
-  if (hasHeightfields && rasterHfTime > 0) {
-    console.log(`  ✓ Rasterize ${extraction.heightfields.length} heightfields: ${rasterHfTime.toFixed(2)}ms`);
-  }
-  console.log(`  🔍 Filter walkable surfaces: ${filterTime.toFixed(2)}ms`);
-  console.log(`  📦 Compact heightfield build: ${compactBuildTime.toFixed(2)}ms`);
-  console.log(`  ⚡ Erode walkable area: ${erodeTime.toFixed(2)}ms ${preset === "crispStrict" ? "(skipped)" : ""}`);
-  console.log(`  📏 Distance field: ${distanceTime.toFixed(2)}ms`);
   console.log(`  🗺️ Build regions: ${regionsTime.toFixed(2)}ms`);
   console.log(`  🔷 Build contours: ${contoursTime.toFixed(2)}ms`);
   console.log(`  🔺 Build poly mesh (${polyMesh.nPolys} polys): ${polyMeshTime.toFixed(2)}ms`);
   if (shouldSkipDetail || !detailBuiltSuccessfully) {
     const reason = shouldSkipDetail ? (skipDetailMesh ? "preset" : `few polys (${polyMesh.nPolys})`) : "error";
-    console.log(`  ⏭️ Skipped detail mesh (${reason}): ${detailTime.toFixed(2)}ms`);
+    console.log(`  ⏭️ Detail mesh: skipped (${reason})`);
   } else {
     console.log(`  ✨ Build poly mesh detail: ${detailTime.toFixed(2)}ms`);
   }
   console.log(`  📌 Add tile: ${tileTime.toFixed(2)}ms`);
-  console.log(`  ────────────────────────────────────`);
-  console.log(`  📦 Compact total: ${compactTotalTime.toFixed(2)}ms`);
   console.groupEnd();
-  
-  // Also log the breakdown as a single line for easy copying
-  const breakdownParts = [
-    `preset(${preset}${(shouldSkipDetail || !detailBuiltSuccessfully) ? ",no-detail" : ""})`,
-    `bounds(${boundsTime.toFixed(2)}ms)`,
-    `heightfield(${heightfieldTime.toFixed(2)}ms)`,
-    ...(hasGeometry && markTriTime > 0 ? [`markTri(${markTriTime.toFixed(2)}ms)`, `rasterTri(${rasterTriTime.toFixed(2)}ms)`] : []),
-    ...(hasHeightfields && rasterHfTime > 0 ? [`rasterHf(${rasterHfTime.toFixed(2)}ms)`] : []),
-    `filter(${filterTime.toFixed(2)}ms)`,
-    `compact(${compactTotalTime.toFixed(2)}ms)`,
-    `regions(${regionsTime.toFixed(2)}ms)`,
-    `contours(${contoursTime.toFixed(2)}ms)`,
-    `polyMesh(${polyMeshTime.toFixed(2)}ms)`,
-    (shouldSkipDetail || !detailBuiltSuccessfully) ? `detail(skipped)` : `detail(${detailTime.toFixed(2)}ms)`,
-    `tile(${tileTime.toFixed(2)}ms)`,
-  ];
-  console.log(`[Generate] Breakdown: ${breakdownParts.join(" + ")}`);
 
   return { navMesh };
 }

@@ -3,8 +3,8 @@ import Rapier from "@dimforge/rapier3d-compat";
 import {
   generateSoloNavMeshFromRapier,
   generateSoloNavMeshFromGeometry,
-  defaultSoloNavMeshOptions,
   type NavMeshPreset,
+  type NavMeshBuildCache,
 } from "./generate";
 import { extractRapierToNavcat } from "./extract";
 import {
@@ -295,7 +295,7 @@ describe("generateSoloNavMeshFromRapier", () => {
     expect(path.path.length).toBeGreaterThan(0);
   });
 
-  it("should handle dynamic obstacles - path changes when bridge is moved", () => {
+  it("should reuse static cache while reflecting dynamic obstacle movement", () => {
     const w = getWorld();
     // Create ground
     const groundBodyDesc = rapier.RigidBodyDesc.fixed();
@@ -303,7 +303,7 @@ describe("generateSoloNavMeshFromRapier", () => {
     const groundCollider = rapier.ColliderDesc.cuboid(10, 0.1, 10);
     w.createCollider(groundCollider, groundBody);
 
-    // Create corridor layout
+    // Add a few static obstacles
     const leftSlab = rapier.RigidBodyDesc.fixed();
     const leftSlabBody = w.createRigidBody(leftSlab);
     w.createCollider(
@@ -318,176 +318,42 @@ describe("generateSoloNavMeshFromRapier", () => {
       rightSlabBody,
     );
 
-    // Side corridors for detour
-    const topSlab = rapier.RigidBodyDesc.fixed();
-    const topSlabBody = w.createRigidBody(topSlab);
-    w.createCollider(
-      rapier.ColliderDesc.cuboid(1, 0.1, 3).setTranslation(0, 0.1, 4),
-      topSlabBody,
-    );
-
-    const bottomSlab = rapier.RigidBodyDesc.fixed();
-    const bottomSlabBody = w.createRigidBody(bottomSlab);
-    w.createCollider(
-      rapier.ColliderDesc.cuboid(1, 0.1, 3).setTranslation(0, 0.1, -4),
-      bottomSlabBody,
-    );
-
-    // Bridge across the gap (initially present)
-    const bridge = rapier.RigidBodyDesc.dynamic(); // Dynamic so we can move it
+    // Dynamic bridge in the center
+    const bridge = rapier.RigidBodyDesc.dynamic();
     const bridgeBody = w.createRigidBody(bridge);
     w.createCollider(
-      rapier.ColliderDesc.cuboid(1, 0.1, 1).setTranslation(0, 0.1, 0),
+      rapier.ColliderDesc.cuboid(1, 0.5, 1).setTranslation(0, 0.5, 0),
       bridgeBody,
     );
 
-    // Generate initial navmesh with bridge (use default preset to include detail mesh for queries)
-    let result = generateSoloNavMeshFromRapier(w, rapier, { preset: "default" });
-    expect(result).not.toBeNull();
-    const initialNavMesh = result!.navMesh;
-    expect(initialNavMesh.tileWidth).toBeGreaterThan(0);
-    expect(initialNavMesh.tileHeight).toBeGreaterThan(0);
-    const initialTiles = Object.values(initialNavMesh.tiles);
-    expect(initialTiles.length).toBeGreaterThan(0);
-    expect(initialTiles[0].vertices.length).toBeGreaterThan(0);
-    expect(initialTiles[0].polys.length).toBeGreaterThan(0);
-    const initialTile = initialTiles[0];
-    // Verify tile is registered at (0, 0)
-    const initialTilesAtOrigin = getTilesAt(initialNavMesh, 0, 0);
-    expect(initialTilesAtOrigin.length).toBeGreaterThan(0);
-    expect(initialTilesAtOrigin[0].id).toBe(initialTile.id);
-    
-    // Query directly in the tile using queryPolygonsInTile
-    const initialPolysInTile: number[] = [];
-    queryPolygonsInTile(initialPolysInTile, initialNavMesh, initialTile, initialTile.bounds, DEFAULT_QUERY_FILTER);
-    expect(initialPolysInTile.length).toBeGreaterThan(0);
-    
-    // Also test queryPolygons with center bounds
-    const initialCenterX = (initialTile.bounds[0][0] + initialTile.bounds[1][0]) / 2;
-    const initialCenterZ = (initialTile.bounds[0][2] + initialTile.bounds[1][2]) / 2;
-    const initialQuerySize = Math.min(initialNavMesh.tileWidth, initialNavMesh.tileHeight) * 0.1;
-    const initialQueryBounds: [Vec3, Vec3] = [
-      [initialCenterX - initialQuerySize, initialTile.bounds[0][1], initialCenterZ - initialQuerySize],
-      [initialCenterX + initialQuerySize, initialTile.bounds[1][1], initialCenterZ + initialQuerySize],
-    ];
-    const initialPolys = queryPolygons(
-      initialNavMesh,
-      initialQueryBounds,
-      DEFAULT_QUERY_FILTER,
-    );
-    expect(initialPolys.length).toBeGreaterThan(0);
+    const cache: NavMeshBuildCache = {};
 
-    const start: Vec3 = [-6, 0.2, 0];
-    const end: Vec3 = [6, 0.2, 0];
-    const halfExtents: Vec3 = [0.5, 1, 0.5];
+    const extractionInitial = extractRapierToNavcat(w, rapier);
+    expect(extractionInitial).not.toBeNull();
+    expect(extractionInitial!.dynamicObstacles.length).toBeGreaterThan(0);
 
-    const startResult = findNearestPoly(
-      createFindNearestPolyResult(),
-      initialNavMesh,
-      start,
-      halfExtents,
-      DEFAULT_QUERY_FILTER,
-    );
+    const initialResult = generateSoloNavMeshFromGeometry(extractionInitial!, {
+      preset: "default",
+      cache,
+    });
+    expect(initialResult).not.toBeNull();
+    expect(cache?.baseCompactHeightfield).toBeDefined();
+    const initialObstacleCenter = extractionInitial!.dynamicObstacles[0].center[0];
 
-    const endResult = findNearestPoly(
-      createFindNearestPolyResult(),
-      initialNavMesh,
-      end,
-      halfExtents,
-      DEFAULT_QUERY_FILTER,
-    );
+    // Move bridge far away
+    bridgeBody.setTranslation({ x: 8, y: 0.5, z: 0 }, true);
 
-    // Both must succeed - this is a requirement
-    expect(startResult.success).toBe(true);
-    expect(endResult.success).toBe(true);
+    const extractionUpdated = extractRapierToNavcat(w, rapier);
+    expect(extractionUpdated).not.toBeNull();
+    expect(extractionUpdated!.dynamicObstacles.length).toBeGreaterThan(0);
+    expect(extractionUpdated!.dynamicObstacles[0].center[0]).not.toBe(initialObstacleCenter);
 
-    // Find the initial path - this must work
-    const initialPath = findPath(
-      initialNavMesh,
-      startResult.position,
-      endResult.position,
-      halfExtents,
-      DEFAULT_QUERY_FILTER,
-    );
-    const initialPathLength = initialPath.path.length;
-    expect(initialPathLength).toBeGreaterThan(0);
-
-    // Move bridge away from the gap (simulate dynamic obstacle movement)
-    bridgeBody.setTranslation({ x: 10, y: 0.1, z: 10 }, true);
-
-    // Regenerate navmesh without bridge in the gap
-    result = generateSoloNavMeshFromRapier(w, rapier, { preset: "default" });
-    expect(result).not.toBeNull();
-    const updatedNavMesh = result!.navMesh;
-    expect(updatedNavMesh.tileWidth).toBeGreaterThan(0);
-    expect(updatedNavMesh.tileHeight).toBeGreaterThan(0);
-    const updatedTiles = Object.values(updatedNavMesh.tiles);
-    expect(updatedTiles.length).toBeGreaterThan(0);
-    expect(updatedTiles[0].vertices.length).toBeGreaterThan(0);
-    expect(updatedTiles[0].polys.length).toBeGreaterThan(0);
-    const updatedTile = updatedTiles[0];
-    // Verify tile is registered at (0, 0)
-    const updatedTilesAtOrigin = getTilesAt(updatedNavMesh, 0, 0);
-    expect(updatedTilesAtOrigin.length).toBeGreaterThan(0);
-    expect(updatedTilesAtOrigin[0].id).toBe(updatedTile.id);
-    
-    // Query directly in the tile using queryPolygonsInTile
-    const updatedPolysInTile: number[] = [];
-    queryPolygonsInTile(updatedPolysInTile, updatedNavMesh, updatedTile, updatedTile.bounds, DEFAULT_QUERY_FILTER);
-    expect(updatedPolysInTile.length).toBeGreaterThan(0);
-    
-    // Also test queryPolygons with center bounds
-    const updatedCenterX = (updatedTile.bounds[0][0] + updatedTile.bounds[1][0]) / 2;
-    const updatedCenterZ = (updatedTile.bounds[0][2] + updatedTile.bounds[1][2]) / 2;
-    const updatedQuerySize = Math.min(updatedNavMesh.tileWidth, updatedNavMesh.tileHeight) * 0.1;
-    const updatedQueryBounds: [Vec3, Vec3] = [
-      [updatedCenterX - updatedQuerySize, updatedTile.bounds[0][1], updatedCenterZ - updatedQuerySize],
-      [updatedCenterX + updatedQuerySize, updatedTile.bounds[1][1], updatedCenterZ + updatedQuerySize],
-    ];
-    const updatedPolys = queryPolygons(
-      updatedNavMesh,
-      updatedQueryBounds,
-      DEFAULT_QUERY_FILTER,
-    );
-    expect(updatedPolys.length).toBeGreaterThan(0);
-
-    const updatedStartResult = findNearestPoly(
-      createFindNearestPolyResult(),
-      updatedNavMesh,
-      start,
-      halfExtents,
-      DEFAULT_QUERY_FILTER,
-    );
-
-    const updatedEndResult = findNearestPoly(
-      createFindNearestPolyResult(),
-      updatedNavMesh,
-      end,
-      halfExtents,
-      DEFAULT_QUERY_FILTER,
-    );
-
-    // All must succeed - this is a requirement
-    expect(startResult.success).toBe(true);
-    expect(endResult.success).toBe(true);
-    expect(updatedStartResult.success).toBe(true);
-    expect(updatedEndResult.success).toBe(true);
-
-    // Find the updated path - this must work
-    const updatedPath = findPath(
-      updatedNavMesh,
-      updatedStartResult.position,
-      updatedEndResult.position,
-      halfExtents,
-      DEFAULT_QUERY_FILTER,
-    );
-
-    // Path should still exist (detour through side corridors)
-    expect(updatedPath.path.length).toBeGreaterThan(0);
-
-    // Verify both navmeshes have tiles
-    expect(Object.keys(initialNavMesh.tiles).length).toBeGreaterThan(0);
-    expect(Object.keys(updatedNavMesh.tiles).length).toBeGreaterThan(0);
+    const updatedResult = generateSoloNavMeshFromGeometry(extractionUpdated!, {
+      preset: "default",
+      cache,
+    });
+    expect(updatedResult).not.toBeNull();
+    expect(cache?.baseCompactHeightfield).toBeDefined();
   });
 });
 

@@ -54,6 +54,8 @@ describe("extractRapierToNavcat", () => {
     expect(result!.geometry.positions.length).toBeGreaterThan(0);
     expect(result!.geometry.indices.length).toBeGreaterThan(0);
     expect(result!.heightfields.length).toBe(0);
+    expect(result!.staticColliderHandles.length).toBe(1);
+    expect(result!.dynamicObstacles.length).toBe(0);
   });
 
   it("should create triangles with upward-pointing normals for horizontal cuboids", () => {
@@ -236,7 +238,7 @@ describe("extractRapierToNavcat", () => {
     expect(result!.geometry.indices.length).toBeGreaterThanOrEqual(36); // At least box triangles
   });
 
-  it("should extract dynamic bodies as geometry", () => {
+  it("should record dynamic bodies as obstacles", () => {
     const w = getWorld();
     // Create ground
     const groundBodyDesc = rapier.RigidBodyDesc.fixed();
@@ -256,10 +258,10 @@ describe("extractRapierToNavcat", () => {
 
     const result = extractRapierToNavcat(w, rapier);
     expect(result).not.toBeNull();
-    
-    // Dynamic box should be triangulated as geometry
-    expect(result!.geometry.positions.length).toBeGreaterThan(0);
-    expect(result!.geometry.indices.length).toBeGreaterThan(0);
+
+    // Dynamic box should appear as an obstacle entry
+    expect(result!.dynamicObstacles.length).toBeGreaterThan(0);
+    expect(result!.dynamicObstacles[0].radius).toBeGreaterThan(0);
     expect(result!.heightfields.length).toBe(0);
   });
 
@@ -672,9 +674,9 @@ describe("extractRapierToNavcat", () => {
     extraction = extractRapierToNavcat(w, rapier);
     expect(extraction).not.toBeNull();
     
-    // Dynamic box should be triangulated as geometry
-    expect(extraction!.geometry.positions.length).toBeGreaterThan(0);
-    expect(extraction!.geometry.indices.length).toBeGreaterThan(0);
+    // Dynamic box should be represented as an obstacle
+    expect(extraction!.dynamicObstacles.length).toBeGreaterThan(0);
+    expect(extraction!.dynamicObstacles[0].radius).toBeGreaterThan(0);
     expect(extraction!.heightfields.length).toBe(0);
   });
 

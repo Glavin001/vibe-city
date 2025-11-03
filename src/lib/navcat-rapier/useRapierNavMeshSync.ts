@@ -2,7 +2,12 @@ import { useRef, useEffect, useState, useCallback } from "react";
 import { useRapier, useAfterPhysicsStep } from "@react-three/rapier";
 import type { NavMesh } from "navcat";
 import { extractRapierToNavcat, type ExtractOptions } from "./extract";
-import { generateSoloNavMeshFromGeometry, type NavMeshPreset, type NavMeshGenOptions } from "./generate";
+import {
+  generateSoloNavMeshFromGeometry,
+  type NavMeshPreset,
+  type NavMeshGenOptions,
+  type NavMeshBuildCache,
+} from "./generate";
 import type { RapierExtractionResult } from "./extract";
 
 export type NavMeshSyncState = {
@@ -43,6 +48,7 @@ export function useRapierNavMeshSync(options?: {
   const isUpdatingRef = useRef(false);
   const callbackInvokeCountRef = useRef(0);
   const lastLogTimeRef = useRef(0);
+  const navMeshCacheRef = useRef<NavMeshBuildCache>({});
 
   const updateNavMesh = useCallback((force = false) => {
     if (!world || !rapier || !enabled) {
@@ -119,7 +125,10 @@ export function useRapierNavMeshSync(options?: {
       const genOptions: NavMeshGenOptions = options?.navMeshOptions ?? {
         preset: options?.navMeshPreset ?? "default", // Default to full-quality navmesh
       };
-      const result = generateSoloNavMeshFromGeometry(extraction, genOptions);
+      const result = generateSoloNavMeshFromGeometry(extraction, {
+        ...genOptions,
+        cache: navMeshCacheRef.current,
+      });
       const generateTime = performance.now() - generateStartTime;
       
       if (!result) {
