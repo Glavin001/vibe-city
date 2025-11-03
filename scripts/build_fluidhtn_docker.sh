@@ -25,6 +25,11 @@ echo "[fluidhtn] Generated types source: $GEN_SRC"
 echo "[fluidhtn] Generated types destination: $GEN_DST"
 echo "[fluidhtn] AOT: $AOT_ARG"
 
+if [[ "${SKIP_FLUIDHTN_BUILD:-}" =~ ^(1|true|TRUE)$ ]]; then
+  echo "[fluidhtn] SKIP_FLUIDHTN_BUILD set; skipping Docker build."
+  exit 0
+fi
+
 if ! command -v docker >/dev/null 2>&1; then
   echo "Error: Docker is required but not found in PATH." >&2
   exit 1

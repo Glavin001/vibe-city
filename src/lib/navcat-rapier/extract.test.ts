@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach } from "vitest";
 import Rapier from "@dimforge/rapier3d-compat";
-import { extractRapierToNavcat } from "./extract";
+import { extractRapierToNavcat, type RapierExtractionCache } from "./extract";
 import {
   generateSoloNavMesh,
   type SoloNavMeshInput,
@@ -54,6 +54,10 @@ describe("extractRapierToNavcat", () => {
     expect(result!.geometry.positions.length).toBeGreaterThan(0);
     expect(result!.geometry.indices.length).toBeGreaterThan(0);
     expect(result!.heightfields.length).toBe(0);
+    expect(result!.staticColliderHandles.length).toBe(1);
+    expect(result!.dynamicObstacles.length).toBe(0);
+    expect(result!.staticSignature.length).toBeGreaterThan(0);
+    expect(result!.usedStaticCache).toBe(false);
   });
 
   it("should create triangles with upward-pointing normals for horizontal cuboids", () => {
@@ -236,7 +240,7 @@ describe("extractRapierToNavcat", () => {
     expect(result!.geometry.indices.length).toBeGreaterThanOrEqual(36); // At least box triangles
   });
 
-  it("should extract dynamic bodies as geometry", () => {
+  it("should record dynamic bodies as obstacles", () => {
     const w = getWorld();
     // Create ground
     const groundBodyDesc = rapier.RigidBodyDesc.fixed();
@@ -256,10 +260,10 @@ describe("extractRapierToNavcat", () => {
 
     const result = extractRapierToNavcat(w, rapier);
     expect(result).not.toBeNull();
-    
-    // Dynamic box should be triangulated as geometry
-    expect(result!.geometry.positions.length).toBeGreaterThan(0);
-    expect(result!.geometry.indices.length).toBeGreaterThan(0);
+
+    // Dynamic box should appear as an obstacle entry
+    expect(result!.dynamicObstacles.length).toBeGreaterThan(0);
+    expect(result!.dynamicObstacles[0].radius).toBeGreaterThan(0);
     expect(result!.heightfields.length).toBe(0);
   });
 
@@ -415,6 +419,27 @@ describe("extractRapierToNavcat", () => {
     // Both should be triangulated as walkable surfaces
     expect(result!.geometry.positions.length).toBeGreaterThan(0);
     expect(result!.heightfields.length).toBe(0);
+  });
+
+  it("reuses cached static geometry when colliders are unchanged", () => {
+    const w = getWorld();
+
+    const groundBody = w.createRigidBody(rapier.RigidBodyDesc.fixed());
+    w.createCollider(rapier.ColliderDesc.cuboid(5, 0.1, 5), groundBody);
+
+    const cache: RapierExtractionCache = {};
+
+    const first = extractRapierToNavcat(w, rapier, { cache });
+    expect(first).not.toBeNull();
+    expect(first!.usedStaticCache).toBe(false);
+    expect(cache.staticSignature).toBe(first!.staticSignature);
+
+    const second = extractRapierToNavcat(w, rapier, { cache });
+    expect(second).not.toBeNull();
+    expect(second!.usedStaticCache).toBe(true);
+    expect(second!.geometry.positions).toBe(first!.geometry.positions);
+    expect(second!.geometry.indices).toBe(first!.geometry.indices);
+    expect(second!.staticSignature).toBe(first!.staticSignature);
   });
 
   it("should return null when no walkable surfaces exist", () => {
@@ -672,9 +697,9 @@ describe("extractRapierToNavcat", () => {
     extraction = extractRapierToNavcat(w, rapier);
     expect(extraction).not.toBeNull();
     
-    // Dynamic box should be triangulated as geometry
-    expect(extraction!.geometry.positions.length).toBeGreaterThan(0);
-    expect(extraction!.geometry.indices.length).toBeGreaterThan(0);
+    // Dynamic box should be represented as an obstacle
+    expect(extraction!.dynamicObstacles.length).toBeGreaterThan(0);
+    expect(extraction!.dynamicObstacles[0].radius).toBeGreaterThan(0);
     expect(extraction!.heightfields.length).toBe(0);
   });
 
