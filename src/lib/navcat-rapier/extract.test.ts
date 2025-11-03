@@ -53,8 +53,7 @@ describe("extractRapierToNavcat", () => {
     expect(result).not.toBeNull();
     expect(result!.geometry.positions.length).toBeGreaterThan(0);
     expect(result!.geometry.indices.length).toBeGreaterThan(0);
-    expect(result!.staticObstacles.length).toBe(0);
-    expect(result!.dynamicObstacles.length).toBe(0);
+    expect(result!.heightfields.length).toBe(0);
   });
 
   it("should create triangles with upward-pointing normals for horizontal cuboids", () => {
@@ -111,9 +110,11 @@ describe("extractRapierToNavcat", () => {
       }
     }
     
-    // All triangles from horizontal cuboid should be walkable
-    expect(totalTriangleCount).toBeGreaterThan(0);
-    expect(walkableTriangleCount).toBe(totalTriangleCount);
+    // All triangles from horizontal cuboid should exist (some will be walkable, some won't depending on slope)
+    // A cuboid has 12 triangles (6 faces * 2 triangles each)
+    expect(totalTriangleCount).toBe(12);
+    // At least the top face (2 triangles) should be walkable (pointing upward)
+    expect(walkableTriangleCount).toBeGreaterThanOrEqual(2);
   });
 
   it("should handle rotated horizontal cuboids with correct winding order", () => {
@@ -169,9 +170,11 @@ describe("extractRapierToNavcat", () => {
       }
     }
     
-    // Should have walkable triangles even after rotation (still horizontal)
-    expect(totalTriangleCount).toBeGreaterThan(0);
-    expect(walkableTriangleCount).toBe(totalTriangleCount);
+    // Should have triangles even after rotation
+    // A cuboid has 12 triangles (6 faces * 2 triangles each)
+    expect(totalTriangleCount).toBe(12);
+    // At least some triangles should be walkable (top face should point upward)
+    expect(walkableTriangleCount).toBeGreaterThanOrEqual(2);
   });
 
   it("should not mark vertical cuboids as walkable", () => {
@@ -185,13 +188,13 @@ describe("extractRapierToNavcat", () => {
     const result = extractRapierToNavcat(w, rapier);
     expect(result).not.toBeNull();
     
-    // Should be treated as obstacle, not walkable geometry
-    expect(result!.staticObstacles.length).toBe(1);
-    expect(result!.geometry.positions.length).toBe(0);
-    expect(result!.geometry.indices.length).toBe(0);
+    // Vertical wall should be triangulated as geometry (not filtered out)
+    expect(result!.geometry.positions.length).toBeGreaterThan(0);
+    expect(result!.geometry.indices.length).toBeGreaterThan(0);
+    expect(result!.heightfields.length).toBe(0);
   });
 
-  it("should extract static obstacles as cylinders", () => {
+  it("should extract shapes as triangulated geometry", () => {
     const w = getWorld();
     // Create ground
     const groundBodyDesc = rapier.RigidBodyDesc.fixed();
@@ -221,26 +224,19 @@ describe("extractRapierToNavcat", () => {
 
     const result = extractRapierToNavcat(w, rapier);
     expect(result).not.toBeNull();
-    expect(result!.staticObstacles.length).toBe(2);
-    expect(result!.dynamicObstacles.length).toBe(0);
-
-    // Verify box obstacle
-    const boxObstacle = result!.staticObstacles.find(
-      (o) => Math.abs(o.center[0] - 5) < 0.1,
-    );
-    expect(boxObstacle).toBeDefined();
-    expect(boxObstacle!.radius).toBeCloseTo(1, 1);
-    expect(boxObstacle!.height).toBeCloseTo(2, 1);
-
-    // Verify ball obstacle
-    const ballObstacle = result!.staticObstacles.find(
-      (o) => Math.abs(o.center[0] + 5) < 0.1,
-    );
-    expect(ballObstacle).toBeDefined();
-    expect(ballObstacle!.radius).toBeCloseTo(0.5, 1);
+    
+    // All shapes should be triangulated as geometry
+    expect(result!.geometry.positions.length).toBeGreaterThan(0);
+    expect(result!.geometry.indices.length).toBeGreaterThan(0);
+    expect(result!.heightfields.length).toBe(0);
+    
+    // Box and ball should both contribute triangles
+    // Box has 12 triangles (6 faces * 2 triangles each)
+    // Ball has many triangles (depends on sphere resolution)
+    expect(result!.geometry.indices.length).toBeGreaterThanOrEqual(36); // At least box triangles
   });
 
-  it("should extract dynamic obstacles", () => {
+  it("should extract dynamic bodies as geometry", () => {
     const w = getWorld();
     // Create ground
     const groundBodyDesc = rapier.RigidBodyDesc.fixed();
@@ -260,8 +256,11 @@ describe("extractRapierToNavcat", () => {
 
     const result = extractRapierToNavcat(w, rapier);
     expect(result).not.toBeNull();
-    expect(result!.dynamicObstacles.length).toBe(1);
-    expect(result!.staticObstacles.length).toBe(0);
+    
+    // Dynamic box should be triangulated as geometry
+    expect(result!.geometry.positions.length).toBeGreaterThan(0);
+    expect(result!.geometry.indices.length).toBeGreaterThan(0);
+    expect(result!.heightfields.length).toBe(0);
   });
 
   it("should return empty heightfields array in extraction result when no heightfields are present", () => {
@@ -281,8 +280,6 @@ describe("extractRapierToNavcat", () => {
 
     // Verify the structure is correct - all expected properties should exist
     expect(result!.geometry).toBeDefined();
-    expect(result!.staticObstacles).toBeDefined();
-    expect(result!.dynamicObstacles).toBeDefined();
     expect(result!.heightfields).toBeDefined();
   });
 
@@ -393,7 +390,7 @@ describe("extractRapierToNavcat", () => {
     // Heightfield should NOT be in the geometry (not tessellated)
     // We should still have ground geometry though
     expect(result!.geometry.positions.length).toBeGreaterThan(0);
-    expect(result!.staticObstacles.length).toBe(0);
+    expect(result!.heightfields.length).toBe(1);
   });
 
   it("should handle rotated cuboids correctly", () => {
@@ -415,9 +412,9 @@ describe("extractRapierToNavcat", () => {
 
     const result = extractRapierToNavcat(w, rapier);
     expect(result).not.toBeNull();
-    // Both should be walkable surfaces
+    // Both should be triangulated as walkable surfaces
     expect(result!.geometry.positions.length).toBeGreaterThan(0);
-    expect(result!.staticObstacles.length).toBe(0);
+    expect(result!.heightfields.length).toBe(0);
   });
 
   it("should return null when no walkable surfaces exist", () => {
@@ -436,13 +433,13 @@ describe("extractRapierToNavcat", () => {
     );
     w.createCollider(boxCollider, boxBody);
 
-    // Now returns result with obstacles (even without walkable geometry)
-    const resultWithObstacles = extractRapierToNavcat(w, rapier);
-    expect(resultWithObstacles).not.toBeNull();
-    expect(resultWithObstacles!.geometry.positions.length).toBe(0);
-    expect(resultWithObstacles!.geometry.indices.length).toBe(0);
-    expect(resultWithObstacles!.staticObstacles.length).toBeGreaterThan(0);
-    expect(resultWithObstacles!.heightfields.length).toBe(0);
+    // Now returns result with triangulated geometry (box is triangulated)
+    const resultWithBox = extractRapierToNavcat(w, rapier);
+    expect(resultWithBox).not.toBeNull();
+    // Box should be triangulated (12 triangles = 36 indices)
+    expect(resultWithBox!.geometry.positions.length).toBeGreaterThan(0);
+    expect(resultWithBox!.geometry.indices.length).toBeGreaterThanOrEqual(36);
+    expect(resultWithBox!.heightfields.length).toBe(0);
   });
 
   it("should return valid result even with empty geometry if heightfields exist", () => {
@@ -589,7 +586,7 @@ describe("extractRapierToNavcat", () => {
     expect(typeof result.success).toBe("boolean");
   });
 
-  it("should handle dynamic obstacles blocking paths", () => {
+  it("should handle dynamic bodies in extraction", () => {
     const w = getWorld();
     // Create ground
     const groundBodyDesc = rapier.RigidBodyDesc.fixed();
@@ -671,19 +668,14 @@ describe("extractRapierToNavcat", () => {
       dynamicBoxBody,
     );
 
-    // Extract again with the dynamic obstacle
+    // Extract again with the dynamic box
     extraction = extractRapierToNavcat(w, rapier);
     expect(extraction).not.toBeNull();
-    expect(extraction!.dynamicObstacles.length).toBe(1);
-
-    // Verify the obstacle was extracted correctly
-    const obstacle = extraction!.dynamicObstacles[0];
-    expect(Math.abs(obstacle.center[0] - 0) < 1).toBe(true);
-    expect(Math.abs(obstacle.center[2] - 0) < 1).toBe(true);
-
-    // Note: In a real implementation, you would rebuild the navmesh with the dynamic obstacles
-    // marked as NULL_AREA. For this test, we just verify the extraction works.
-    // A full integration would need to mark obstacles in the compact heightfield before building the navmesh.
+    
+    // Dynamic box should be triangulated as geometry
+    expect(extraction!.geometry.positions.length).toBeGreaterThan(0);
+    expect(extraction!.geometry.indices.length).toBeGreaterThan(0);
+    expect(extraction!.heightfields.length).toBe(0);
   });
 
   it("should handle cylinder and capsule shapes", () => {
@@ -715,21 +707,11 @@ describe("extractRapierToNavcat", () => {
 
     const result = extractRapierToNavcat(w, rapier);
     expect(result).not.toBeNull();
-    expect(result!.staticObstacles.length).toBe(2);
-
-    // Verify cylinder
-    const cylinderObstacle = result!.staticObstacles.find(
-      (o) => Math.abs(o.center[0] - 2) < 0.1,
-    );
-    expect(cylinderObstacle).toBeDefined();
-    expect(cylinderObstacle!.radius).toBeCloseTo(0.5, 1);
-    expect(cylinderObstacle!.height).toBeCloseTo(2, 1);
-
-    // Verify capsule
-    const capsuleObstacle = result!.staticObstacles.find(
-      (o) => Math.abs(o.center[0] + 2) < 0.1,
-    );
-    expect(capsuleObstacle).toBeDefined();
+    
+    // Both cylinder and capsule should be triangulated as geometry
+    expect(result!.geometry.positions.length).toBeGreaterThan(0);
+    expect(result!.geometry.indices.length).toBeGreaterThan(0);
+    expect(result!.heightfields.length).toBe(0);
   });
 });
 

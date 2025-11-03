@@ -139,17 +139,28 @@ const demoCategories: DemoCategory[] = [
         title: "Ragdoll Physics",
         description: "Spawn humanoid ragdolls with Rapier joints. Click to place them on varied terrain; toggle debug and gravity with Leva."
       }
-      ,{
+    ]
+  },
+  {
+    name: "Navigation & Pathfinding",
+    demos: [
+      {
         href: "/navcat-dynamic-objects",
         icon: "🧭",
         title: "Navcat Dynamic Obstacles",
         description: "Navmesh regeneration demo with Rapier physics cubes acting as moving obstacles for crowd agents."
-      }
-      ,{
+      },
+      {
         href: "/navcat-bunker",
         icon: "🐾",
         title: "Navcat Bunker Dynamics",
         description: "Bunker courtyard rebuilt for Navcat crowds with Rapier debris carving live holes into the navmesh."
+      },
+      {
+        href: "/navcat-rapier",
+        icon: "🛰️",
+        title: "Navcat × Rapier Playground",
+        description: "React-Three-Rapier world bridged into Navcat: static colliders seed the mesh, dynamics register as live obstacles."
       }
     ]
   },

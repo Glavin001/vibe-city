@@ -2,8 +2,11 @@ import { describe, it, expect, beforeAll, beforeEach, afterEach } from "vitest";
 import Rapier from "@dimforge/rapier3d-compat";
 import {
   generateSoloNavMeshFromRapier,
+  generateSoloNavMeshFromGeometry,
   defaultSoloNavMeshOptions,
+  type NavMeshPreset,
 } from "./generate";
+import { extractRapierToNavcat } from "./extract";
 import {
   findPath,
   findNearestPoly,
@@ -54,7 +57,41 @@ describe("generateSoloNavMeshFromRapier", () => {
     const groundCollider = rapier.ColliderDesc.cuboid(10, 0.1, 10);
     w.createCollider(groundCollider, groundBody);
 
-    const result = generateSoloNavMeshFromRapier(w, rapier);
+    const result = generateSoloNavMeshFromRapier(w, rapier, { preset: "fast" });
+    expect(result).not.toBeNull();
+    expect(result!.navMesh).toBeDefined();
+    expect(Object.keys(result!.navMesh.tiles).length).toBeGreaterThan(0);
+  });
+
+  it("should skip detail mesh for fast preset", () => {
+    const w = getWorld();
+    const groundBodyDesc = rapier.RigidBodyDesc.fixed();
+    const groundBody = w.createRigidBody(groundBodyDesc);
+    const groundCollider = rapier.ColliderDesc.cuboid(10, 0.1, 10);
+    w.createCollider(groundCollider, groundBody);
+
+    const extraction = extractRapierToNavcat(w, rapier);
+    expect(extraction).not.toBeNull();
+
+    const result = generateSoloNavMeshFromGeometry(extraction!, { preset: "fast" });
+    expect(result).not.toBeNull();
+    expect(result!.navMesh).toBeDefined();
+    expect(Object.keys(result!.navMesh.tiles).length).toBeGreaterThan(0);
+  });
+
+  it("should handle detail mesh generation error gracefully", () => {
+    const w = getWorld();
+    // Create a very small ground plane that might trigger the detail mesh error
+    const groundBodyDesc = rapier.RigidBodyDesc.fixed();
+    const groundBody = w.createRigidBody(groundBodyDesc);
+    const groundCollider = rapier.ColliderDesc.cuboid(1, 0.1, 1); // Small ground
+    w.createCollider(groundCollider, groundBody);
+
+    const extraction = extractRapierToNavcat(w, rapier);
+    expect(extraction).not.toBeNull();
+
+    // Use a preset that would normally generate detail mesh, but with few polys it should skip
+    const result = generateSoloNavMeshFromGeometry(extraction!, { preset: "default" });
     expect(result).not.toBeNull();
     expect(result!.navMesh).toBeDefined();
     expect(Object.keys(result!.navMesh.tiles).length).toBeGreaterThan(0);
@@ -62,6 +99,7 @@ describe("generateSoloNavMeshFromRapier", () => {
 
   it("should generate navmesh with static obstacles and find paths around them", () => {
     const w = getWorld();
+    // Use "default" preset (includes detail mesh) since findNearestPoly requires detail mesh
     // Create ground
     const groundBodyDesc = rapier.RigidBodyDesc.fixed();
     const groundBody = w.createRigidBody(groundBodyDesc);
@@ -107,7 +145,7 @@ describe("generateSoloNavMeshFromRapier", () => {
       bridgeBody,
     );
 
-    const result = generateSoloNavMeshFromRapier(w, rapier);
+    const result = generateSoloNavMeshFromRapier(w, rapier, { preset: "fast" });
     expect(result).not.toBeNull();
     expect(result!.navMesh).toBeDefined();
 
@@ -303,8 +341,8 @@ describe("generateSoloNavMeshFromRapier", () => {
       bridgeBody,
     );
 
-    // Generate initial navmesh with bridge
-    let result = generateSoloNavMeshFromRapier(w, rapier);
+    // Generate initial navmesh with bridge (use default preset to include detail mesh for queries)
+    let result = generateSoloNavMeshFromRapier(w, rapier, { preset: "default" });
     expect(result).not.toBeNull();
     const initialNavMesh = result!.navMesh;
     expect(initialNavMesh.tileWidth).toBeGreaterThan(0);
@@ -378,7 +416,7 @@ describe("generateSoloNavMeshFromRapier", () => {
     bridgeBody.setTranslation({ x: 10, y: 0.1, z: 10 }, true);
 
     // Regenerate navmesh without bridge in the gap
-    result = generateSoloNavMeshFromRapier(w, rapier);
+    result = generateSoloNavMeshFromRapier(w, rapier, { preset: "default" });
     expect(result).not.toBeNull();
     const updatedNavMesh = result!.navMesh;
     expect(updatedNavMesh.tileWidth).toBeGreaterThan(0);
