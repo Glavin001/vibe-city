@@ -36,7 +36,7 @@ function Scene({
     <>
       <ambientLight intensity={0.6} />
       <directionalLight position={[10, 20, 10]} intensity={0.9} castShadow />
-      <Physics>
+      <Physics debug={true}>
         {/* Physics ground */}
         <GroundPhysics />
 
@@ -46,7 +46,7 @@ function Scene({
 
         {/* Dynamic debris that affects navmesh */}
         <NavMeshDebrisSpawner
-          count={15}
+          count={75}
           spawnArea={{ x: 40, z: 40 }}
           spawnHeight={12}
           respawnInterval={10000}

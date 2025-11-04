@@ -248,12 +248,17 @@ export function useRapierNavMeshSync(options?: {
           ? { ...options.navMeshOptions }
           : { preset: options?.navMeshPreset ?? "default" };
 
+        const optionsSetupTime = performance.now();
         const fallbackOptions: NavMeshGenOptions = {
           ...baseGenOptions,
           cache: baseGenOptions.cache ?? navMeshCacheRef.current,
         };
         const { cache: _unusedCache, ...workerOptionsRest } = fallbackOptions;
         const workerOptions = workerOptionsRest as NavMeshWorkerOptions;
+        const optionsSetupDuration = performance.now() - optionsSetupTime;
+        if (optionsSetupDuration > 0.1) {
+          console.log(`[NavMeshSync] ⚙️ Options setup: ${optionsSetupDuration.toFixed(2)}ms`);
+        }
 
         const executeGeneration = async (): Promise<NavMeshGenerationResult | null> => {
           const worker = workerRef.current;
@@ -263,9 +268,14 @@ export function useRapierNavMeshSync(options?: {
             if (externalCache && worker) {
               console.log("[NavMeshSync] ℹ️ External navmesh cache provided, using main thread generation");
             }
-            return generateSoloNavMeshFromGeometry(extraction, fallbackOptions);
+            const mainThreadStart = performance.now();
+            const result = generateSoloNavMeshFromGeometry(extraction, fallbackOptions);
+            const mainThreadDuration = performance.now() - mainThreadStart;
+            console.log(`[NavMeshSync] 🧵 Main thread generation: ${mainThreadDuration.toFixed(2)}ms`);
+            return result;
           }
 
+          const workerSetupStart = performance.now();
           const requestId = ++workerRequestIdRef.current;
           const message: NavMeshWorkerRequest = {
             id: requestId,
@@ -273,18 +283,50 @@ export function useRapierNavMeshSync(options?: {
             extraction,
             options: workerOptions,
           };
+          const workerSetupDuration = performance.now() - workerSetupStart;
+          if (workerSetupDuration > 0.1) {
+            console.log(`[NavMeshSync] ⚙️ Worker message setup: ${workerSetupDuration.toFixed(2)}ms`);
+          }
 
+          const postMessageStart = performance.now();
+          const waitStart = performance.now();
           return new Promise<NavMeshGenerationResult | null>((resolve, reject) => {
-            workerResolversRef.current.set(requestId, { resolve, reject });
+            // Wrap resolve/reject to track timing
+            const originalResolve = resolve;
+            const originalReject = reject;
+            const wrappedResolve = (value: NavMeshGenerationResult | null) => {
+              const waitDuration = performance.now() - waitStart;
+              console.log(`[NavMeshSync] ⏳ Worker wait time: ${waitDuration.toFixed(2)}ms`);
+              originalResolve(value);
+            };
+            const wrappedReject = (error: Error) => {
+              const waitDuration = performance.now() - waitStart;
+              console.log(`[NavMeshSync] ⏳ Worker wait time (error): ${waitDuration.toFixed(2)}ms`);
+              originalReject(error);
+            };
+            
+            workerResolversRef.current.set(requestId, {
+              resolve: wrappedResolve,
+              reject: wrappedReject,
+            });
+            
             try {
               worker.postMessage(message);
+              const postMessageDuration = performance.now() - postMessageStart;
+              console.log(`[NavMeshSync] 📤 Worker postMessage: ${postMessageDuration.toFixed(2)}ms`);
             } catch (postError) {
+              const postMessageDuration = performance.now() - postMessageStart;
+              console.log(`[NavMeshSync] ❌ Worker postMessage failed: ${postMessageDuration.toFixed(2)}ms`);
               workerResolversRef.current.delete(requestId);
               reject(postError instanceof Error ? postError : new Error(String(postError)));
             }
           }).catch((workerError) => {
             console.error("[NavMeshSync] ❌ Worker generation failed, falling back to main thread", workerError);
-            return generateSoloNavMeshFromGeometry(extraction, fallbackOptions);
+            const fallbackStart = performance.now();
+            const result = generateSoloNavMeshFromGeometry(extraction, fallbackOptions);
+            const fallbackDuration = performance.now() - fallbackStart;
+            console.log(`[NavMeshSync] 🧵 Fallback main thread generation: ${fallbackDuration.toFixed(2)}ms`);
+            return result;
           });
         };
 
@@ -307,6 +349,12 @@ export function useRapierNavMeshSync(options?: {
           return;
         }
         console.log(`[NavMeshSync] Generation complete: ${generateTime.toFixed(2)}ms`);
+        console.log(`[NavMeshSync] 📊 Generation breakdown:`, {
+          total: `${generateTime.toFixed(2)}ms`,
+          reusedStatic: result.stats.reusedStatic,
+          reusedNavMesh: result.stats.reusedNavMesh,
+          dynamicObstacles: result.stats.dynamicObstacleCount,
+        });
 
         if (extraction.usedStaticCache) {
           console.log("[NavMeshSync] ♻️ Reused cached static extraction");
@@ -317,10 +365,16 @@ export function useRapierNavMeshSync(options?: {
         }
 
         const buildTime = performance.now() - totalStartTime;
-        console.log(
-          `[NavMeshSync] ✅ Navmesh update complete! Total: ${buildTime.toFixed(2)}ms (Extract: ${extractTime.toFixed(2)}ms, Generate: ${generateTime.toFixed(2)}ms)`,
-        );
-        console.log(`[NavMeshSync] Navmesh tiles: ${Object.keys(result.navMesh.tiles).length}`);
+        const overheadTime = buildTime - extractTime - generateTime;
+        console.group(`[NavMeshSync] ✅ Navmesh update complete!`);
+        console.log(`  Total: ${buildTime.toFixed(2)}ms`);
+        console.log(`  Extract: ${extractTime.toFixed(2)}ms (${((extractTime / buildTime) * 100).toFixed(1)}%)`);
+        console.log(`  Generate: ${generateTime.toFixed(2)}ms (${((generateTime / buildTime) * 100).toFixed(1)}%)`);
+        if (overheadTime > 0.1) {
+          console.log(`  Overhead: ${overheadTime.toFixed(2)}ms (${((overheadTime / buildTime) * 100).toFixed(1)}%)`);
+        }
+        console.log(`  Navmesh tiles: ${Object.keys(result.navMesh.tiles).length}`);
+        console.groupEnd();
 
         lastUpdateTimeRef.current = now;
 

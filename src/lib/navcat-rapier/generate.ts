@@ -34,6 +34,51 @@ import { extractRapierToNavcat } from "./extract";
 import { rotateVectorByQuaternion } from "./utils";
 import type Rapier from "@dimforge/rapier3d-compat";
 
+function isTypedArray(value: unknown): value is
+  | Int8Array
+  | Uint8Array
+  | Uint8ClampedArray
+  | Int16Array
+  | Uint16Array
+  | Int32Array
+  | Uint32Array
+  | Float32Array
+  | Float64Array {
+  return ArrayBuffer.isView(value as ArrayBufferView) && !(value instanceof DataView);
+}
+
+function fastResetClone(dst: unknown, src: unknown): void {
+  if (dst === src) return;
+
+  // Typed arrays: copy data in place
+  if (isTypedArray(dst) && isTypedArray(src)) {
+    if (dst.constructor === src.constructor && dst.length === src.length) {
+      (dst as Uint8Array).set(src as Uint8Array);
+      return;
+    }
+  }
+
+  // Arrays: shallow iterate and recurse
+  if (Array.isArray(dst) && Array.isArray(src)) {
+    const len = Math.min(dst.length, src.length);
+    for (let i = 0; i < len; i++) {
+      fastResetClone((dst as unknown[])[i], (src as unknown[])[i]);
+    }
+    return;
+  }
+
+  // Objects: copy matching keys recursively
+  if (dst && src && typeof dst === "object" && typeof src === "object") {
+    const d = dst as Record<string, unknown>;
+    const s = src as Record<string, unknown>;
+    for (const key of Object.keys(s)) {
+      if (Object.prototype.hasOwnProperty.call(d, key)) {
+        fastResetClone(d[key], s[key]);
+      }
+    }
+  }
+}
+
 /**
  * Preset options for navmesh generation quality.
  */
@@ -43,6 +88,7 @@ export type NavMeshBuildCache = {
   staticSignature?: string;
   optionsSignature?: string;
   baseCompactHeightfield?: ReturnType<typeof buildCompactHeightfield>;
+  workingCompactHeightfield?: ReturnType<typeof buildCompactHeightfield>;
   bounds?: ReturnType<typeof calculateMeshBounds>;
   heightfieldSize?: [number, number];
   lastDynamicSignature?: string;
@@ -450,6 +496,7 @@ export function generateSoloNavMeshFromGeometry(
       cacheRef.staticSignature = staticSignature;
       cacheRef.optionsSignature = optionsSignature;
       cacheRef.baseCompactHeightfield = structuredClone(compactHeightfield);
+      cacheRef.workingCompactHeightfield = structuredClone(compactHeightfield);
       cacheRef.bounds = structuredClone(bounds);
       cacheRef.heightfieldSize = [hfWidth, hfHeight];
     }
@@ -461,9 +508,32 @@ export function generateSoloNavMeshFromGeometry(
 
   const ctx: BuildContextState = BuildContext.create();
   BuildContext.start(ctx, "navmesh generation");
+  // Measure preparation time for working compact heightfield (major hotspot)
+  const cloneStartTime = performance.now();
+  let workingCompact: typeof baseCompact;
+  let cloneMode: "structuredClone" | "fastReset" = "structuredClone";
+  if (cacheRef?.workingCompactHeightfield && cacheRef.baseCompactHeightfield) {
+    try {
+      fastResetClone(cacheRef.workingCompactHeightfield, cacheRef.baseCompactHeightfield);
+      workingCompact = cacheRef.workingCompactHeightfield as typeof baseCompact;
+      cloneMode = "fastReset";
+    } catch {
+      // Fallback to structuredClone if fast reset fails for any reason
+      workingCompact = structuredClone(cacheRef.baseCompactHeightfield);
+      cloneMode = "structuredClone";
+    }
+  } else {
+    workingCompact = structuredClone(cacheRef?.baseCompactHeightfield ?? baseCompact);
+    if (cacheRef) {
+      cacheRef.workingCompactHeightfield = structuredClone(workingCompact);
+    }
+  }
+  const cloneTime = performance.now() - cloneStartTime;
+  console.log(`[Generate] 🧬 Prepare working compact: ${cloneMode} ${cloneTime.toFixed(2)}ms`);
 
-  const workingCompact = structuredClone(cacheRef?.baseCompactHeightfield ?? baseCompact);
-
+  // Stamp dynamic obstacles timing
+  const stampStartTime = performance.now();
+  let stampedObstacleCount = 0;
   if (extraction.dynamicObstacles.length > 0) {
     const padding = obstacleMargin ?? finalOpts.cellSize * 0.5;
     for (const obstacle of extraction.dynamicObstacles) {
@@ -490,8 +560,13 @@ export function generateSoloNavMeshFromGeometry(
       }
 
       markCylinderArea(bottom, radius, height, NULL_AREA, workingCompact);
+      stampedObstacleCount++;
     }
   }
+  const stampTime = performance.now() - stampStartTime;
+  console.log(
+    `[Generate] 🛠️ Stamp dynamic obstacles: ${stampTime.toFixed(2)}ms (${stampedObstacleCount}/${extraction.dynamicObstacles.length})`,
+  );
 
   const regionsStartTime = performance.now();
   BuildContext.start(ctx, "build regions");
@@ -604,7 +679,10 @@ export function generateSoloNavMeshFromGeometry(
   navMesh.origin = origin;
   navMesh.tileWidth = tileWidthWorld;
   navMesh.tileHeight = tileHeightWorld;
+  const tilePolysStartTime = performance.now();
   const tilePolys = polyMeshToTilePolys(polyMesh);
+  const tilePolysTime = performance.now() - tilePolysStartTime;
+  console.log(`[Generate] 🔄 PolyMesh to tile polys: ${tilePolysTime.toFixed(2)}ms`);
 
   if (usedMinimalDetailFallback || shouldSkipDetail) {
     const meshes: number[] = new Array(tilePolys.polys.length * 4);
@@ -634,6 +712,7 @@ export function generateSoloNavMeshFromGeometry(
   }
 
   let tileDetailMesh: ReturnType<typeof polyMeshDetailToTileDetailMesh>;
+  const detailConvertStartTime = performance.now();
   try {
     tileDetailMesh = polyMeshDetailToTileDetailMesh(tilePolys.polys, polyMeshDetail);
   } catch (error) {
@@ -644,6 +723,8 @@ export function generateSoloNavMeshFromGeometry(
       detailTriangles: [] as number[],
     } as ReturnType<typeof polyMeshDetailToTileDetailMesh>;
   }
+  const detailConvertTime = performance.now() - detailConvertStartTime;
+  console.log(`[Generate] 🧩 Detail to tile detail mesh: ${detailConvertTime.toFixed(2)}ms`);
 
   const tileParams = {
     bounds: polyMesh.bounds,
@@ -691,6 +772,7 @@ export function generateSoloNavMeshFromGeometry(
   } else {
     console.log(`  ♻️ Reused static compact heightfield from cache`);
   }
+  console.log(`  🧬 Clone compact: ${cloneTime.toFixed(2)}ms`);
   console.log(`  🗺️ Build regions: ${regionsTime.toFixed(2)}ms`);
   console.log(`  🔷 Build contours: ${contoursTime.toFixed(2)}ms`);
   console.log(`  🔺 Build poly mesh (${polyMesh.nPolys} polys): ${polyMeshTime.toFixed(2)}ms`);
@@ -700,6 +782,9 @@ export function generateSoloNavMeshFromGeometry(
   } else {
     console.log(`  ✨ Build poly mesh detail: ${detailTime.toFixed(2)}ms`);
   }
+  console.log(`  🛠️ Stamp obstacles: ${stampTime.toFixed(2)}ms (${stampedObstacleCount}/${extraction.dynamicObstacles.length})`);
+  console.log(`  🔄 PolyMesh→TilePolys: ${tilePolysTime.toFixed(2)}ms`);
+  console.log(`  🧩 Detail→TileDetail: ${detailConvertTime.toFixed(2)}ms`);
   console.log(`  📌 Add tile: ${tileTime.toFixed(2)}ms`);
   console.groupEnd();
 
