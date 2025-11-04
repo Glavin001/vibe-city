@@ -245,8 +245,8 @@ export function useRapierNavMeshSync(options?: {
         const generateStartTime = performance.now();
         console.log("[NavMeshSync] Generating navmesh from extraction...");
         const baseGenOptions: NavMeshGenOptions = options?.navMeshOptions
-          ? { ...options.navMeshOptions }
-          : { preset: options?.navMeshPreset ?? "default" };
+          ? { tileSizeVoxels: 32, ...options.navMeshOptions }
+          : { preset: options?.navMeshPreset ?? "default", tileSizeVoxels: 32 };
 
         const optionsSetupTime = performance.now();
         const fallbackOptions: NavMeshGenOptions = {

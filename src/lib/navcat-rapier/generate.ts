@@ -24,59 +24,27 @@ import {
   polyMeshDetailToTileDetailMesh,
   buildTile,
   addTile,
+  removeTile,
   markCylinderArea,
   NULL_AREA,
   WALKABLE_AREA,
 } from "navcat";
-import { box3, vec2 } from "mathcat";
+import { box3, triangle3, vec2, vec3 } from "mathcat";
+import type { Box3 } from "mathcat";
 import type { RapierExtractionResult } from "./extract";
 import { extractRapierToNavcat } from "./extract";
 import { rotateVectorByQuaternion } from "./utils";
 import type Rapier from "@dimforge/rapier3d-compat";
 
-function isTypedArray(value: unknown): value is
-  | Int8Array
-  | Uint8Array
-  | Uint8ClampedArray
-  | Int16Array
-  | Uint16Array
-  | Int32Array
-  | Uint32Array
-  | Float32Array
-  | Float64Array {
-  return ArrayBuffer.isView(value as ArrayBufferView) && !(value instanceof DataView);
-}
-
-function fastResetClone(dst: unknown, src: unknown): void {
-  if (dst === src) return;
-
-  // Typed arrays: copy data in place
-  if (isTypedArray(dst) && isTypedArray(src)) {
-    if (dst.constructor === src.constructor && dst.length === src.length) {
-      (dst as Uint8Array).set(src as Uint8Array);
-      return;
-    }
-  }
-
-  // Arrays: shallow iterate and recurse
-  if (Array.isArray(dst) && Array.isArray(src)) {
-    const len = Math.min(dst.length, src.length);
-    for (let i = 0; i < len; i++) {
-      fastResetClone((dst as unknown[])[i], (src as unknown[])[i]);
-    }
-    return;
-  }
-
-  // Objects: copy matching keys recursively
-  if (dst && src && typeof dst === "object" && typeof src === "object") {
-    const d = dst as Record<string, unknown>;
-    const s = src as Record<string, unknown>;
-    for (const key of Object.keys(s)) {
-      if (Object.prototype.hasOwnProperty.call(d, key)) {
-        fastResetClone(d[key], s[key]);
-      }
-    }
-  }
+function boxesIntersect(a: Box3, b: Box3): boolean {
+  return !(
+    a[1][0] < b[0][0] ||
+    a[0][0] > b[1][0] ||
+    a[1][1] < b[0][1] ||
+    a[0][1] > b[1][1] ||
+    a[1][2] < b[0][2] ||
+    a[0][2] > b[1][2]
+  );
 }
 
 /**
@@ -93,6 +61,21 @@ export type NavMeshBuildCache = {
   heightfieldSize?: [number, number];
   lastDynamicSignature?: string;
   lastNavMesh?: NavMesh | null;
+  tileWidth?: number;
+  tileHeight?: number;
+  tileSizeVoxels?: number;
+  tileSizeWorld?: number;
+  tiles?: NavMeshTileCacheEntry[];
+};
+
+export type NavMeshTileCacheEntry = {
+  key: string;
+  tileX: number;
+  tileY: number;
+  bounds: Box3;
+  expandedBounds: Box3;
+  baseCompactHeightfield: ReturnType<typeof buildCompactHeightfield>;
+  workingCompactHeightfield?: ReturnType<typeof buildCompactHeightfield>;
 };
 
 export type NavMeshGenerationStats = {
@@ -112,6 +95,7 @@ export type NavMeshGenOptions = Partial<SoloNavMeshOptions> & {
   skipDetailMesh?: boolean; // Skip detail mesh generation for faster builds
   cache?: NavMeshBuildCache;
   obstacleMargin?: number; // Extra padding when stamping dynamic obstacles
+  tileSizeVoxels?: number; // Controls tile resolution (in voxels)
 };
 
 /**
@@ -278,10 +262,19 @@ export function generateSoloNavMeshFromGeometry(
 ): NavMeshGenerationResult | null {
   const preset = options?.preset ?? "default";
   const skipDetailMesh = options?.skipDetailMesh ?? (preset === "fast");
+  const tileSizeVoxels = options?.tileSizeVoxels ?? 32;
   const obstacleMargin = options?.obstacleMargin;
-  const opts = { ...defaultSoloNavMeshOptions(preset), ...options };
-  const { preset: _, skipDetailMesh: __, cache, obstacleMargin: ___, ...navcatOptions } =
-    opts as SoloNavMeshOptions & NavMeshGenOptions;
+
+  const mergedOptions = { ...defaultSoloNavMeshOptions(preset), ...options };
+  const {
+    preset: _preset,
+    skipDetailMesh: _skipDetailMesh,
+    cache,
+    obstacleMargin: _obstacleMargin,
+    tileSizeVoxels: _tileSizeVoxels,
+    ...navcatOptions
+  } = mergedOptions as NavMeshGenOptions &
+    SoloNavMeshOptions & { tileSizeVoxels?: number };
   const finalOpts = navcatOptions as SoloNavMeshOptions;
   const cacheRef = cache ?? options?.cache ?? undefined;
 
@@ -290,12 +283,15 @@ export function generateSoloNavMeshFromGeometry(
     extraction.geometry.indices.length > 0;
   const hasHeightfields = extraction.heightfields.length > 0;
 
-  if (!hasStaticGeometry && !hasHeightfields && extraction.dynamicObstacles.length === 0) {
+  if (
+    !hasStaticGeometry &&
+    !hasHeightfields &&
+    extraction.dynamicObstacles.length === 0
+  ) {
     return null;
   }
 
   const staticSignature = extraction.staticSignature;
-
   const optionsSignature = [
     finalOpts.cellSize,
     finalOpts.cellHeight,
@@ -304,20 +300,23 @@ export function generateSoloNavMeshFromGeometry(
     finalOpts.walkableHeightVoxels,
     finalOpts.walkableRadiusVoxels,
     skipDetailMesh ? 1 : 0,
+    tileSizeVoxels,
   ].join("|");
 
   const needsRebuild =
-    !cacheRef?.baseCompactHeightfield ||
+    !cacheRef?.tiles ||
     !cacheRef.bounds ||
-    !cacheRef.heightfieldSize ||
     cacheRef.staticSignature !== staticSignature ||
-    cacheRef.optionsSignature !== optionsSignature;
+    cacheRef.optionsSignature !== optionsSignature ||
+    cacheRef.tileSizeVoxels !== tileSizeVoxels;
 
   const reusedStatic = !needsRebuild;
 
   const dynamicSignature = extraction.dynamicObstacles
     .map((obstacle) => {
-      const centerKey = obstacle.center.map((value) => value.toFixed(3)).join(",");
+      const centerKey = obstacle.center
+        .map((value) => value.toFixed(3))
+        .join(",");
       const halfKey = obstacle.halfExtents
         .map((value) => value.toFixed(3))
         .join(",");
@@ -332,42 +331,43 @@ export function generateSoloNavMeshFromGeometry(
     .sort()
     .join("|");
 
-  const canReuseNavMesh =
-    reusedStatic &&
-    !!cacheRef?.lastNavMesh &&
-    cacheRef.lastDynamicSignature === dynamicSignature;
-
-  let baseCompact = cacheRef?.baseCompactHeightfield ?? null;
-  let cachedBounds = cacheRef?.bounds ?? null;
-  let heightfieldWidth = cacheRef?.heightfieldSize?.[0];
-  let heightfieldHeight = cacheRef?.heightfieldSize?.[1];
-
   const generateStartTime = performance.now();
 
-  if (canReuseNavMesh) {
+  if (
+    !needsRebuild &&
+    cacheRef?.lastNavMesh &&
+    cacheRef.lastDynamicSignature === dynamicSignature
+  ) {
     const totalTime = performance.now() - generateStartTime;
+    cacheRef.lastDynamicSignature = dynamicSignature;
     console.log(
-      `[Generate] ♻️ Reusing cached navmesh (static + dynamic unchanged): ${totalTime.toFixed(2)}ms`,
+      `[Generate] ♻️ Reusing cached navmesh (static + dynamic unchanged): ${totalTime.toFixed(
+        2,
+      )}ms`,
     );
-
-    if (cacheRef) {
-      cacheRef.lastDynamicSignature = dynamicSignature;
-    }
-
     return {
-      navMesh: cacheRef!.lastNavMesh!,
+      navMesh: cacheRef.lastNavMesh,
       stats: {
         totalTime,
-        reusedStatic,
+        reusedStatic: true,
         reusedNavMesh: true,
         dynamicObstacleCount: extraction.dynamicObstacles.length,
       },
     };
   }
 
+  const convertedHeightfields = extraction.heightfields.map(
+    convertRapierHeightfieldToTriangles,
+  );
+
+  let cachedBounds = cacheRef?.bounds ?? null;
+  let tileWidth = cacheRef?.tileWidth ?? 0;
+  let tileHeight = cacheRef?.tileHeight ?? 0;
+  let tileSizeWorld =
+    cacheRef?.tileSizeWorld ?? tileSizeVoxels * finalOpts.cellSize;
+  let tiles = cacheRef?.tiles ?? null;
+
   let boundsTime = 0;
-  let heightfieldTime = 0;
-  let markTriTime = 0;
   let rasterTriTime = 0;
   let rasterHfTime = 0;
   let filterTime = 0;
@@ -376,9 +376,6 @@ export function generateSoloNavMeshFromGeometry(
   let distanceTime = 0;
 
   if (needsRebuild) {
-    const staticCtx: BuildContextState = BuildContext.create();
-    BuildContext.start(staticCtx, "static navmesh bake");
-
     const boundsStartTime = performance.now();
     let bounds = box3.create();
     if (hasStaticGeometry) {
@@ -397,395 +394,506 @@ export function generateSoloNavMeshFromGeometry(
     }
     boundsTime = performance.now() - boundsStartTime;
 
-    const heightfieldStartTime = performance.now();
-    const [hfWidth, hfHeight] = calculateGridSize(vec2.create(), bounds, finalOpts.cellSize);
-    heightfieldWidth = hfWidth;
-    heightfieldHeight = hfHeight;
-    const heightfield = createHeightfield(
-      hfWidth,
-      hfHeight,
-      bounds,
-      finalOpts.cellSize,
-      finalOpts.cellHeight,
+    cachedBounds = bounds;
+
+    const gridSize = calculateGridSize(vec2.create(), bounds, finalOpts.cellSize);
+    tileWidth = Math.max(
+      1,
+      Math.floor((gridSize[0] + tileSizeVoxels - 1) / tileSizeVoxels),
     );
-    heightfieldTime = performance.now() - heightfieldStartTime;
+    tileHeight = Math.max(
+      1,
+      Math.floor((gridSize[1] + tileSizeVoxels - 1) / tileSizeVoxels),
+    );
+    tileSizeWorld = tileSizeVoxels * finalOpts.cellSize;
 
-    if (hasStaticGeometry) {
-      const markTriStartTime = performance.now();
-      BuildContext.start(staticCtx, "mark walkable triangles");
-      const triAreaIds = new Uint8Array(
-        extraction.geometry.indices.length / 3,
-      ).fill(0);
-      markWalkableTriangles(
-        extraction.geometry.positions,
-        extraction.geometry.indices,
-        triAreaIds,
-        finalOpts.walkableSlopeAngleDegrees,
-      );
-      BuildContext.end(staticCtx, "mark walkable triangles");
-      markTriTime = performance.now() - markTriStartTime;
+    const borderWorld = finalOpts.borderSize * finalOpts.cellSize;
+    const tileVoxelExtent = Math.floor(tileSizeVoxels + finalOpts.borderSize * 2);
 
-      const rasterTriStartTime = performance.now();
-      BuildContext.start(staticCtx, "rasterize triangles");
-      rasterizeTriangles(
-        staticCtx,
-        heightfield,
-        extraction.geometry.positions,
-        extraction.geometry.indices,
-        triAreaIds,
-        finalOpts.walkableClimbVoxels,
-      );
-      BuildContext.end(staticCtx, "rasterize triangles");
-      rasterTriTime = performance.now() - rasterTriStartTime;
-    }
+    const geometryPositions = extraction.geometry.positions;
+    const geometryIndices = extraction.geometry.indices;
 
-    if (hasHeightfields) {
-      const rasterHfStartTime = performance.now();
-      BuildContext.start(staticCtx, "rasterize heightfields");
-      for (const rapierHf of extraction.heightfields) {
-        const { positions, indices } = convertRapierHeightfieldToTriangles(rapierHf);
-        const triAreaIds = new Uint8Array(indices.length / 3).fill(WALKABLE_AREA);
-        rasterizeTriangles(
-          staticCtx,
+    const newTiles: NavMeshTileCacheEntry[] = [];
+
+    for (let tx = 0; tx < tileWidth; tx++) {
+      for (let ty = 0; ty < tileHeight; ty++) {
+        const min = [
+          cachedBounds[0][0] + tx * tileSizeWorld,
+          cachedBounds[0][1],
+          cachedBounds[0][2] + ty * tileSizeWorld,
+        ] as Vec3;
+        const max = [
+          cachedBounds[0][0] + (tx + 1) * tileSizeWorld,
+          cachedBounds[1][1],
+          cachedBounds[0][2] + (ty + 1) * tileSizeWorld,
+        ] as Vec3;
+
+        const tileBounds = box3.create();
+        box3.set(tileBounds, min, max);
+
+        const expandedBounds = box3.clone(tileBounds);
+        expandedBounds[0][0] -= borderWorld;
+        expandedBounds[0][2] -= borderWorld;
+        expandedBounds[1][0] += borderWorld;
+        expandedBounds[1][2] += borderWorld;
+
+        const heightfield = createHeightfield(
+          tileVoxelExtent,
+          tileVoxelExtent,
+          expandedBounds,
+          finalOpts.cellSize,
+          finalOpts.cellHeight,
+        );
+
+        const tileCtx: BuildContextState = BuildContext.create();
+
+        if (hasStaticGeometry) {
+          const trianglesInBox: number[] = [];
+          const tri = triangle3.create();
+          for (let i = 0; i < geometryIndices.length; i += 3) {
+            const a = geometryIndices[i];
+            const b = geometryIndices[i + 1];
+            const c = geometryIndices[i + 2];
+            vec3.fromBuffer(tri[0], geometryPositions, a * 3);
+            vec3.fromBuffer(tri[1], geometryPositions, b * 3);
+            vec3.fromBuffer(tri[2], geometryPositions, c * 3);
+            if (box3.intersectsTriangle3(expandedBounds, tri)) {
+              trianglesInBox.push(a, b, c);
+            }
+          }
+
+          if (trianglesInBox.length > 0) {
+            const triAreaIds = new Uint8Array(
+              trianglesInBox.length / 3,
+            ).fill(0);
+            const rasterStart = performance.now();
+            markWalkableTriangles(
+              geometryPositions,
+              trianglesInBox,
+              triAreaIds,
+              finalOpts.walkableSlopeAngleDegrees,
+            );
+            rasterizeTriangles(
+              tileCtx,
+              heightfield,
+              geometryPositions,
+              trianglesInBox,
+              triAreaIds,
+              finalOpts.walkableClimbVoxels,
+            );
+            rasterTriTime += performance.now() - rasterStart;
+          }
+        }
+
+        if (convertedHeightfields.length > 0) {
+          for (let hfIndex = 0; hfIndex < convertedHeightfields.length; hfIndex++) {
+            const hfData = convertedHeightfields[hfIndex];
+            const hfBounds = extraction.heightfields[hfIndex].bounds;
+            if (!boxesIntersect(expandedBounds, hfBounds)) {
+              continue;
+            }
+
+            const hfTriangles: number[] = [];
+            const tri = triangle3.create();
+            for (let i = 0; i < hfData.indices.length; i += 3) {
+              const a = hfData.indices[i];
+              const b = hfData.indices[i + 1];
+              const c = hfData.indices[i + 2];
+              vec3.fromBuffer(tri[0], hfData.positions, a * 3);
+              vec3.fromBuffer(tri[1], hfData.positions, b * 3);
+              vec3.fromBuffer(tri[2], hfData.positions, c * 3);
+              if (box3.intersectsTriangle3(expandedBounds, tri)) {
+                hfTriangles.push(a, b, c);
+              }
+            }
+
+            if (hfTriangles.length > 0) {
+              const triAreaIds = new Uint8Array(
+                hfTriangles.length / 3,
+              ).fill(WALKABLE_AREA);
+              const rasterStart = performance.now();
+              rasterizeTriangles(
+                tileCtx,
+                heightfield,
+                hfData.positions,
+                hfTriangles,
+                triAreaIds,
+                finalOpts.walkableClimbVoxels,
+              );
+              rasterHfTime += performance.now() - rasterStart;
+            }
+          }
+        }
+
+        const filterStart = performance.now();
+        filterLowHangingWalkableObstacles(
           heightfield,
-          positions,
-          indices,
-          triAreaIds,
           finalOpts.walkableClimbVoxels,
         );
+        filterLedgeSpans(
+          heightfield,
+          finalOpts.walkableHeightVoxels,
+          finalOpts.walkableClimbVoxels,
+        );
+        filterWalkableLowHeightSpans(
+          heightfield,
+          finalOpts.walkableHeightVoxels,
+        );
+        filterTime += performance.now() - filterStart;
+
+        const compactStart = performance.now();
+        const compactHeightfield = buildCompactHeightfield(
+          tileCtx,
+          finalOpts.walkableHeightVoxels,
+          finalOpts.walkableClimbVoxels,
+          heightfield,
+        );
+        compactBuildTime += performance.now() - compactStart;
+
+        const erodeStart = performance.now();
+        if (preset !== "crispStrict") {
+          erodeWalkableArea(finalOpts.walkableRadiusVoxels, compactHeightfield);
+        }
+        erodeTime += performance.now() - erodeStart;
+
+        const distanceStart = performance.now();
+        buildDistanceField(compactHeightfield);
+        distanceTime += performance.now() - distanceStart;
+
+        const baseClone = structuredClone(compactHeightfield);
+        const workingClone = structuredClone(compactHeightfield);
+
+        newTiles.push({
+          key: `${tx}_${ty}`,
+          tileX: tx,
+          tileY: ty,
+          bounds: tileBounds,
+          expandedBounds,
+          baseCompactHeightfield: baseClone,
+          workingCompactHeightfield: workingClone,
+        });
       }
-      BuildContext.end(staticCtx, "rasterize heightfields");
-      rasterHfTime = performance.now() - rasterHfStartTime;
     }
 
-    const filterStartTime = performance.now();
-    BuildContext.start(staticCtx, "filter walkable surfaces");
-    filterLowHangingWalkableObstacles(heightfield, finalOpts.walkableClimbVoxels);
-    filterLedgeSpans(heightfield, finalOpts.walkableHeightVoxels, finalOpts.walkableClimbVoxels);
-    filterWalkableLowHeightSpans(heightfield, finalOpts.walkableHeightVoxels);
-    BuildContext.end(staticCtx, "filter walkable surfaces");
-    filterTime = performance.now() - filterStartTime;
-
-    const compactStartTime = performance.now();
-    BuildContext.start(staticCtx, "build compact heightfield");
-    const compactHeightfield = buildCompactHeightfield(
-      staticCtx,
-      finalOpts.walkableHeightVoxels,
-      finalOpts.walkableClimbVoxels,
-      heightfield,
-    );
-    compactBuildTime = performance.now() - compactStartTime;
-
-    const erodeStartTime = performance.now();
-    if (preset !== "crispStrict") {
-      erodeWalkableArea(finalOpts.walkableRadiusVoxels, compactHeightfield);
-    }
-    erodeTime = performance.now() - erodeStartTime;
-
-    const distanceStartTime = performance.now();
-    buildDistanceField(compactHeightfield);
-    distanceTime = performance.now() - distanceStartTime;
-
-    BuildContext.end(staticCtx, "build compact heightfield");
-    BuildContext.end(staticCtx, "static navmesh bake");
-
-    baseCompact = compactHeightfield;
-    cachedBounds = bounds;
+    tiles = newTiles;
 
     if (cacheRef) {
       cacheRef.staticSignature = staticSignature;
       cacheRef.optionsSignature = optionsSignature;
-      cacheRef.baseCompactHeightfield = structuredClone(compactHeightfield);
-      cacheRef.workingCompactHeightfield = structuredClone(compactHeightfield);
-      cacheRef.bounds = structuredClone(bounds);
-      cacheRef.heightfieldSize = [hfWidth, hfHeight];
+      cacheRef.tileSizeVoxels = tileSizeVoxels;
+      cacheRef.tileSizeWorld = tileSizeWorld;
+      cacheRef.tileWidth = tileWidth;
+      cacheRef.tileHeight = tileHeight;
+      cacheRef.bounds = structuredClone(cachedBounds);
+      cacheRef.heightfieldSize = [tileVoxelExtent, tileVoxelExtent];
+      cacheRef.tiles = newTiles.map((tile) => ({
+        key: tile.key,
+        tileX: tile.tileX,
+        tileY: tile.tileY,
+        bounds: structuredClone(tile.bounds) as Box3,
+        expandedBounds: structuredClone(tile.expandedBounds) as Box3,
+        baseCompactHeightfield: structuredClone(tile.baseCompactHeightfield),
+        workingCompactHeightfield: structuredClone(tile.baseCompactHeightfield),
+      }));
     }
   }
 
-  if (!baseCompact || !cachedBounds || heightfieldWidth === undefined || heightfieldHeight === undefined) {
+  if (!cachedBounds || !tiles) {
     return null;
   }
 
-  const ctx: BuildContextState = BuildContext.create();
-  BuildContext.start(ctx, "navmesh generation");
-  // Measure preparation time for working compact heightfield (major hotspot)
-  const cloneStartTime = performance.now();
-  let workingCompact: typeof baseCompact;
-  let cloneMode: "structuredClone" | "fastReset" = "structuredClone";
-  if (cacheRef?.workingCompactHeightfield && cacheRef.baseCompactHeightfield) {
-    try {
-      fastResetClone(cacheRef.workingCompactHeightfield, cacheRef.baseCompactHeightfield);
-      workingCompact = cacheRef.workingCompactHeightfield as typeof baseCompact;
-      cloneMode = "fastReset";
-    } catch {
-      // Fallback to structuredClone if fast reset fails for any reason
-      workingCompact = structuredClone(cacheRef.baseCompactHeightfield);
-      cloneMode = "structuredClone";
+  const navMesh = createNavMesh();
+  navMesh.origin = cachedBounds[0];
+  navMesh.tileWidth = tileSizeWorld;
+  navMesh.tileHeight = tileSizeWorld;
+
+  type PreparedObstacle = {
+    bottom: Vec3;
+    radius: number;
+    height: number;
+    handle: number;
+  };
+
+  const padding = obstacleMargin ?? finalOpts.cellSize * 0.5;
+  const navMeshMin = cachedBounds[0];
+  const navMeshMax = cachedBounds[1];
+
+  const stampableObstacles: PreparedObstacle[] = [];
+  for (const obstacle of extraction.dynamicObstacles) {
+    if (obstacle.radius <= 0) {
+      continue;
     }
-  } else {
-    workingCompact = structuredClone(cacheRef?.baseCompactHeightfield ?? baseCompact);
-    if (cacheRef) {
-      cacheRef.workingCompactHeightfield = structuredClone(workingCompact);
+
+    const radius = obstacle.radius + padding;
+    const height = obstacle.height + padding;
+    const bottom = [
+      obstacle.center[0],
+      obstacle.center[1] - obstacle.height / 2,
+      obstacle.center[2],
+    ] as Vec3;
+
+    if (
+      bottom[0] + radius < navMeshMin[0] ||
+      bottom[0] - radius > navMeshMax[0] ||
+      bottom[1] > navMeshMax[1] ||
+      bottom[1] + height < navMeshMin[1] ||
+      bottom[2] + radius < navMeshMin[2] ||
+      bottom[2] - radius > navMeshMax[2]
+    ) {
+      continue;
     }
+
+    stampableObstacles.push({
+      bottom,
+      radius,
+      height,
+      handle: obstacle.handle,
+    });
   }
-  const cloneTime = performance.now() - cloneStartTime;
-  console.log(`[Generate] 🧬 Prepare working compact: ${cloneMode} ${cloneTime.toFixed(2)}ms`);
 
-  // Stamp dynamic obstacles timing
-  const stampStartTime = performance.now();
-  let stampedObstacleCount = 0;
-  if (extraction.dynamicObstacles.length > 0) {
-    const padding = obstacleMargin ?? finalOpts.cellSize * 0.5;
-    for (const obstacle of extraction.dynamicObstacles) {
-      if (obstacle.radius <= 0) {
-        continue;
-      }
-      const bottom: Vec3 = [
-        obstacle.center[0],
-        obstacle.center[1] - obstacle.height / 2,
-        obstacle.center[2],
-      ];
+  const obstacleStamped = new Set<number>();
 
-      const radius = obstacle.radius + padding;
-      const height = obstacle.height + padding;
+  let totalTilesBuilt = 0;
+  let tilePolysTime = 0;
+  let detailConvertTime = 0;
+  let tileAddTime = 0;
 
-      // Quick bounds check
+  for (const tile of tiles) {
+    const baseCompact = tile.baseCompactHeightfield;
+    if (!baseCompact) {
+      continue;
+    }
+
+    const workingCompact = structuredClone(baseCompact);
+    tile.workingCompactHeightfield = workingCompact;
+
+    const expandedMin = tile.expandedBounds[0];
+    const expandedMax = tile.expandedBounds[1];
+
+    for (let i = 0; i < stampableObstacles.length; i++) {
+      const obstacle = stampableObstacles[i];
+      const bottomY = obstacle.bottom[1];
       if (
-        bottom[0] + radius < cachedBounds[0][0] ||
-        bottom[0] - radius > cachedBounds[1][0] ||
-        bottom[2] + radius < cachedBounds[0][2] ||
-        bottom[2] - radius > cachedBounds[1][2]
+        obstacle.bottom[0] + obstacle.radius < expandedMin[0] ||
+        obstacle.bottom[0] - obstacle.radius > expandedMax[0] ||
+        bottomY > expandedMax[1] ||
+        bottomY + obstacle.height < expandedMin[1] ||
+        obstacle.bottom[2] + obstacle.radius < expandedMin[2] ||
+        obstacle.bottom[2] - obstacle.radius > expandedMax[2]
       ) {
         continue;
       }
-
-      markCylinderArea(bottom, radius, height, NULL_AREA, workingCompact);
-      stampedObstacleCount++;
-    }
-  }
-  const stampTime = performance.now() - stampStartTime;
-  console.log(
-    `[Generate] 🛠️ Stamp dynamic obstacles: ${stampTime.toFixed(2)}ms (${stampedObstacleCount}/${extraction.dynamicObstacles.length})`,
-  );
-
-  const regionsStartTime = performance.now();
-  BuildContext.start(ctx, "build regions");
-  buildRegions(
-    ctx,
-    workingCompact,
-    finalOpts.borderSize,
-    finalOpts.minRegionArea,
-    finalOpts.mergeRegionArea,
-  );
-  BuildContext.end(ctx, "build regions");
-  const regionsTime = performance.now() - regionsStartTime;
-
-  const contoursStartTime = performance.now();
-  BuildContext.start(ctx, "build contours");
-  const contourSet = buildContours(
-    ctx,
-    workingCompact,
-    finalOpts.maxSimplificationError,
-    finalOpts.maxEdgeLength,
-    ContourBuildFlags.CONTOUR_TESS_WALL_EDGES,
-  );
-  BuildContext.end(ctx, "build contours");
-  const contoursTime = performance.now() - contoursStartTime;
-
-  const polyMeshStartTime = performance.now();
-  BuildContext.start(ctx, "build poly mesh");
-  const polyMesh = buildPolyMesh(ctx, contourSet, finalOpts.maxVerticesPerPoly);
-  BuildContext.end(ctx, "build poly mesh");
-  const polyMeshTime = performance.now() - polyMeshStartTime;
-
-  const shouldSkipDetail = skipDetailMesh || (polyMesh.nPolys < 20 && preset === "fast");
-  const detailSampleDistance = shouldSkipDetail ? 0 : finalOpts.detailSampleDistance;
-  const detailStartTime = performance.now();
-  BuildContext.start(ctx, "build poly mesh detail");
-  let polyMeshDetail: ReturnType<typeof buildPolyMeshDetail>;
-  let detailBuiltSuccessfully = false;
-  let detailTime = 0;
-  let usedMinimalDetailFallback = false;
-
-  if (shouldSkipDetail) {
-    detailTime = performance.now() - detailStartTime;
-    const reason = skipDetailMesh ? "preset/skipDetailMesh" : `few polys (${polyMesh.nPolys} < 20)`;
-    console.log(`[Generate] ⏭️ Skipped detail mesh (${reason}, detailSampleDistance=0): ${detailTime.toFixed(2)}ms`);
-    polyMeshDetail = {
-      meshes: [],
-      vertices: [],
-      triangles: [],
-      nMeshes: 0,
-      nVertices: 0,
-      nTriangles: 0,
-    } as unknown as ReturnType<typeof buildPolyMeshDetail>;
-  } else {
-    try {
-      polyMeshDetail = buildPolyMeshDetail(
-        ctx,
-        polyMesh,
+      markCylinderArea(
+        obstacle.bottom,
+        obstacle.radius,
+        obstacle.height,
+        NULL_AREA,
         workingCompact,
-        detailSampleDistance,
-        finalOpts.detailSampleMaxError,
       );
-      detailBuiltSuccessfully = true;
-      detailTime = performance.now() - detailStartTime;
-      console.log(`[Generate] Built poly mesh detail: ${detailTime.toFixed(2)}ms`);
-    } catch (error) {
-      console.warn(
-        `[Generate] ⚠️ Detail mesh generation failed (sampleDist=${detailSampleDistance}): ${error instanceof Error ? error.message : String(error)}`,
-      );
+      obstacleStamped.add(i);
+    }
 
-      const fallbackStart = performance.now();
+    const tileCtx: BuildContextState = BuildContext.create();
+    buildRegions(
+      tileCtx,
+      workingCompact,
+      finalOpts.borderSize,
+      finalOpts.minRegionArea,
+      finalOpts.mergeRegionArea,
+    );
+    const contourSet = buildContours(
+      tileCtx,
+      workingCompact,
+      finalOpts.maxSimplificationError,
+      finalOpts.maxEdgeLength,
+      ContourBuildFlags.CONTOUR_TESS_WALL_EDGES,
+    );
+    const polyMesh = buildPolyMesh(
+      tileCtx,
+      contourSet,
+      finalOpts.maxVerticesPerPoly,
+    );
+
+    if (polyMesh.nPolys === 0) {
+      continue;
+    }
+
+    totalTilesBuilt++;
+
+    const tileShouldSkipDetail =
+      skipDetailMesh || (preset === "fast" && polyMesh.nPolys < 20);
+    const detailSampleDistance = tileShouldSkipDetail
+      ? 0
+      : finalOpts.detailSampleDistance;
+
+    let polyMeshDetail: ReturnType<typeof buildPolyMeshDetail>;
+    let detailBuiltSuccessfully = false;
+    let usedMinimalDetailFallback = false;
+
+    if (!tileShouldSkipDetail) {
       try {
         polyMeshDetail = buildPolyMeshDetail(
-          ctx,
+          tileCtx,
           polyMesh,
           workingCompact,
-          0,
+          detailSampleDistance,
           finalOpts.detailSampleMaxError,
         );
-        detailBuiltSuccessfully = false;
-        detailTime = performance.now() - fallbackStart;
-        console.warn(`[Generate] ⚠️ Detail mesh fallback succeeded with sampleDist=0: ${detailTime.toFixed(2)}ms`);
-      } catch (fallbackError) {
-        console.error(
-          `[Generate] ❌ Detail mesh fallback failed: ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}. Using minimal detail structure.`,
+        detailBuiltSuccessfully = true;
+      } catch (error) {
+        console.warn(
+          `[Generate] ⚠️ Detail mesh failed for tile (${tile.tileX}, ${tile.tileY}) at sampleDist=${detailSampleDistance}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
         );
-        usedMinimalDetailFallback = true;
-        detailTime = performance.now() - detailStartTime;
-        polyMeshDetail = {
-          meshes: [],
-          vertices: [],
-          triangles: [],
-          nMeshes: 0,
-          nVertices: 0,
-          nTriangles: 0,
-        } as unknown as ReturnType<typeof buildPolyMeshDetail>;
-        detailBuiltSuccessfully = false;
+        try {
+          polyMeshDetail = buildPolyMeshDetail(
+            tileCtx,
+            polyMesh,
+            workingCompact,
+            0,
+            finalOpts.detailSampleMaxError,
+          );
+        } catch (fallbackError) {
+          console.error(
+            `[Generate] ❌ Detail mesh fallback failed for tile (${tile.tileX}, ${tile.tileY}): ${
+              fallbackError instanceof Error
+                ? fallbackError.message
+                : String(fallbackError)
+            }`,
+          );
+          usedMinimalDetailFallback = true;
+          polyMeshDetail = {
+            meshes: [],
+            vertices: [],
+            triangles: [],
+            nMeshes: 0,
+            nVertices: 0,
+            nTriangles: 0,
+          } as unknown as ReturnType<typeof buildPolyMeshDetail>;
+        }
+      }
+    } else {
+      polyMeshDetail = {
+        meshes: [],
+        vertices: [],
+        triangles: [],
+        nMeshes: 0,
+        nVertices: 0,
+        nTriangles: 0,
+      } as unknown as ReturnType<typeof buildPolyMeshDetail>;
+    }
+
+    const tilePolysStart = performance.now();
+    const tilePolys = polyMeshToTilePolys(polyMesh);
+    tilePolysTime += performance.now() - tilePolysStart;
+
+    if (tileShouldSkipDetail || usedMinimalDetailFallback) {
+      const meshes: number[] = new Array(tilePolys.polys.length * 4);
+      let meshIndex = 0;
+      for (const poly of tilePolys.polys) {
+        const nPolyVertices = poly.vertices.length;
+        meshes[meshIndex++] = 0;
+        meshes[meshIndex++] = nPolyVertices;
+        meshes[meshIndex++] = 0;
+        meshes[meshIndex++] = 0;
+      }
+      polyMeshDetail = {
+        meshes,
+        vertices: [],
+        triangles: [],
+        nMeshes: tilePolys.polys.length,
+        nVertices: 0,
+        nTriangles: 0,
+      } as unknown as ReturnType<typeof buildPolyMeshDetail>;
+    }
+
+    for (const poly of tilePolys.polys) {
+      if (poly.flags === 0) {
+        poly.flags = 1;
       }
     }
-  }
-  BuildContext.end(ctx, "build poly mesh detail");
 
-  const navMesh = createNavMesh();
-  const origin: Vec3 = [
-    polyMesh.bounds[0][0],
-    polyMesh.bounds[0][1],
-    polyMesh.bounds[0][2],
-  ];
-  const tileWidthWorld = polyMesh.bounds[1][0] - polyMesh.bounds[0][0];
-  const tileHeightWorld = polyMesh.bounds[1][2] - polyMesh.bounds[0][2];
-  navMesh.origin = origin;
-  navMesh.tileWidth = tileWidthWorld;
-  navMesh.tileHeight = tileHeightWorld;
-  const tilePolysStartTime = performance.now();
-  const tilePolys = polyMeshToTilePolys(polyMesh);
-  const tilePolysTime = performance.now() - tilePolysStartTime;
-  console.log(`[Generate] 🔄 PolyMesh to tile polys: ${tilePolysTime.toFixed(2)}ms`);
-
-  if (usedMinimalDetailFallback || shouldSkipDetail) {
-    const meshes: number[] = new Array(tilePolys.polys.length * 4);
-    let meshIndex = 0;
-    for (const poly of tilePolys.polys) {
-      const nPolyVertices = poly.vertices.length;
-      meshes[meshIndex++] = 0;
-      meshes[meshIndex++] = nPolyVertices;
-      meshes[meshIndex++] = 0;
-      meshes[meshIndex++] = 0;
+    let tileDetailMesh: ReturnType<typeof polyMeshDetailToTileDetailMesh>;
+    const detailConvertStart = performance.now();
+    try {
+      tileDetailMesh = polyMeshDetailToTileDetailMesh(
+        tilePolys.polys,
+        polyMeshDetail,
+      );
+    } catch (error) {
+      console.warn(
+        `[Generate] ⚠️ Detail conversion failed for tile (${tile.tileX}, ${tile.tileY}): ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      tileDetailMesh = {
+        detailMeshes: [],
+        detailVertices: [] as number[],
+        detailTriangles: [] as number[],
+      } as ReturnType<typeof polyMeshDetailToTileDetailMesh>;
     }
+    detailConvertTime += performance.now() - detailConvertStart;
 
-    polyMeshDetail = {
-      meshes,
-      vertices: [],
-      triangles: [],
-      nMeshes: tilePolys.polys.length,
-      nVertices: 0,
-      nTriangles: 0,
-    } as unknown as ReturnType<typeof buildPolyMeshDetail>;
-  }
+    const tileParams = {
+      bounds: polyMesh.bounds,
+      vertices: tilePolys.vertices,
+      polys: tilePolys.polys,
+      detailMeshes: tileDetailMesh.detailMeshes,
+      detailVertices: tileDetailMesh.detailVertices,
+      detailTriangles: tileDetailMesh.detailTriangles,
+      tileX: tile.tileX,
+      tileY: tile.tileY,
+      tileLayer: 0,
+      cellSize: finalOpts.cellSize,
+      cellHeight: finalOpts.cellHeight,
+      walkableHeight: finalOpts.walkableHeightWorld,
+      walkableRadius: finalOpts.walkableRadiusWorld,
+      walkableClimb: finalOpts.walkableClimbWorld,
+    } as Parameters<typeof buildTile>[0];
 
-  for (const poly of tilePolys.polys) {
-    if (poly.flags === 0) {
-      poly.flags = 1;
+    const tileAddStart = performance.now();
+    removeTile(navMesh, tile.tileX, tile.tileY, 0);
+    addTile(navMesh, buildTile(tileParams));
+    tileAddTime += performance.now() - tileAddStart;
+
+    if (!detailBuiltSuccessfully && !tileShouldSkipDetail) {
+      console.warn(
+        `[Generate] ℹ️ Detail mesh fallback used for tile (${tile.tileX}, ${tile.tileY})`,
+      );
     }
   }
-
-  let tileDetailMesh: ReturnType<typeof polyMeshDetailToTileDetailMesh>;
-  const detailConvertStartTime = performance.now();
-  try {
-    tileDetailMesh = polyMeshDetailToTileDetailMesh(tilePolys.polys, polyMeshDetail);
-  } catch (error) {
-    console.warn(`[Generate] ⚠️ Detail mesh conversion failed, using empty arrays: ${error instanceof Error ? error.message : String(error)}`);
-    tileDetailMesh = {
-      detailMeshes: [],
-      detailVertices: [] as number[],
-      detailTriangles: [] as number[],
-    } as ReturnType<typeof polyMeshDetailToTileDetailMesh>;
-  }
-  const detailConvertTime = performance.now() - detailConvertStartTime;
-  console.log(`[Generate] 🧩 Detail to tile detail mesh: ${detailConvertTime.toFixed(2)}ms`);
-
-  const tileParams = {
-    bounds: polyMesh.bounds,
-    vertices: tilePolys.vertices,
-    polys: tilePolys.polys,
-    detailMeshes: tileDetailMesh.detailMeshes,
-    detailVertices: tileDetailMesh.detailVertices,
-    detailTriangles: tileDetailMesh.detailTriangles,
-    tileX: 0,
-    tileY: 0,
-    tileLayer: 0,
-    cellSize: finalOpts.cellSize,
-    cellHeight: finalOpts.cellHeight,
-    walkableHeight: finalOpts.walkableHeightWorld,
-    walkableRadius: finalOpts.walkableRadiusWorld,
-    walkableClimb: finalOpts.walkableClimbWorld,
-  } as Parameters<typeof buildTile>[0];
-
-  const tileStartTime = performance.now();
-  addTile(navMesh, buildTile(tileParams));
-  const tileTime = performance.now() - tileStartTime;
-
-  BuildContext.end(ctx, "navmesh generation");
 
   const totalTime = performance.now() - generateStartTime;
-  console.group(`[Generate] ✅ Navmesh generation complete! Total: ${totalTime.toFixed(2)}ms`);
+  const stampedObstacleCount = obstacleStamped.size;
+
+  console.group(
+    `[Generate] ✅ Navmesh generation complete! Total: ${totalTime.toFixed(2)}ms`,
+  );
   if (needsRebuild) {
     console.log(`  📐 Bounds calculation: ${boundsTime.toFixed(2)}ms`);
-    console.log(`  📊 Heightfield creation (${heightfieldWidth}x${heightfieldHeight}): ${heightfieldTime.toFixed(2)}ms`);
-    if (hasStaticGeometry) {
-      console.log(`  ✓ Mark walkable triangles: ${markTriTime.toFixed(2)}ms`);
-      console.log(`  ✓ Rasterize triangles: ${rasterTriTime.toFixed(2)}ms`);
-    }
-    if (hasHeightfields) {
-      console.log(`  ✓ Rasterize ${extraction.heightfields.length} heightfields: ${rasterHfTime.toFixed(2)}ms`);
-    }
+    console.log(`  ✓ Rasterize geometry: ${rasterTriTime.toFixed(2)}ms`);
+    console.log(`  ✓ Rasterize heightfields: ${rasterHfTime.toFixed(2)}ms`);
     console.log(`  🔍 Filter walkable surfaces: ${filterTime.toFixed(2)}ms`);
     console.log(`  📦 Compact heightfield build: ${compactBuildTime.toFixed(2)}ms`);
     if (preset === "crispStrict") {
-      console.log(`  ⚡ Erode walkable area: skipped`);
+      console.log("  ⚡ Erode walkable area: skipped");
     } else {
       console.log(`  ⚡ Erode walkable area: ${erodeTime.toFixed(2)}ms`);
     }
     console.log(`  📏 Distance field: ${distanceTime.toFixed(2)}ms`);
   } else {
-    console.log(`  ♻️ Reused static compact heightfield from cache`);
+    console.log("  ♻️ Reused cached static tile heightfields");
   }
-  console.log(`  🧬 Clone compact: ${cloneTime.toFixed(2)}ms`);
-  console.log(`  🗺️ Build regions: ${regionsTime.toFixed(2)}ms`);
-  console.log(`  🔷 Build contours: ${contoursTime.toFixed(2)}ms`);
-  console.log(`  🔺 Build poly mesh (${polyMesh.nPolys} polys): ${polyMeshTime.toFixed(2)}ms`);
-  if (shouldSkipDetail || !detailBuiltSuccessfully) {
-    const reason = shouldSkipDetail ? (skipDetailMesh ? "preset" : `few polys (${polyMesh.nPolys})`) : "error";
-    console.log(`  ⏭️ Detail mesh: skipped (${reason})`);
-  } else {
-    console.log(`  ✨ Build poly mesh detail: ${detailTime.toFixed(2)}ms`);
-  }
-  console.log(`  🛠️ Stamp obstacles: ${stampTime.toFixed(2)}ms (${stampedObstacleCount}/${extraction.dynamicObstacles.length})`);
+  console.log(
+    `  🧱 Tiles built: ${totalTilesBuilt}/${tiles.length} (grid ${tileWidth}×${tileHeight})`,
+  );
+  console.log(
+    `  🛠️ Stamped obstacles: ${stampedObstacleCount}/${stampableObstacles.length}`,
+  );
   console.log(`  🔄 PolyMesh→TilePolys: ${tilePolysTime.toFixed(2)}ms`);
   console.log(`  🧩 Detail→TileDetail: ${detailConvertTime.toFixed(2)}ms`);
-  console.log(`  📌 Add tile: ${tileTime.toFixed(2)}ms`);
+  console.log(`  📌 Add tiles: ${tileAddTime.toFixed(2)}ms`);
   console.groupEnd();
 
   if (cacheRef) {
