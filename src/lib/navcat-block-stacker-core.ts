@@ -657,18 +657,6 @@ export const navcatBlockDomain = (() => {
             worldPosition: top,
             description: `Place block on top of ${step.frontier.label}`,
           });
-          const climbPath = findPath(simNavMesh, simAgentPos, top, HALF_EXTENTS, DEFAULT_QUERY_FILTER);
-          if (climbPath.success && climbPath.path.length > 0) {
-            plannedActions.push({
-              type: "navigate",
-              path: pathToPoints(climbPath),
-              description: `Climb onto ${step.frontier.label}`,
-              targetPosition: top,
-            });
-            simAgentPos = [...top];
-          } else {
-            simAgentPos = [...top];
-          }
         } else {
           if (!usedAnchor) {
             const anchorTop = cellTop(simGrid, step.anchor);
@@ -700,18 +688,7 @@ export const navcatBlockDomain = (() => {
             worldPosition: top,
             description: `Stack block for ${step.frontier.label}`,
           });
-          const climbPath = findPath(simNavMesh, simAgentPos, top, HALF_EXTENTS, DEFAULT_QUERY_FILTER);
-          if (climbPath.success && climbPath.path.length > 0) {
-            plannedActions.push({
-              type: "navigate",
-              path: pathToPoints(climbPath),
-              description: `Climb onto ${step.frontier.label}`,
-              targetPosition: top,
-            });
-            simAgentPos = [...top];
-          } else {
-            simAgentPos = [...top];
-          }
+          context.pendingStep = null;
         }
       }
 
@@ -966,18 +943,6 @@ export const navcatBlockDomain = (() => {
         worldPosition: top,
         description: `Place block on top of ${frontier.label}`,
       });
-      // After placing, agent can climb the new block
-      const targetTop = cellTop(context.grid, frontier.cell);
-      const path = findPath(context.navMesh, context.agentPos, targetTop, HALF_EXTENTS, DEFAULT_QUERY_FILTER);
-      if (path.success && path.path.length > 0) {
-        context.actionQueue.push({
-          type: "navigate",
-          path: pathToPoints(path),
-          description: `Climb onto ${frontier.label}`,
-          targetPosition: targetTop,
-        });
-        context.agentPos = targetTop;
-      }
       context.pendingStep = null;
     })
     .end()
@@ -1034,32 +999,6 @@ export const navcatBlockDomain = (() => {
         description: `Stack block for ${frontier.label}`,
       });
     })
-    .end()
-    .action("Climb new block")
-    .condition("Frontier reachable", (ctx) => {
-      const step = ctx.pendingStep;
-      if (!step) {
-        logError("domain: missing pendingStep while enqueuing climb");
-        return false;
-      }
-      const targetTop = cellTop(ctx.grid, step.frontier.cell);
-      const path = findPath(ctx.navMesh, ctx.agentPos, targetTop, HALF_EXTENTS, DEFAULT_QUERY_FILTER);
-      if (!path.success || path.path.length === 0) return false;
-      log("domain: enqueue climb", {
-        frontier: step.frontier.label,
-        pathLength: path.path.length,
-      });
-      ctx.actionQueue.push({
-        type: "navigate",
-        path: pathToPoints(path),
-        description: `Climb onto ${step.frontier.label}`,
-        targetPosition: targetTop,
-      });
-      ctx.agentPos = targetTop;
-      ctx.pendingStep = null;
-      return true;
-    })
-    .do(() => TaskStatus.Success)
     .end()
     .end();
 
