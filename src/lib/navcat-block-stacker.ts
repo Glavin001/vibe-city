@@ -108,6 +108,11 @@ class BlockWorldContext extends Context {
   }
 }
 
+type TaskStatusLiteral = (typeof TaskStatus)[keyof typeof TaskStatus];
+
+const operator = (fn: (ctx: BlockWorldContext) => TaskStatusLiteral) =>
+  ((context: Context) => fn(context as BlockWorldContext));
+
 const cloneGrid = (grid: number[][]): number[][] => grid.map((row) => [...row]);
 
 const cellKey = (cell: Cell) => `${cell.x}:${cell.z}`;
@@ -281,33 +286,37 @@ const navcatBlockDomain = (() => {
     })
     .action("Navigate to supply")
     .condition("Supply chosen", (ctx) => ctx.pendingStep !== null)
-    .do((ctx) => {
-      const step = ctx.pendingStep!;
-      ctx.agentPos = [...step.supplyTop];
-      ctx.actionQueue.push({
-        type: "navigate",
-        path: step.pathToSupply,
-        description: `Walk to supply crate at (${step.supply.x}, ${step.supply.z})`,
-      });
-      return TaskStatus.Success;
-    })
+    .do(
+      operator((ctx) => {
+        const step = ctx.pendingStep!;
+        ctx.agentPos = [...step.supplyTop];
+        ctx.actionQueue.push({
+          type: "navigate",
+          path: step.pathToSupply,
+          description: `Walk to supply crate at (${step.supply.x}, ${step.supply.z})`,
+        });
+        return TaskStatus.Success;
+      }),
+    )
     .end()
     .action("Pick block")
     .condition("Ready to pick", (ctx) => ctx.pendingStep !== null && !ctx.carrying)
-    .do((ctx) => {
-      const step = ctx.pendingStep!;
-      const { supply } = step;
-      ctx.grid[supply.x][supply.z] -= 1;
-      ctx.carrying = true;
-      ctx.navMesh = buildNavMeshForGrid(ctx.grid);
-      ctx.actionQueue.push({
-        type: "pick",
-        cell: supply,
-        worldPosition: step.supplyTop,
-        description: `Pick block at (${supply.x}, ${supply.z})`,
-      });
-      return TaskStatus.Success;
-    })
+    .do(
+      operator((ctx) => {
+        const step = ctx.pendingStep!;
+        const { supply } = step;
+        ctx.grid[supply.x][supply.z] -= 1;
+        ctx.carrying = true;
+        ctx.navMesh = buildNavMeshForGrid(ctx.grid);
+        ctx.actionQueue.push({
+          type: "pick",
+          cell: supply,
+          worldPosition: step.supplyTop,
+          description: `Pick block at (${supply.x}, ${supply.z})`,
+        });
+        return TaskStatus.Success;
+      }),
+    )
     .end()
     .action("Navigate to anchor")
     .condition("Still carrying", (ctx) => ctx.pendingStep !== null && ctx.carrying)
@@ -328,21 +337,23 @@ const navcatBlockDomain = (() => {
     .end()
     .action("Place block")
     .condition("Carrying block", (ctx) => ctx.pendingStep !== null && ctx.carrying)
-    .do((ctx) => {
-      const step = ctx.pendingStep!;
-      const { frontier } = step;
-      ctx.grid[frontier.cell.x][frontier.cell.z] += 1;
-      ctx.carrying = false;
-      ctx.navMesh = buildNavMeshForGrid(ctx.grid);
-      const top = cellTop(ctx.grid, frontier.cell);
-      ctx.actionQueue.push({
-        type: "place",
-        cell: frontier.cell,
-        worldPosition: top,
-        description: `Stack block for ${frontier.label}`,
-      });
-      return TaskStatus.Success;
-    })
+    .do(
+      operator((ctx) => {
+        const step = ctx.pendingStep!;
+        const { frontier } = step;
+        ctx.grid[frontier.cell.x][frontier.cell.z] += 1;
+        ctx.carrying = false;
+        ctx.navMesh = buildNavMeshForGrid(ctx.grid);
+        const top = cellTop(ctx.grid, frontier.cell);
+        ctx.actionQueue.push({
+          type: "place",
+          cell: frontier.cell,
+          worldPosition: top,
+          description: `Stack block for ${frontier.label}`,
+        });
+        return TaskStatus.Success;
+      }),
+    )
     .end()
     .action("Climb new block")
     .condition("Frontier reachable", (ctx) => {
@@ -667,7 +678,9 @@ export const createNavcatBlockStackerScene = async (
       pathMaterial.dispose();
       blockGeometry.dispose();
       blockMaterial.dispose();
-      stats?.dispose();
+      if (stats) {
+        stats.domElement.remove();
+      }
       container.innerHTML = "";
     },
   };
