@@ -24,11 +24,13 @@ import {
   runNavcatBlockStackerHeadless,
   type HeadlessRunConfig,
   hasAgentReachedGoal,
+  type PlannedAction,
 } from "./navcat-block-stacker-core";
 
 export type BlockStackerCallbacks = {
   onStatus?: (status: string) => void;
   onAction?: (action: string) => void;
+  onPlanUpdate?: (plan: { iteration: number; actions: string[]; tasks: string[] }) => void;
 };
 
 export type BlockStackerOptions = {
@@ -316,6 +318,16 @@ export const createNavcatBlockStackerScene = async (
   const runPlanner = async () => {
     callbacks.onStatus?.("Planning staircase...");
     let iteration = 0;
+
+    const emitPlanUpdate = (currentIteration: number, actions: PlannedAction[], tasks: string[]) => {
+      if (!callbacks.onPlanUpdate) return;
+      callbacks.onPlanUpdate({
+        iteration: currentIteration,
+        actions: actions.map((action) => action.description),
+        tasks,
+      });
+    };
+
     while (!disposed) {
       iteration += 1;
       const currentFrontier = getFrontier(world.grid);
@@ -358,6 +370,9 @@ export const createNavcatBlockStackerScene = async (
         taskNames: planResult.plan.map((task) => task.Name ?? ""),
         status: planResult.status,
       });
+      const plannedTasks = planResult.plan.map((task) => task.Name ?? "Unnamed task");
+      const remainingActions: PlannedAction[] = [...planningContext.actionQueue];
+      emitPlanUpdate(iteration, remainingActions, plannedTasks);
       if (planningContext.actionQueue.length === 0) {
         logError("planner: no actions produced", {
           iteration,
@@ -365,6 +380,7 @@ export const createNavcatBlockStackerScene = async (
           agentPos: [...world.agentPos],
         });
         callbacks.onStatus?.("Planner failed to find a plan.");
+        emitPlanUpdate(iteration, [], []);
         break;
       }
       for (const action of planningContext.actionQueue) {
@@ -424,8 +440,12 @@ export const createNavcatBlockStackerScene = async (
             carrying: world.carrying,
           });
         }
+        remainingActions.shift();
+        emitPlanUpdate(iteration, remainingActions, plannedTasks);
       }
     }
+
+    emitPlanUpdate(iteration, [], []);
   };
 
   void runPlanner();
@@ -450,6 +470,7 @@ export const createNavcatBlockStackerScene = async (
         stats.domElement.remove();
       }
       container.innerHTML = "";
+      callbacks.onPlanUpdate?.({ iteration: 0, actions: [], tasks: [] });
     },
     setSpeed: (newSpeed: number) => {
       speed = Math.max(0.1, Math.min(10, newSpeed));
