@@ -1,10 +1,29 @@
 import Stats from "stats-gl";
 import type { Vec3 } from "mathcat";
-import { DEFAULT_QUERY_FILTER, type NavMesh, findPath } from "navcat";
-import { generateTiledNavMesh } from "navcat/blocks";
-import { Context, DomainBuilder, TaskStatus } from "htn-ai";
+import { DEFAULT_QUERY_FILTER, type NavMesh } from "navcat";
 import { OrbitControls } from "three/examples/jsm/Addons.js";
 import * as THREE from "three/webgpu";
+import {
+  BlockWorldContext,
+  BLOCK_SIZE,
+  GRID_WIDTH,
+  GRID_DEPTH,
+  cellKey,
+  cellTop,
+  cloneGrid,
+  createInitialGrid,
+  distance3,
+  getFrontier,
+  canReachGoal,
+  buildNavMeshForGrid,
+  navcatBlockDomain,
+  type Cell,
+  type PlannedAction,
+  START_CELL,
+  STAIRS,
+  GOAL_CELL,
+  runNavcatBlockStackerHeadless,
+} from "./navcat-block-stacker-core";
 
 export type BlockStackerCallbacks = {
   onStatus?: (status: string) => void;
@@ -15,377 +34,7 @@ export type BlockStackerHandle = {
   dispose: () => void;
 };
 
-const BLOCK_SIZE = 1;
-const GRID_WIDTH = 8;
-const GRID_DEPTH = 8;
-
-const HALF_EXTENTS: Vec3 = [0.3, 0.6, 0.3];
-
-const NAV_OPTIONS = {
-  cellSize: 0.2,
-  cellHeight: 0.2,
-  tileSizeVoxels: 32,
-  tileSizeWorld: 6.4,
-  walkableRadiusVoxels: 2,
-  walkableRadiusWorld: 0.4,
-  walkableClimbVoxels: 5,
-  walkableClimbWorld: 1,
-  walkableHeightVoxels: 8,
-  walkableHeightWorld: 1.8,
-  walkableSlopeAngleDegrees: 45,
-  borderSize: 2,
-  minRegionArea: 8,
-  mergeRegionArea: 20,
-  maxSimplificationError: 1.3,
-  maxEdgeLength: 16,
-  maxVerticesPerPoly: 6,
-  detailSampleDistance: 6,
-  detailSampleMaxError: 1,
-} as const;
-
-type Cell = { x: number; z: number };
-
-type StepDefinition = {
-  cell: Cell;
-  targetHeight: number;
-  label: string;
-};
-
-const STAIRS: StepDefinition[] = [
-  { cell: { x: 3, z: 2 }, targetHeight: 1, label: "Step 1" },
-  { cell: { x: 3, z: 3 }, targetHeight: 2, label: "Step 2" },
-  { cell: { x: 3, z: 4 }, targetHeight: 3, label: "Step 3" },
-  { cell: { x: 3, z: 5 }, targetHeight: 4, label: "Step 4" },
-];
-
-const START_CELL: Cell = { x: 3, z: 1 };
-const GOAL_CELL: Cell = { x: 3, z: 6 };
-const GOAL_HEIGHT = 5;
-
-const SUPPLY_SOURCES = [
-  { cell: { x: 1, z: 1 }, height: 3 },
-  { cell: { x: 5, z: 2 }, height: 2 },
-  { cell: { x: 6, z: 4 }, height: 2 },
-  { cell: { x: 2, z: 6 }, height: 2 },
-  { cell: { x: 4, z: 4 }, height: 3 },
-];
-
-const SUPPLY_CELLS: Cell[] = SUPPLY_SOURCES.map((source) => source.cell);
-
-type PlannedAction =
-  | { type: "navigate"; path: Vec3[]; description: string }
-  | { type: "pick"; cell: Cell; worldPosition: Vec3; description: string }
-  | { type: "place"; cell: Cell; worldPosition: Vec3; description: string };
-
-type PlannedStep = {
-  supply: Cell;
-  supplyTop: Vec3;
-  frontier: StepDefinition;
-  anchor: Cell;
-  pathToSupply: Vec3[];
-};
-
-type BlockWorldSnapshot = {
-  grid: number[][];
-  agentPos: Vec3;
-  carrying: boolean;
-};
-
-class BlockWorldContext extends Context {
-  grid: number[][];
-  navMesh: NavMesh;
-  actionQueue: PlannedAction[] = [];
-  agentPos: Vec3;
-  carrying: boolean;
-  pendingStep: PlannedStep | null = null;
-  constructor(snapshot: BlockWorldSnapshot, navMesh: NavMesh) {
-    super();
-    this.grid = snapshot.grid;
-    this.navMesh = navMesh;
-    this.agentPos = [...snapshot.agentPos] as Vec3;
-    this.carrying = snapshot.carrying;
-    this.init();
-  }
-}
-
-type TaskStatusLiteral = (typeof TaskStatus)[keyof typeof TaskStatus];
-
-const operator = (fn: (ctx: BlockWorldContext) => TaskStatusLiteral) =>
-  ((context: Context) => fn(context as BlockWorldContext));
-
-const cloneGrid = (grid: number[][]): number[][] => grid.map((row) => [...row]);
-
-const cellKey = (cell: Cell) => `${cell.x}:${cell.z}`;
-
-const cellTop = (grid: number[][], cell: Cell): Vec3 => [
-  cell.x * BLOCK_SIZE + BLOCK_SIZE / 2,
-  grid[cell.x][cell.z] * BLOCK_SIZE,
-  cell.z * BLOCK_SIZE + BLOCK_SIZE / 2,
-];
-
-const distance3 = (a: Vec3, b: Vec3) =>
-  Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
-
-const pathToPoints = (path: ReturnType<typeof findPath>): Vec3[] => {
-  if (!path.success) return [];
-  return path.path.map((p) => [p.position[0], p.position[1], p.position[2]] as Vec3);
-};
-
-const pathLength = (points: Vec3[]): number => {
-  if (points.length < 2) return 0;
-  let length = 0;
-  for (let i = 1; i < points.length; i++) {
-    length += distance3(points[i - 1], points[i]);
-  }
-  return length;
-};
-
-const addCube = (
-  positions: number[],
-  indices: number[],
-  x: number,
-  y: number,
-  z: number,
-  size: number,
-) => {
-  const baseIndex = positions.length / 3;
-  const vertices: Vec3[] = [
-    [x, y, z],
-    [x + size, y, z],
-    [x + size, y, z + size],
-    [x, y, z + size],
-    [x, y + size, z],
-    [x + size, y + size, z],
-    [x + size, y + size, z + size],
-    [x, y + size, z + size],
-  ];
-  for (const v of vertices) {
-    positions.push(v[0], v[1], v[2]);
-  }
-  const faceIndices = [
-    [0, 1, 2, 0, 2, 3],
-    [4, 6, 5, 4, 7, 6],
-    [4, 5, 1, 4, 1, 0],
-    [3, 2, 6, 3, 6, 7],
-    [1, 5, 6, 1, 6, 2],
-    [4, 0, 3, 4, 3, 7],
-  ];
-  for (const face of faceIndices) {
-    for (const index of face) {
-      indices.push(baseIndex + index);
-    }
-  }
-};
-
-const buildGeometryFromGrid = (grid: number[][]) => {
-  const positions: number[] = [];
-  const indices: number[] = [];
-  const planeY = 0;
-  addCube(positions, indices, 0, planeY - 0.1, 0, GRID_WIDTH * BLOCK_SIZE);
-  for (let x = 0; x < GRID_WIDTH; x++) {
-    for (let z = 0; z < GRID_DEPTH; z++) {
-      const height = grid[x][z];
-      for (let h = 0; h < height; h++) {
-        addCube(
-          positions,
-          indices,
-          x * BLOCK_SIZE,
-          h * BLOCK_SIZE,
-          z * BLOCK_SIZE,
-          BLOCK_SIZE,
-        );
-      }
-    }
-  }
-  return {
-    positions: new Float32Array(positions),
-    indices: new Uint32Array(indices),
-  };
-};
-
-const buildNavMeshForGrid = (grid: number[][]): NavMesh => {
-  const { positions, indices } = buildGeometryFromGrid(grid);
-  const { navMesh } = generateTiledNavMesh({ positions, indices }, NAV_OPTIONS);
-  return navMesh;
-};
-
-const canReachGoal = (ctx: BlockWorldContext): { reachable: boolean; path: Vec3[] } => {
-  const target = cellTop(ctx.grid, GOAL_CELL);
-  const result = findPath(ctx.navMesh, ctx.agentPos, target, HALF_EXTENTS, DEFAULT_QUERY_FILTER);
-  if (!result.success || result.path.length === 0) {
-    return { reachable: false, path: [] };
-  }
-  return { reachable: true, path: pathToPoints(result) };
-};
-
-const getFrontier = (grid: number[][]): StepDefinition | null => {
-  for (const step of STAIRS) {
-    if (grid[step.cell.x][step.cell.z] < step.targetHeight) {
-      return step;
-    }
-  }
-  return null;
-};
-
-const chooseSupply = (ctx: BlockWorldContext): PlannedStep | null => {
-  const frontier = getFrontier(ctx.grid);
-  if (!frontier) {
-    return null;
-  }
-  const anchorIndex = STAIRS.findIndex((step) => step === frontier);
-  const anchor = anchorIndex === 0 ? START_CELL : STAIRS[anchorIndex - 1].cell;
-  let best: PlannedStep | null = null;
-  let bestDist = Number.POSITIVE_INFINITY;
-  for (const cell of SUPPLY_CELLS) {
-    if (ctx.grid[cell.x][cell.z] <= 0) continue;
-    const target = cellTop(ctx.grid, cell);
-    const path = findPath(ctx.navMesh, ctx.agentPos, target, HALF_EXTENTS, DEFAULT_QUERY_FILTER);
-    if (!path.success || path.path.length === 0) continue;
-    const points = pathToPoints(path);
-    const length = pathLength(points);
-    if (length < bestDist) {
-      bestDist = length;
-      best = {
-        supply: cell,
-        supplyTop: target,
-        frontier,
-        anchor,
-        pathToSupply: points,
-      };
-    }
-  }
-  return best;
-};
-
-const navcatBlockDomain = (() => {
-  const builder = new DomainBuilder<BlockWorldContext>("BlockStacker");
-  builder.select("AchieveGoal");
-  builder
-    .sequence("ReachDirect")
-    .condition("Goal reachable", (ctx) => {
-      const { reachable, path } = canReachGoal(ctx);
-      if (reachable) {
-        ctx.actionQueue.push({
-          type: "navigate",
-          description: "Climb to the tower top",
-          path,
-        });
-      }
-      return reachable;
-    })
-    .do(() => TaskStatus.Success)
-    .end();
-
-  builder
-    .sequence("BuildStep")
-    .condition("Need more steps", (ctx) => {
-      const frontier = getFrontier(ctx.grid);
-      if (!frontier) return false;
-      ctx.pendingStep = chooseSupply(ctx);
-      return ctx.pendingStep !== null;
-    })
-    .action("Navigate to supply")
-    .condition("Supply chosen", (ctx) => ctx.pendingStep !== null)
-    .do(
-      operator((ctx) => {
-        const step = ctx.pendingStep!;
-        ctx.agentPos = [...step.supplyTop];
-        ctx.actionQueue.push({
-          type: "navigate",
-          path: step.pathToSupply,
-          description: `Walk to supply crate at (${step.supply.x}, ${step.supply.z})`,
-        });
-        return TaskStatus.Success;
-      }),
-    )
-    .end()
-    .action("Pick block")
-    .condition("Ready to pick", (ctx) => ctx.pendingStep !== null && !ctx.carrying)
-    .do(
-      operator((ctx) => {
-        const step = ctx.pendingStep!;
-        const { supply } = step;
-        ctx.grid[supply.x][supply.z] -= 1;
-        ctx.carrying = true;
-        ctx.navMesh = buildNavMeshForGrid(ctx.grid);
-        ctx.actionQueue.push({
-          type: "pick",
-          cell: supply,
-          worldPosition: step.supplyTop,
-          description: `Pick block at (${supply.x}, ${supply.z})`,
-        });
-        return TaskStatus.Success;
-      }),
-    )
-    .end()
-    .action("Navigate to anchor")
-    .condition("Still carrying", (ctx) => ctx.pendingStep !== null && ctx.carrying)
-    .condition("Anchor reachable", (ctx) => {
-      const step = ctx.pendingStep!;
-      const anchorTop = cellTop(ctx.grid, step.anchor);
-      const path = findPath(ctx.navMesh, ctx.agentPos, anchorTop, HALF_EXTENTS, DEFAULT_QUERY_FILTER);
-      if (!path.success || path.path.length === 0) return false;
-      ctx.actionQueue.push({
-        type: "navigate",
-        path: pathToPoints(path),
-        description: `Carry block to ${step.frontier.label} staging cell`,
-      });
-      ctx.agentPos = anchorTop;
-      return true;
-    })
-    .do(() => TaskStatus.Success)
-    .end()
-    .action("Place block")
-    .condition("Carrying block", (ctx) => ctx.pendingStep !== null && ctx.carrying)
-    .do(
-      operator((ctx) => {
-        const step = ctx.pendingStep!;
-        const { frontier } = step;
-        ctx.grid[frontier.cell.x][frontier.cell.z] += 1;
-        ctx.carrying = false;
-        ctx.navMesh = buildNavMeshForGrid(ctx.grid);
-        const top = cellTop(ctx.grid, frontier.cell);
-        ctx.actionQueue.push({
-          type: "place",
-          cell: frontier.cell,
-          worldPosition: top,
-          description: `Stack block for ${frontier.label}`,
-        });
-        return TaskStatus.Success;
-      }),
-    )
-    .end()
-    .action("Climb new block")
-    .condition("Frontier reachable", (ctx) => {
-      const step = ctx.pendingStep!;
-      const targetTop = cellTop(ctx.grid, step.frontier.cell);
-      const path = findPath(ctx.navMesh, ctx.agentPos, targetTop, HALF_EXTENTS, DEFAULT_QUERY_FILTER);
-      if (!path.success || path.path.length === 0) return false;
-      ctx.actionQueue.push({
-        type: "navigate",
-        path: pathToPoints(path),
-        description: `Climb onto ${step.frontier.label}`,
-      });
-      ctx.agentPos = targetTop;
-      ctx.pendingStep = null;
-      return true;
-    })
-    .do(() => TaskStatus.Success)
-    .end()
-    .end();
-
-  builder.end();
-  return builder.build();
-})();
-
-const createInitialGrid = () => {
-  const grid: number[][] = Array.from({ length: GRID_WIDTH }, () => Array(GRID_DEPTH).fill(0));
-  grid[GOAL_CELL.x][GOAL_CELL.z] = GOAL_HEIGHT;
-  for (const source of SUPPLY_SOURCES) {
-    grid[source.cell.x][source.cell.z] = source.height;
-  }
-  return grid;
-};
+export { runNavcatBlockStackerHeadless };
 
 type WorldState = {
   grid: number[][];
@@ -397,6 +46,11 @@ type WorldState = {
 const rebuildWorldNavMesh = (world: WorldState) => {
   world.navMesh = buildNavMeshForGrid(world.grid);
 };
+
+const LOG_PREFIX = "[BlockStacker]" as const;
+const log = (...args: unknown[]) => console.log(LOG_PREFIX, ...args);
+const logWarn = (...args: unknown[]) => console.warn(LOG_PREFIX, ...args);
+const logError = (...args: unknown[]) => console.error(LOG_PREFIX, ...args);
 
 const updateInstancedBlocks = (
   mesh: THREE.InstancedMesh,
@@ -614,14 +268,29 @@ export const createNavcatBlockStackerScene = async (
 
   const runPlanner = async () => {
     callbacks.onStatus?.("Planning staircase...");
+    let iteration = 0;
     while (!disposed) {
+      iteration += 1;
+      const currentFrontier = getFrontier(world.grid);
+      log("planner: iteration start", {
+        iteration,
+        carrying: world.carrying,
+        agentPos: [...world.agentPos],
+        frontier: currentFrontier ? currentFrontier.label : null,
+      });
       const { reachable } = canReachGoal(
         new BlockWorldContext(
           { grid: cloneGrid(world.grid), agentPos: [...world.agentPos] as Vec3, carrying: world.carrying },
           world.navMesh,
         ),
       );
+      log("planner: direct goal check", {
+        iteration,
+        reachable,
+        distanceToGoal: distance3(world.agentPos, cellTop(world.grid, GOAL_CELL)),
+      });
       if (reachable && distance3(world.agentPos, cellTop(world.grid, GOAL_CELL)) < 0.1) {
+        log("planner: goal reached", { iteration });
         callbacks.onStatus?.("Agent reached the tower top!");
         carriedBlock.visible = false;
         break;
@@ -631,13 +300,27 @@ export const createNavcatBlockStackerScene = async (
         { grid: planningGrid, agentPos: [...world.agentPos] as Vec3, carrying: world.carrying },
         world.navMesh,
       );
-      navcatBlockDomain.findPlan(planningContext);
+      log("planner: searching for plan", { iteration });
+      const planResult = navcatBlockDomain.findPlan(planningContext);
+      log("planner: plan result", {
+        iteration,
+        actionCount: planningContext.actionQueue.length,
+        pendingStep: planningContext.pendingStep,
+        taskNames: planResult.plan.map((task) => task.Name ?? ""),
+        status: planResult.status,
+      });
       if (planningContext.actionQueue.length === 0) {
+        logError("planner: no actions produced", {
+          iteration,
+          carrying: world.carrying,
+          agentPos: [...world.agentPos],
+        });
         callbacks.onStatus?.("Planner failed to find a plan.");
         break;
       }
       for (const action of planningContext.actionQueue) {
         if (disposed) return;
+        log("planner: executing action", { iteration, action });
         callbacks.onAction?.(action.description);
         callbacks.onStatus?.(action.description);
         if (action.type === "navigate") {
@@ -646,7 +329,19 @@ export const createNavcatBlockStackerScene = async (
             carriedBlock.visible = true;
             carriedBlock.position.copy(agent.position).add(new THREE.Vector3(0, 0.6, 0));
           }
+          log("planner: navigate complete", {
+            iteration,
+            description: action.description,
+            newAgentPos: [...world.agentPos],
+            carrying: world.carrying,
+          });
         } else if (action.type === "pick") {
+          const beforeHeight = world.grid[action.cell.x][action.cell.z];
+          log("planner: picking block", {
+            iteration,
+            cell: action.cell,
+            beforeHeight,
+          });
           world.grid[action.cell.x][action.cell.z] -= 1;
           world.carrying = true;
           carriedBlock.visible = true;
@@ -654,13 +349,31 @@ export const createNavcatBlockStackerScene = async (
           updateInstancedBlocks(blocksMesh, world.grid, walkwayKeys);
           rebuildWorldNavMesh(world);
           await wait(400);
+          log("planner: pick complete", {
+            iteration,
+            cell: action.cell,
+            afterHeight: world.grid[action.cell.x][action.cell.z],
+            carrying: world.carrying,
+          });
         } else if (action.type === "place") {
+          const beforeHeight = world.grid[action.cell.x][action.cell.z];
+          log("planner: placing block", {
+            iteration,
+            cell: action.cell,
+            beforeHeight,
+          });
           world.grid[action.cell.x][action.cell.z] += 1;
           world.carrying = false;
           carriedBlock.visible = false;
           updateInstancedBlocks(blocksMesh, world.grid, walkwayKeys);
           rebuildWorldNavMesh(world);
           await wait(400);
+          log("planner: place complete", {
+            iteration,
+            cell: action.cell,
+            afterHeight: world.grid[action.cell.x][action.cell.z],
+            carrying: world.carrying,
+          });
         }
       }
     }
