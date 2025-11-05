@@ -1,6 +1,7 @@
 import Stats from "stats-gl";
 import type { Vec3 } from "mathcat";
 import type { NavMesh } from "navcat";
+import { createNavMeshTileHelper, type DebugObject } from "navcat/three";
 import { OrbitControls } from "three/examples/jsm/Addons.js";
 import * as THREE from "three/webgpu";
 import {
@@ -39,6 +40,7 @@ export type BlockStackerHandle = {
   dispose: () => void;
   setSpeed: (speed: number) => void;
   setConfig: (config: HeadlessRunConfig) => void;
+  setShowNavMeshHelper: (show: boolean) => void;
 };
 
 export { runNavcatBlockStackerHeadless };
@@ -50,8 +52,9 @@ type WorldState = {
   navMesh: NavMesh;
 };
 
-const rebuildWorldNavMesh = (world: WorldState) => {
+const rebuildWorldNavMesh = (world: WorldState, onRebuilt?: (navMesh: NavMesh) => void) => {
   world.navMesh = buildNavMeshForGrid(world.grid);
+  onRebuilt?.(world.navMesh);
 };
 
 const LOG_PREFIX = "[BlockStacker]" as const;
@@ -219,6 +222,36 @@ export const createNavcatBlockStackerScene = async (
   pathLine.visible = false;
   scene.add(pathLine);
 
+  const navMeshGroup = new THREE.Group();
+  navMeshGroup.visible = false;
+  scene.add(navMeshGroup);
+
+  const navMeshHelpers: DebugObject[] = [];
+  const disposeNavMeshHelpers = () => {
+    while (navMeshHelpers.length > 0) {
+      const helper = navMeshHelpers.pop();
+      if (!helper) {
+        continue;
+      }
+      navMeshGroup.remove(helper.object);
+      helper.dispose();
+    }
+  };
+
+  const refreshNavMeshHelper = (navMesh: NavMesh) => {
+    disposeNavMeshHelpers();
+    if (!navMeshGroup.visible || !navMesh?.tiles) {
+      return;
+    }
+    for (const tile of Object.values(navMesh.tiles)) {
+      if (!tile) continue;
+      const helper = createNavMeshTileHelper(tile);
+      helper.object.position.y += 0.02;
+      navMeshGroup.add(helper.object);
+      navMeshHelpers.push(helper);
+    }
+  };
+
   const stats = new Stats({ trackGPU: true, logsPerSecond: 10 });
   try {
     await stats.init(renderer);
@@ -243,6 +276,7 @@ export const createNavcatBlockStackerScene = async (
     carrying: false,
     navMesh: buildNavMeshForGrid(initialGrid),
   };
+  refreshNavMeshHelper(world.navMesh);
   updateInstancedBlocks(blocksMesh, world.grid, walkwayKeys);
   agent.position.set(world.agentPos[0], world.agentPos[1] + 0.3, world.agentPos[2]);
 
@@ -362,7 +396,7 @@ export const createNavcatBlockStackerScene = async (
           carriedBlock.visible = true;
           carriedBlock.position.copy(agent.position).add(new THREE.Vector3(0, 0.6, 0));
           updateInstancedBlocks(blocksMesh, world.grid, walkwayKeys);
-          rebuildWorldNavMesh(world);
+          rebuildWorldNavMesh(world, refreshNavMeshHelper);
           await wait(400);
           log("planner: pick complete", {
             iteration,
@@ -381,7 +415,7 @@ export const createNavcatBlockStackerScene = async (
           world.carrying = false;
           carriedBlock.visible = false;
           updateInstancedBlocks(blocksMesh, world.grid, walkwayKeys);
-          rebuildWorldNavMesh(world);
+          rebuildWorldNavMesh(world, refreshNavMeshHelper);
           await wait(400);
           log("planner: place complete", {
             iteration,
@@ -408,6 +442,9 @@ export const createNavcatBlockStackerScene = async (
       blocksMesh.dispose();
       blockGeometry.dispose();
       blockMaterial.dispose();
+      disposeNavMeshHelpers();
+      navMeshGroup.removeFromParent();
+      navMeshGroup.clear();
       renderer.dispose();
       if (stats) {
         stats.domElement.remove();
@@ -421,6 +458,14 @@ export const createNavcatBlockStackerScene = async (
       // Note: This would require restarting the planner, which is complex
       // For now, this is a placeholder that could trigger a restart
       logWarn("setConfig: Changing config requires restarting the scene");
+    },
+    setShowNavMeshHelper: (show: boolean) => {
+      navMeshGroup.visible = show;
+      if (show) {
+        refreshNavMeshHelper(world.navMesh);
+      } else {
+        disposeNavMeshHelpers();
+      }
     },
   };
 };

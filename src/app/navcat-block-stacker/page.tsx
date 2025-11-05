@@ -16,6 +16,7 @@ export default function NavcatBlockStackerPage() {
   const guiRef = useRef<GUI | null>(null);
   const currentScenarioRef = useRef<ScenarioId>("default");
   const currentSpeedRef = useRef<number>(1.4);
+  const currentShowNavMeshRef = useRef(false);
   const isRestartingRef = useRef(false);
 
   const restartScene = useCallback(async (scenarioId: ScenarioId, speed: number) => {
@@ -91,6 +92,7 @@ export default function NavcatBlockStackerPage() {
       const guiState = {
         scenario: scenarioId,
         speed,
+        showNavMesh: currentShowNavMeshRef.current,
       };
 
       gui
@@ -115,11 +117,23 @@ export default function NavcatBlockStackerPage() {
           }
         });
 
+      gui
+        .add(guiState, "showNavMesh")
+        .name("Show NavMesh")
+        .onChange((value: boolean) => {
+          guiState.showNavMesh = value;
+          currentShowNavMeshRef.current = value;
+          if (handleRef.current) {
+            handleRef.current.setShowNavMeshHelper(value);
+          }
+        });
+
       gui.domElement.style.position = "absolute";
       gui.domElement.style.top = "1rem";
       gui.domElement.style.right = "1rem";
       gui.domElement.style.zIndex = "1000";
 
+      sceneHandle.setShowNavMeshHelper(guiState.showNavMesh);
       isRestartingRef.current = false;
     } catch (err) {
       console.error("[navcat-block-stacker] failed", err);
