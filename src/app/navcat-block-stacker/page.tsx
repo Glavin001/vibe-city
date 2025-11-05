@@ -7,8 +7,9 @@ import { createNavcatBlockStackerScene } from "@/lib/navcat-block-stacker";
 export default function NavcatBlockStackerPage() {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [status, setStatus] = useState("Preparing scene…");
-  const [actions, setActions] = useState<string[]>([]);
+  const [actions, setActions] = useState<Array<{ text: string; sequence: number }>>([]);
   const [error, setError] = useState<string | null>(null);
+  const actionSequenceRef = useRef(0);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -16,10 +17,14 @@ export default function NavcatBlockStackerPage() {
 
     let disposed = false;
     let handle: Awaited<ReturnType<typeof createNavcatBlockStackerScene>> | null = null;
+    actionSequenceRef.current = 0;
 
     createNavcatBlockStackerScene(container, {
       onStatus: (text) => setStatus(text),
-      onAction: (text) => setActions((prev) => [text, ...prev].slice(0, 6)),
+      onAction: (text) => {
+        actionSequenceRef.current += 1;
+        setActions((prev) => [{ text, sequence: actionSequenceRef.current }, ...prev]);
+      },
     })
       .then((sceneHandle) => {
         if (disposed) {
@@ -55,11 +60,11 @@ export default function NavcatBlockStackerPage() {
             <p className="text-sky-300">{status}</p>
             {actions.length > 0 && (
               <div>
-                <p className="mb-1 text-xs uppercase tracking-wide text-slate-400">Recent actions</p>
-                <ul className="space-y-1">
-                  {actions.map((action, index) => (
-                    <li key={`${action}-${index}`} className="text-xs text-slate-200">
-                      • {action}
+                <p className="mb-1 text-xs uppercase tracking-wide text-slate-400">All actions</p>
+                <ul className="max-h-64 space-y-1 overflow-y-auto pr-2">
+                  {actions.map((action) => (
+                    <li key={`${action.sequence}-${action.text}`} className="text-xs text-slate-200">
+                      {action.sequence}. {action.text}
                     </li>
                   ))}
                 </ul>

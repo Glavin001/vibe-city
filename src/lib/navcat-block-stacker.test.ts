@@ -366,5 +366,54 @@ describe("navcat block stacker module", () => {
     expect(result.finalGrid[stairs[1].cell.x][stairs[1].cell.z]).toBe(stairs[1].targetHeight);
     expect(result.finalGrid[goalCell.x][goalCell.z]).toBe(stairs[1].targetHeight);
   });
+
+  it("places block directly on adjacent cell when at same height", async () => {
+    const { runNavcatBlockStackerHeadless } = await import("./navcat-block-stacker-core");
+
+    // Agent starts at (2, 2) height 1, supply at (2, 2) height 2
+    // Goal at (3, 2) height 2, needs step at (3, 2) height 1
+    // Agent should pick from (2, 2), then place directly on (3, 2) without climbing
+    const startCell = { x: 2, z: 2 };
+    const goalCell = { x: 3, z: 3 };
+    const stairs = [
+      { cell: { x: 3, z: 2 }, targetHeight: 1, label: "Step to goal" },
+    ];
+    const supplySources = [
+      { cell: { x: 2, z: 2 }, height: 2 }, // Agent starts here, can pick from here
+    ];
+    const result = runNavcatBlockStackerHeadless({
+      startCell,
+      goalCell,
+      goalHeight: 2,
+      stairs,
+      supplySources,
+      initialHeights: [
+        { cell: startCell, height: 1 }, // Agent starts at height 1
+      ],
+      maxIterations: 50,
+    });
+
+    // Should reach goal
+    expect(result.reachedGoal).toBe(true);
+    
+    // Verify step was built
+    expect(result.finalGrid[3][2]).toBeGreaterThanOrEqual(1);
+    
+    // Count actions - should be efficient (fewer navigate actions)
+    const pickCount = result.actions.filter((a) => a.type === "pick").length;
+    const placeCount = result.actions.filter((a) => a.type === "place").length;
+    expect(pickCount).toBeGreaterThanOrEqual(1);
+    expect(placeCount).toBeGreaterThanOrEqual(1);
+    
+    // Verify that we placed directly on the adjacent cell (3, 2)
+    const placeActions = result.actions.filter((a) => a.type === "place");
+    const placedOnStep = placeActions.some((a) => a.cell.x === 3 && a.cell.z === 2);
+    expect(placedOnStep).toBe(true);
+    
+    // Should have fewer navigate actions since we don't need to climb first
+    const navigateCount = result.actions.filter((a) => a.type === "navigate").length;
+    // Should be minimal - just to pick from supply, maybe to reach goal after
+    expect(navigateCount).toBeLessThan(5); // Much less than if we had to climb first
+  });
 });
 

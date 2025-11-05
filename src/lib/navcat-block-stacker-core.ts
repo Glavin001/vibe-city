@@ -145,6 +145,44 @@ const ADJACENT_OFFSETS: readonly Cell[] = [
   { x: 0, z: -1 },
 ];
 
+export const posToCell = (pos: Vec3): Cell => {
+  const x = Math.floor(pos[0] / BLOCK_SIZE);
+  const z = Math.floor(pos[2] / BLOCK_SIZE);
+  return { x, z };
+};
+
+export const getAgentCell = (agentPos: Vec3): Cell => posToCell(agentPos);
+
+export const getAgentHeight = (grid: number[][], agentPos: Vec3): number => {
+  const cell = getAgentCell(agentPos);
+  if (!inBounds(cell)) return 0;
+  // Agent's height is the Y position divided by block size
+  return Math.floor(agentPos[1] / BLOCK_SIZE);
+};
+
+export const canPlaceDirectlyOnAdjacent = (
+  grid: number[][],
+  agentPos: Vec3,
+  carrying: boolean,
+  frontierCell: Cell,
+): boolean => {
+  if (!carrying) return false;
+  const agentCell = getAgentCell(agentPos);
+  const agentHeight = getAgentHeight(grid, agentPos);
+  const frontierHeight = grid[frontierCell.x][frontierCell.z];
+  
+  // Check if frontier is adjacent to agent
+  const isAdjacent = ADJACENT_OFFSETS.some(
+    (offset) => agentCell.x + offset.x === frontierCell.x && agentCell.z + offset.z === frontierCell.z,
+  );
+  
+  if (!isAdjacent) return false;
+  
+  // Agent can place if they're at the same height or 1 block taller
+  // (agent can place from same height or when standing 1 block higher)
+  return agentHeight >= frontierHeight && agentHeight <= frontierHeight + 1;
+};
+
 export const cellTop = (grid: number[][], cell: Cell): Vec3 => [
   cell.x * BLOCK_SIZE + BLOCK_SIZE / 2,
   grid[cell.x][cell.z] * BLOCK_SIZE,
@@ -511,8 +549,126 @@ export const navcatBlockDomain = (() => {
       });
     })
     .end()
+    .action("Navigate to position adjacent to frontier")
+    .condition("Carrying block", (ctx) => ctx.pendingStep !== null && ctx.carrying)
+    .condition("Not already adjacent", (ctx) => {
+      const step = ctx.pendingStep;
+      if (!step) return false;
+      return !canPlaceDirectlyOnAdjacent(ctx.grid, ctx.agentPos, ctx.carrying, step.frontier.cell);
+    })
+    .condition("Adjacent position reachable", (ctx) => {
+      const step = ctx.pendingStep;
+      if (!step) return false;
+      const frontierCell = step.frontier.cell;
+      const frontierHeight = ctx.grid[frontierCell.x][frontierCell.z];
+      
+      // Try to find an adjacent position where agent can place directly
+      // Agent can place if they're at height >= frontierHeight and <= frontierHeight + 1
+      for (const offset of ADJACENT_OFFSETS) {
+        const adjacentCell: Cell = { x: frontierCell.x + offset.x, z: frontierCell.z + offset.z };
+        if (!inBounds(adjacentCell)) continue;
+        
+        const adjacentHeight = ctx.grid[adjacentCell.x][adjacentCell.z];
+        // Try standing on adjacent cell at its height
+        // Agent can place if: adjacentHeight >= frontierHeight (can reach over to place)
+        // OR if adjacentHeight + 1 == frontierHeight (can place from 1 block above)
+        // But we can only stand on existing blocks, so we need adjacentHeight >= frontierHeight
+        // OR we can try standing 1 block above the adjacent cell if that would put us at the right height
+        const targetHeight = Math.max(adjacentHeight, frontierHeight);
+        // Make sure target height is reasonable (not more than 1 block above adjacent)
+        if (targetHeight > adjacentHeight + 1) continue;
+        
+        const targetTop = cellTop(ctx.grid, adjacentCell);
+        const targetPos: Vec3 = [targetTop[0], targetHeight * BLOCK_SIZE, targetTop[2]];
+        const path = findPath(ctx.navMesh, ctx.agentPos, targetPos, HALF_EXTENTS, DEFAULT_QUERY_FILTER);
+        if (path.success && path.path.length > 0) {
+          // Verify this position would allow direct placement
+          if (targetHeight >= frontierHeight && targetHeight <= frontierHeight + 1) {
+            ctx.actionQueue.push({
+              type: "navigate",
+              path: pathToPoints(path),
+              description: `Move to position adjacent to ${step.frontier.label}`,
+              targetPosition: targetPos,
+            });
+            ctx.agentPos = targetPos;
+            log("domain: navigate to adjacent position", {
+              adjacentCell,
+              targetHeight,
+              adjacentHeight,
+              frontierHeight,
+              agentPos: [...ctx.agentPos],
+            });
+            return true;
+          }
+        }
+      }
+      return false;
+    })
+    .do(() => TaskStatus.Success)
+    .end()
+    .action("Place directly on adjacent")
+    .condition("Carrying block", (ctx) => ctx.pendingStep !== null && ctx.carrying)
+    .condition("Can place directly", (ctx) => {
+      const step = ctx.pendingStep;
+      if (!step) return false;
+      const canPlace = canPlaceDirectlyOnAdjacent(ctx.grid, ctx.agentPos, ctx.carrying, step.frontier.cell);
+      if (canPlace) {
+        log("domain: can place directly on adjacent", {
+          agentPos: [...ctx.agentPos],
+          agentCell: getAgentCell(ctx.agentPos),
+          frontier: step.frontier.cell,
+          agentHeight: getAgentHeight(ctx.grid, ctx.agentPos),
+          frontierHeight: ctx.grid[step.frontier.cell.x][step.frontier.cell.z],
+        });
+      }
+      return canPlace;
+    })
+    .do(() => TaskStatus.Success)
+    .effect("Plan place directly on adjacent", "planonly", (context: BlockWorldContext) => {
+      const step = context.pendingStep;
+      if (!step) {
+        logError("domain: missing pendingStep in direct place effect");
+        return;
+      }
+      const { frontier } = step;
+      log("domain: simulate place directly on adjacent", {
+        frontier: frontier.label,
+        agentPos: [...context.agentPos],
+        newHeight: context.grid[frontier.cell.x][frontier.cell.z] + 1,
+      });
+      context.grid[frontier.cell.x][frontier.cell.z] += 1;
+      context.carrying = false;
+      context.navMesh = buildNavMeshForGrid(context.grid);
+      const top = cellTop(context.grid, frontier.cell);
+      context.actionQueue.push({
+        type: "place",
+        cell: frontier.cell,
+        worldPosition: top,
+        description: `Place block on top of ${frontier.label}`,
+      });
+      // After placing, agent can climb the new block
+      const targetTop = cellTop(context.grid, frontier.cell);
+      const path = findPath(context.navMesh, context.agentPos, targetTop, HALF_EXTENTS, DEFAULT_QUERY_FILTER);
+      if (path.success && path.path.length > 0) {
+        context.actionQueue.push({
+          type: "navigate",
+          path: pathToPoints(path),
+          description: `Climb onto ${frontier.label}`,
+          targetPosition: targetTop,
+        });
+        context.agentPos = targetTop;
+      }
+      context.pendingStep = null;
+    })
+    .end()
     .action("Navigate to anchor")
     .condition("Still carrying", (ctx) => ctx.pendingStep !== null && ctx.carrying)
+    .condition("Not already adjacent", (ctx) => {
+      const step = ctx.pendingStep;
+      if (!step) return false;
+      // Skip this if we can place directly
+      return !canPlaceDirectlyOnAdjacent(ctx.grid, ctx.agentPos, ctx.carrying, step.frontier.cell);
+    })
     .condition("Anchor reachable", (ctx) => {
       const step = ctx.pendingStep;
       if (!step) {
