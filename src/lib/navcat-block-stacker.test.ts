@@ -1,4 +1,92 @@
 import { describe, expect, it, vi } from "vitest";
+import type { Cell, HeadlessRunConfig, PlannedAction, StepDefinition } from "./navcat-block-stacker-core";
+import type { Scenario } from "./navcat-block-stacker-scenarios";
+import type { NavMesh } from "navcat";
+
+type BlockStackerCoreModule = typeof import("./navcat-block-stacker-core");
+type Vec3Tuple = [number, number, number];
+
+type PlanningSetup = {
+  core: BlockStackerCoreModule;
+  scenario: Scenario;
+  config: HeadlessRunConfig;
+  grid: number[][];
+  navMesh: NavMesh;
+  startCell: Cell;
+  goalCell: Cell;
+  goalHeight: number;
+  stairs: StepDefinition[];
+};
+
+type PlanningSimulationResult = {
+  grid: number[][];
+  agentPos: Vec3Tuple;
+  carrying: boolean;
+  navMesh: NavMesh;
+};
+
+const prepareDefaultPlanningSetup = async (): Promise<PlanningSetup> => {
+  const core: BlockStackerCoreModule = await import("./navcat-block-stacker-core");
+  const scenariosModule = await import("./navcat-block-stacker-scenarios");
+  const scenario = scenariosModule.getScenarioById("default");
+  const config = scenario.config ?? ({} as HeadlessRunConfig);
+  const grid = core.createInitialGrid(config);
+  const navMesh = core.buildNavMeshForGrid(grid);
+  const startCell = config.startCell ?? core.START_CELL;
+  const goalCell = config.goalCell ?? core.GOAL_CELL;
+  const goalHeight = config.goalHeight ?? core.GOAL_HEIGHT;
+  const stairs = config.stairs ?? core.STAIRS;
+
+  return {
+    core,
+    scenario,
+    config,
+    grid,
+    navMesh,
+    startCell,
+    goalCell,
+    goalHeight,
+    stairs,
+  };
+};
+
+const simulatePlanActions = (
+  core: BlockStackerCoreModule,
+  actions: PlannedAction[],
+  setup: PlanningSetup,
+): PlanningSimulationResult => {
+  const world: PlanningSimulationResult = {
+    grid: core.cloneGrid(setup.grid),
+    agentPos: core.cellTop(setup.grid, setup.startCell) as Vec3Tuple,
+    carrying: false,
+    navMesh: setup.navMesh,
+  };
+
+  for (const action of actions) {
+    if (action.type === "navigate") {
+      const destination = action.targetPosition ?? (action.path.length > 0 ? action.path[action.path.length - 1] : null);
+      if (destination) {
+        world.agentPos = [...destination] as Vec3Tuple;
+      }
+    } else if (action.type === "pick") {
+      world.grid[action.cell.x][action.cell.z] -= 1;
+      world.carrying = true;
+      world.navMesh = core.buildNavMeshForGrid(world.grid);
+    } else if (action.type === "place") {
+      world.grid[action.cell.x][action.cell.z] += 1;
+      world.carrying = false;
+      world.navMesh = core.buildNavMeshForGrid(world.grid);
+      if (action.cell.x === setup.goalCell.x && action.cell.z === setup.goalCell.z) {
+        world.agentPos = core.cellTop(world.grid, setup.goalCell) as Vec3Tuple;
+      }
+    } else {
+      const exhaustiveCheck: never = action;
+      throw new Error("Unhandled action type");
+    }
+  }
+
+  return world;
+};
 
 vi.mock("stats-gl", () => ({
   default: class Stats {
@@ -425,6 +513,57 @@ describe("navcat block stacker module", () => {
     const navigateCount = result.actions.filter((a) => a.type === "navigate").length;
     // Should be minimal - just to pick from supply, maybe to reach goal after
     expect(navigateCount).toBeLessThan(5); // Much less than if we had to climb first
+  });
+
+  it("requires full-plan reasoning to reach the goal in one findPlan call", async () => {
+    const setup = await prepareDefaultPlanningSetup();
+    const { core, config, grid, navMesh, startCell, goalCell, goalHeight, stairs } = setup;
+
+    const context = new core.BlockWorldContext(
+      { grid: core.cloneGrid(grid), agentPos: core.cellTop(grid, startCell), carrying: false },
+      navMesh,
+      config,
+    );
+
+    const planResult = core.navcatBlockDomain.findPlan(context);
+    expect(planResult.plan.length).toBeGreaterThan(0);
+
+    const actions = context.actionQueue;
+    expect(actions.length).toBeGreaterThan(0);
+
+    const world = simulatePlanActions(core, actions, setup);
+
+    for (const step of stairs) {
+      expect(world.grid[step.cell.x][step.cell.z]).toBe(step.targetHeight);
+    }
+    expect(world.grid[goalCell.x][goalCell.z]).toBe(goalHeight);
+    expect(core.hasAgentReachedGoal(world.grid, world.agentPos, goalCell)).toBe(true);
+  });
+
+  it("schedules enough pick and place actions to complete all steps", async () => {
+    const setup = await prepareDefaultPlanningSetup();
+    const { core, config, grid, navMesh, startCell, stairs } = setup;
+
+    const context = new core.BlockWorldContext(
+      { grid: core.cloneGrid(grid), agentPos: core.cellTop(grid, startCell), carrying: false },
+      navMesh,
+      config,
+    );
+
+    void core.navcatBlockDomain.findPlan(context);
+
+    const actions = context.actionQueue;
+    const pickCount = actions.filter((action) => action.type === "pick").length;
+    const placeCount = actions.filter((action) => action.type === "place").length;
+
+    const requiredBlocks = stairs.reduce((total, step) => {
+      const existingHeight = grid[step.cell.x][step.cell.z];
+      const needed = Math.max(step.targetHeight - existingHeight, 0);
+      return total + needed;
+    }, 0);
+
+    expect(pickCount).toBeGreaterThanOrEqual(requiredBlocks);
+    expect(placeCount).toBeGreaterThanOrEqual(requiredBlocks);
   });
 });
 

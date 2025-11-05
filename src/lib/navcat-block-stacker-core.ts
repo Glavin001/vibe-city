@@ -331,29 +331,50 @@ export const getFrontier = (grid: number[][]): StepDefinition | null => {
 };
 
 export const chooseSupply = (ctx: BlockWorldContext): PlannedStep | null => {
-  const frontier = getFrontierForStairs(ctx.grid, ctx.stairs);
+  return chooseSupplyForState({
+    grid: ctx.grid,
+    navMesh: ctx.navMesh,
+    agentPos: ctx.agentPos,
+    stairs: ctx.stairs,
+    supplySources: ctx.supplySources,
+    startCell: ctx.startCell,
+  });
+};
+
+type SupplySelectionState = {
+  grid: number[][];
+  navMesh: NavMesh;
+  agentPos: Vec3;
+  stairs: StepDefinition[];
+  supplySources: Array<{ cell: Cell; height: number }>;
+  startCell: Cell;
+};
+
+const chooseSupplyForState = (state: SupplySelectionState): PlannedStep | null => {
+  const { grid, navMesh, agentPos, stairs, supplySources, startCell } = state;
+  const frontier = getFrontierForStairs(grid, stairs);
   if (!frontier) {
     log("chooseSupply: no frontier steps remaining");
     return null;
   }
   log("chooseSupply: evaluating frontier", {
     label: frontier.label,
-    currentHeight: ctx.grid[frontier.cell.x][frontier.cell.z],
+    currentHeight: grid[frontier.cell.x][frontier.cell.z],
     targetHeight: frontier.targetHeight,
-    agentPos: ctx.agentPos,
+    agentPos,
   });
-  const anchorIndex = ctx.stairs.findIndex((step) => step === frontier);
-  const anchor = anchorIndex === 0 ? ctx.startCell : ctx.stairs[anchorIndex - 1].cell;
+  const anchorIndex = stairs.findIndex((step) => step === frontier);
+  const anchor = anchorIndex === 0 ? startCell : stairs[anchorIndex - 1].cell;
   let best: PlannedStep | null = null;
   let bestDist = Number.POSITIVE_INFINITY;
-  const supplyCells = ctx.supplySources.map((source) => source.cell);
+  const supplyCells = supplySources.map((source) => source.cell);
   for (const cell of supplyCells) {
-    const available = ctx.grid[cell.x][cell.z];
+    const available = grid[cell.x][cell.z];
     if (available <= 0) {
       log("chooseSupply: skipping empty supply", { cell });
       continue;
     }
-    const targetTop = cellTop(ctx.grid, cell);
+    const targetTop = cellTop(grid, cell);
     let bestApproach: {
       stand: Cell;
       standTop: Vec3;
@@ -363,11 +384,11 @@ export const chooseSupply = (ctx: BlockWorldContext): PlannedStep | null => {
     for (const offset of ADJACENT_OFFSETS) {
       const stand: Cell = { x: cell.x + offset.x, z: cell.z + offset.z };
       if (!inBounds(stand)) continue;
-      const standTop = cellTop(ctx.grid, stand);
+      const standTop = cellTop(grid, stand);
       log("chooseSupply: evaluating stand", { supply: cell, stand });
-      const path = findPath(ctx.navMesh, ctx.agentPos, standTop, HALF_EXTENTS, DEFAULT_QUERY_FILTER);
+      const path = findPath(navMesh, agentPos, standTop, HALF_EXTENTS, DEFAULT_QUERY_FILTER);
       if (!path.success || path.path.length === 0) {
-        logWarn("chooseSupply: stand unreachable", { supply: cell, stand, agentPos: ctx.agentPos });
+        logWarn("chooseSupply: stand unreachable", { supply: cell, stand, agentPos });
         continue;
       }
       const points = pathToPoints(path);
@@ -383,7 +404,7 @@ export const chooseSupply = (ctx: BlockWorldContext): PlannedStep | null => {
       }
     }
     if (!bestApproach) {
-      logWarn("chooseSupply: no adjacent stand positions reachable", { supply: cell, agentPos: ctx.agentPos });
+      logWarn("chooseSupply: no adjacent stand positions reachable", { supply: cell, agentPos });
       continue;
     }
     if (bestApproach.length < bestDist) {
@@ -402,7 +423,7 @@ export const chooseSupply = (ctx: BlockWorldContext): PlannedStep | null => {
   if (!best) {
     logWarn("chooseSupply: no reachable supplies for frontier", {
       frontier: frontier.label,
-      agentPos: ctx.agentPos,
+      agentPos,
     });
   } else {
     log("chooseSupply: selected supply", {
@@ -416,9 +437,295 @@ export const chooseSupply = (ctx: BlockWorldContext): PlannedStep | null => {
   return best;
 };
 
+const GLOBAL_PLAN_MAX_ITERATIONS_BASE = 16;
+const GLOBAL_PLAN_MAX_ITERATIONS_PER_STEP = 8;
+
+const computeGlobalPlanIterationLimit = (ctx: BlockWorldContext) =>
+  Math.max(
+    GLOBAL_PLAN_MAX_ITERATIONS_BASE,
+    GLOBAL_PLAN_MAX_ITERATIONS_BASE + ctx.stairs.length * GLOBAL_PLAN_MAX_ITERATIONS_PER_STEP,
+  );
+
+const findAdjacentPlacementMove = (
+  grid: number[][],
+  navMesh: NavMesh,
+  agentPos: Vec3,
+  frontierCell: Cell,
+): { path: Vec3[]; targetPos: Vec3; adjacentCell: Cell; targetHeight: number; adjacentHeight: number } | null => {
+  const frontierHeight = grid[frontierCell.x][frontierCell.z];
+  for (const offset of ADJACENT_OFFSETS) {
+    const adjacentCell: Cell = { x: frontierCell.x + offset.x, z: frontierCell.z + offset.z };
+    if (!inBounds(adjacentCell)) continue;
+
+    const adjacentHeight = grid[adjacentCell.x][adjacentCell.z];
+    const targetHeight = Math.max(adjacentHeight, frontierHeight);
+    if (targetHeight > adjacentHeight + 1) continue;
+
+    const top = cellTop(grid, adjacentCell);
+    const targetPos: Vec3 = [top[0], targetHeight * BLOCK_SIZE, top[2]];
+    const path = findPath(navMesh, agentPos, targetPos, HALF_EXTENTS, DEFAULT_QUERY_FILTER);
+    if (!path.success || path.path.length === 0) continue;
+    if (targetHeight < frontierHeight || targetHeight > frontierHeight + 1) continue;
+
+    return {
+      path: pathToPoints(path),
+      targetPos,
+      adjacentCell,
+      targetHeight,
+      adjacentHeight,
+    };
+  }
+  return null;
+};
+
+const planNavigateToAdjacent = (ctx: BlockWorldContext, step: PlannedStep): boolean => {
+  const move = findAdjacentPlacementMove(ctx.grid, ctx.navMesh, ctx.agentPos, step.frontier.cell);
+  if (!move) {
+    return false;
+  }
+
+  ctx.actionQueue.push({
+    type: "navigate",
+    path: move.path,
+    description: `Move to position adjacent to ${step.frontier.label}`,
+    targetPosition: move.targetPos,
+  });
+  ctx.agentPos = move.targetPos;
+  log("global-plan: navigate adjacent", {
+    frontier: step.frontier.label,
+    adjacentCell: move.adjacentCell,
+    targetHeight: move.targetHeight,
+    adjacentHeight: move.adjacentHeight,
+    agentPos: [...ctx.agentPos],
+  });
+  return true;
+};
+
+const planAnchorNavigate = (ctx: BlockWorldContext, step: PlannedStep): boolean => {
+  const anchorTop = cellTop(ctx.grid, step.anchor);
+  if (distance3(ctx.agentPos, anchorTop) < 1e-3) {
+    return true;
+  }
+  const path = findPath(ctx.navMesh, ctx.agentPos, anchorTop, HALF_EXTENTS, DEFAULT_QUERY_FILTER);
+  if (!path.success || path.path.length === 0) {
+    logWarn("global-plan: anchor unreachable", {
+      anchor: step.anchor,
+      agentPos: [...ctx.agentPos],
+      frontier: step.frontier.label,
+    });
+    return false;
+  }
+  ctx.actionQueue.push({
+    type: "navigate",
+    path: pathToPoints(path),
+    description: `Carry block to ${step.frontier.label} staging cell`,
+    targetPosition: anchorTop,
+  });
+  ctx.agentPos = anchorTop;
+  return true;
+};
+
 export const navcatBlockDomain = (() => {
   const builder = new DomainBuilder<BlockWorldContext>("BlockStacker");
   builder.select("AchieveGoal");
+  builder
+    .sequence("GlobalPlanToGoal")
+    .action("Plan full staircase and climb")
+    .do(() => TaskStatus.Success)
+    .effect("Plan global action queue", "planonly", (context: BlockWorldContext) => {
+      const simGrid = cloneGrid(context.grid);
+      let simNavMesh = context.navMesh;
+      let simAgentPos = [...context.agentPos] as Vec3;
+      let simCarrying = context.carrying;
+      const plannedActions: PlannedAction[] = [];
+      const iterationLimit = computeGlobalPlanIterationLimit(context);
+      let success = false;
+
+      for (let iteration = 0; iteration < iterationLimit; iteration += 1) {
+        const frontier = getFrontierForStairs(simGrid, context.stairs);
+
+        if (!frontier) {
+          if (hasAgentReachedGoal(simGrid, simAgentPos, context.goalCell)) {
+            success = true;
+            break;
+          }
+          const goalTop = cellTop(simGrid, context.goalCell);
+          const pathResult = findPath(simNavMesh, simAgentPos, goalTop, HALF_EXTENTS, DEFAULT_QUERY_FILTER);
+          if (!pathResult.success || pathResult.path.length === 0) {
+            logWarn("global-plan: goal path unavailable", {
+              iteration,
+              agentPos: [...simAgentPos],
+              goalCell: context.goalCell,
+            });
+            break;
+          }
+          const points = pathToPoints(pathResult);
+          if (points.length > 0) {
+            plannedActions.push({
+              type: "navigate",
+              description: "Climb to the tower top",
+              path: points,
+              targetPosition: goalTop,
+            });
+          }
+          simAgentPos = [...goalTop];
+          success = hasAgentReachedGoal(simGrid, simAgentPos, context.goalCell);
+          break;
+        }
+
+        const step = chooseSupplyForState({
+          grid: simGrid,
+          navMesh: simNavMesh,
+          agentPos: simAgentPos,
+          stairs: context.stairs,
+          supplySources: context.supplySources,
+          startCell: context.startCell,
+        });
+
+        if (!step) {
+          logWarn("global-plan: unable to select supply for frontier", {
+            iteration,
+            agentPos: [...simAgentPos],
+          });
+          break;
+        }
+
+        if (step.pathToStand.length > 0) {
+          plannedActions.push({
+            type: "navigate",
+            path: step.pathToStand,
+            description: `Walk to supply crate at (${step.supply.x}, ${step.supply.z})`,
+            targetPosition: [...step.standTop],
+          });
+        }
+        simAgentPos = [...step.standTop];
+
+        simGrid[step.supply.x][step.supply.z] -= 1;
+        simCarrying = true;
+        simNavMesh = buildNavMeshForGrid(simGrid);
+        plannedActions.push({
+          type: "pick",
+          cell: step.supply,
+          worldPosition: step.supplyTop,
+          description: `Pick block at (${step.supply.x}, ${step.supply.z})`,
+        });
+
+        let usedAnchor = false;
+        if (!canPlaceDirectlyOnAdjacent(simGrid, simAgentPos, simCarrying, step.frontier.cell)) {
+          const move = findAdjacentPlacementMove(simGrid, simNavMesh, simAgentPos, step.frontier.cell);
+          if (move) {
+            plannedActions.push({
+              type: "navigate",
+              path: move.path,
+              description: `Move to position adjacent to ${step.frontier.label}`,
+              targetPosition: move.targetPos,
+            });
+            simAgentPos = [...move.targetPos];
+          } else {
+            const anchorTop = cellTop(simGrid, step.anchor);
+            const anchorPath = findPath(simNavMesh, simAgentPos, anchorTop, HALF_EXTENTS, DEFAULT_QUERY_FILTER);
+            if (!anchorPath.success || anchorPath.path.length === 0) {
+              logWarn("global-plan: anchor unreachable", {
+                iteration,
+                anchor: step.anchor,
+                agentPos: [...simAgentPos],
+                frontier: step.frontier.label,
+              });
+              success = false;
+              usedAnchor = false;
+              break;
+            }
+            plannedActions.push({
+              type: "navigate",
+              path: pathToPoints(anchorPath),
+              description: `Carry block to ${step.frontier.label} staging cell`,
+              targetPosition: anchorTop,
+            });
+            simAgentPos = [...anchorTop];
+            usedAnchor = true;
+          }
+        }
+
+        if (canPlaceDirectlyOnAdjacent(simGrid, simAgentPos, simCarrying, step.frontier.cell)) {
+          simGrid[step.frontier.cell.x][step.frontier.cell.z] += 1;
+          simCarrying = false;
+          simNavMesh = buildNavMeshForGrid(simGrid);
+          const top = cellTop(simGrid, step.frontier.cell);
+          plannedActions.push({
+            type: "place",
+            cell: step.frontier.cell,
+            worldPosition: top,
+            description: `Place block on top of ${step.frontier.label}`,
+          });
+          const climbPath = findPath(simNavMesh, simAgentPos, top, HALF_EXTENTS, DEFAULT_QUERY_FILTER);
+          if (climbPath.success && climbPath.path.length > 0) {
+            plannedActions.push({
+              type: "navigate",
+              path: pathToPoints(climbPath),
+              description: `Climb onto ${step.frontier.label}`,
+              targetPosition: top,
+            });
+            simAgentPos = [...top];
+          } else {
+            simAgentPos = [...top];
+          }
+        } else {
+          if (!usedAnchor) {
+            const anchorTop = cellTop(simGrid, step.anchor);
+            const anchorPath = findPath(simNavMesh, simAgentPos, anchorTop, HALF_EXTENTS, DEFAULT_QUERY_FILTER);
+            if (!anchorPath.success || anchorPath.path.length === 0) {
+              logWarn("global-plan: fallback anchor unreachable", {
+                iteration,
+                anchor: step.anchor,
+                agentPos: [...simAgentPos],
+                frontier: step.frontier.label,
+              });
+              break;
+            }
+            plannedActions.push({
+              type: "navigate",
+              path: pathToPoints(anchorPath),
+              description: `Carry block to ${step.frontier.label} staging cell`,
+              targetPosition: anchorTop,
+            });
+            simAgentPos = [...anchorTop];
+          }
+          simGrid[step.frontier.cell.x][step.frontier.cell.z] += 1;
+          simCarrying = false;
+          simNavMesh = buildNavMeshForGrid(simGrid);
+          const top = cellTop(simGrid, step.frontier.cell);
+          plannedActions.push({
+            type: "place",
+            cell: step.frontier.cell,
+            worldPosition: top,
+            description: `Stack block for ${step.frontier.label}`,
+          });
+          const climbPath = findPath(simNavMesh, simAgentPos, top, HALF_EXTENTS, DEFAULT_QUERY_FILTER);
+          if (climbPath.success && climbPath.path.length > 0) {
+            plannedActions.push({
+              type: "navigate",
+              path: pathToPoints(climbPath),
+              description: `Climb onto ${step.frontier.label}`,
+              targetPosition: top,
+            });
+            simAgentPos = [...top];
+          } else {
+            simAgentPos = [...top];
+          }
+        }
+      }
+
+      if (success) {
+        context.actionQueue.push(...plannedActions);
+        context.grid = simGrid;
+        context.navMesh = simNavMesh;
+        context.agentPos = simAgentPos;
+        context.carrying = simCarrying;
+      }
+      context.pendingStep = null;
+    })
+    .end()
+    .end();
   builder
     .sequence("ReachDirect")
     .condition("Goal reachable", (ctx) => {
