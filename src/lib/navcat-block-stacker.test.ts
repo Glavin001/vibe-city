@@ -238,6 +238,77 @@ describe("navcat block stacker module", () => {
     expect(hasAgentReachedGoal(grid, nearlyAtGoal, GOAL_CELL)).toBe(true);
   });
 
+  it("allows direct placement from each cardinal neighbor when heights align", async () => {
+    const { canPlaceDirectlyOnAdjacent, cellTop, GRID_WIDTH, GRID_DEPTH } = await import("./navcat-block-stacker-core");
+
+    const frontier = { x: 3, z: 3 };
+    const grid = Array.from({ length: GRID_WIDTH }, () => Array(GRID_DEPTH).fill(0));
+    const offsets = [
+      { x: 1, z: 0 },
+      { x: -1, z: 0 },
+      { x: 0, z: 1 },
+      { x: 0, z: -1 },
+    ];
+
+    for (const offset of offsets) {
+      const adjacent = { x: frontier.x + offset.x, z: frontier.z + offset.z };
+      grid[adjacent.x][adjacent.z] = 1;
+      const agentPos = cellTop(grid, adjacent);
+      expect(canPlaceDirectlyOnAdjacent(grid, agentPos, true, frontier)).toBe(true);
+      grid[adjacent.x][adjacent.z] = 0;
+    }
+  });
+
+  it("allows placement when agent stands one block above the frontier cell", async () => {
+    const { canPlaceDirectlyOnAdjacent, cellTop, GRID_WIDTH, GRID_DEPTH } = await import("./navcat-block-stacker-core");
+
+    const grid = Array.from({ length: GRID_WIDTH }, () => Array(GRID_DEPTH).fill(0));
+    const frontier = { x: 4, z: 4 };
+    grid[frontier.x][frontier.z] = 1;
+    const adjacent = { x: frontier.x + 1, z: frontier.z };
+    grid[adjacent.x][adjacent.z] = 2;
+    const agentPos = cellTop(grid, adjacent);
+
+    expect(canPlaceDirectlyOnAdjacent(grid, agentPos, true, frontier)).toBe(true);
+  });
+
+  it("rejects placement when agent is more than one block above the frontier", async () => {
+    const { canPlaceDirectlyOnAdjacent, cellTop, GRID_WIDTH, GRID_DEPTH } = await import("./navcat-block-stacker-core");
+
+    const grid = Array.from({ length: GRID_WIDTH }, () => Array(GRID_DEPTH).fill(0));
+    const frontier = { x: 4, z: 4 };
+    grid[frontier.x][frontier.z] = 1;
+    const adjacent = { x: frontier.x, z: frontier.z + 1 };
+    grid[adjacent.x][adjacent.z] = 3;
+    const agentPos = cellTop(grid, adjacent);
+
+    expect(canPlaceDirectlyOnAdjacent(grid, agentPos, true, frontier)).toBe(false);
+  });
+
+  it("rejects placement from diagonal neighbors", async () => {
+    const { canPlaceDirectlyOnAdjacent, cellTop, GRID_WIDTH, GRID_DEPTH } = await import("./navcat-block-stacker-core");
+
+    const grid = Array.from({ length: GRID_WIDTH }, () => Array(GRID_DEPTH).fill(0));
+    const frontier = { x: 4, z: 4 };
+    const diagonal = { x: frontier.x + 1, z: frontier.z + 1 };
+    grid[diagonal.x][diagonal.z] = 1;
+    const agentPos = cellTop(grid, diagonal);
+
+    expect(canPlaceDirectlyOnAdjacent(grid, agentPos, true, frontier)).toBe(false);
+  });
+
+  it("requires carrying a block to place directly", async () => {
+    const { canPlaceDirectlyOnAdjacent, cellTop, GRID_WIDTH, GRID_DEPTH } = await import("./navcat-block-stacker-core");
+
+    const grid = Array.from({ length: GRID_WIDTH }, () => Array(GRID_DEPTH).fill(0));
+    const frontier = { x: 3, z: 3 };
+    const adjacent = { x: frontier.x + 1, z: frontier.z };
+    grid[adjacent.x][adjacent.z] = 1;
+    const agentPos = cellTop(grid, adjacent);
+
+    expect(canPlaceDirectlyOnAdjacent(grid, agentPos, false, frontier)).toBe(false);
+  });
+
   it("navigates to goal when goal height is 1 (no pick/place needed)", async () => {
     const { runNavcatBlockStackerHeadless } = await import("./navcat-block-stacker-core");
     const { getScenarioById } = await import("./navcat-block-stacker-scenarios");
