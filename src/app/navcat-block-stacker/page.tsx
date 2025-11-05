@@ -1,8 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { GUI } from "lil-gui";
 
 import { createNavcatBlockStackerScene } from "@/lib/navcat-block-stacker";
+import { SCENARIOS, getScenarioById, type ScenarioId } from "@/lib/navcat-block-stacker-scenarios";
 
 export default function NavcatBlockStackerPage() {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -10,39 +12,139 @@ export default function NavcatBlockStackerPage() {
   const [actions, setActions] = useState<Array<{ text: string; sequence: number }>>([]);
   const [error, setError] = useState<string | null>(null);
   const actionSequenceRef = useRef(0);
+  const handleRef = useRef<Awaited<ReturnType<typeof createNavcatBlockStackerScene>> | null>(null);
+  const guiRef = useRef<GUI | null>(null);
+  const currentScenarioRef = useRef<ScenarioId>("default");
+  const currentSpeedRef = useRef<number>(1.4);
+  const isRestartingRef = useRef(false);
+
+  const restartScene = useCallback(async (scenarioId: ScenarioId, speed: number) => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    // Prevent multiple simultaneous restarts
+    if (isRestartingRef.current) {
+      console.log("[navcat-block-stacker] Already restarting, skipping...");
+      return;
+    }
+
+    // Check if we're actually changing something
+    if (currentScenarioRef.current === scenarioId && currentSpeedRef.current === speed && handleRef.current) {
+      console.log("[navcat-block-stacker] Same scenario and speed, skipping restart");
+      return;
+    }
+
+    isRestartingRef.current = true;
+    currentScenarioRef.current = scenarioId;
+    currentSpeedRef.current = speed;
+
+    // Clear status first
+    setStatus("Preparing scene…");
+    setActions([]);
+    setError(null);
+    actionSequenceRef.current = 0;
+
+    // Dispose old scene (this will set disposed flag and clear container)
+    if (handleRef.current) {
+      handleRef.current.dispose();
+      handleRef.current = null;
+    }
+
+    // Dispose old GUI
+    if (guiRef.current) {
+      guiRef.current.destroy();
+      guiRef.current = null;
+    }
+
+    // Wait a bit to ensure cleanup is complete
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    // Ensure container is clean (dispose already does this, but be explicit)
+    container.innerHTML = "";
+
+    const scenario = getScenarioById(scenarioId);
+
+    try {
+      const sceneHandle = await createNavcatBlockStackerScene(
+        container,
+        {
+          onStatus: (text) => setStatus(text),
+          onAction: (text) => {
+            actionSequenceRef.current += 1;
+            setActions((prev) => [{ text, sequence: actionSequenceRef.current }, ...prev]);
+          },
+        },
+        {
+          config: scenario.config,
+          speed,
+        },
+      );
+      handleRef.current = sceneHandle;
+
+      // Setup GUI
+      const gui = new GUI();
+      guiRef.current = gui;
+
+      const scenarioOptions = Object.fromEntries(
+        SCENARIOS.map((s) => [s.name, s.id] as const),
+      ) as Record<string, ScenarioId>;
+      const guiState = {
+        scenario: scenarioId,
+        speed,
+      };
+
+      gui
+        .add(guiState, "scenario", scenarioOptions)
+        .name("Scenario")
+        .onChange((value: ScenarioId) => {
+          if (value === currentScenarioRef.current) {
+            return;
+          }
+          const newSpeed = guiState.speed;
+          void restartScene(value, newSpeed);
+        });
+
+      gui
+        .add(guiState, "speed", 0.1, 10, 0.1)
+        .name("Agent Speed")
+        .onChange((value: number) => {
+          guiState.speed = value;
+          currentSpeedRef.current = value;
+          if (handleRef.current) {
+            handleRef.current.setSpeed(value);
+          }
+        });
+
+      gui.domElement.style.position = "absolute";
+      gui.domElement.style.top = "1rem";
+      gui.domElement.style.right = "1rem";
+      gui.domElement.style.zIndex = "1000";
+
+      isRestartingRef.current = false;
+    } catch (err) {
+      console.error("[navcat-block-stacker] failed", err);
+      setError(err instanceof Error ? err.message : "Failed to start demo");
+      isRestartingRef.current = false;
+    }
+  }, []);
 
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
 
-    let disposed = false;
-    let handle: Awaited<ReturnType<typeof createNavcatBlockStackerScene>> | null = null;
-    actionSequenceRef.current = 0;
-
-    createNavcatBlockStackerScene(container, {
-      onStatus: (text) => setStatus(text),
-      onAction: (text) => {
-        actionSequenceRef.current += 1;
-        setActions((prev) => [{ text, sequence: actionSequenceRef.current }, ...prev]);
-      },
-    })
-      .then((sceneHandle) => {
-        if (disposed) {
-          sceneHandle.dispose();
-          return;
-        }
-        handle = sceneHandle;
-      })
-      .catch((err) => {
-        console.error("[navcat-block-stacker] failed", err);
-        setError(err instanceof Error ? err.message : "Failed to start demo");
-      });
+    void restartScene("default", 1.4);
 
     return () => {
-      disposed = true;
-      handle?.dispose();
+      if (handleRef.current) {
+        handleRef.current.dispose();
+        handleRef.current = null;
+      }
+      if (guiRef.current) {
+        guiRef.current.destroy();
+        guiRef.current = null;
+      }
     };
-  }, []);
+  }, [restartScene]);
 
   return (
     <div className="relative flex h-screen w-full flex-col overflow-hidden bg-slate-950 text-slate-100">

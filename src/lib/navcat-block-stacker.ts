@@ -1,6 +1,6 @@
 import Stats from "stats-gl";
 import type { Vec3 } from "mathcat";
-import { DEFAULT_QUERY_FILTER, type NavMesh } from "navcat";
+import type { NavMesh } from "navcat";
 import { OrbitControls } from "three/examples/jsm/Addons.js";
 import * as THREE from "three/webgpu";
 import {
@@ -17,12 +17,12 @@ import {
   canReachGoal,
   buildNavMeshForGrid,
   navcatBlockDomain,
-  type Cell,
-  type PlannedAction,
   START_CELL,
   STAIRS,
   GOAL_CELL,
   runNavcatBlockStackerHeadless,
+  type HeadlessRunConfig,
+  hasAgentReachedGoal,
 } from "./navcat-block-stacker-core";
 
 export type BlockStackerCallbacks = {
@@ -30,8 +30,15 @@ export type BlockStackerCallbacks = {
   onAction?: (action: string) => void;
 };
 
+export type BlockStackerOptions = {
+  config?: HeadlessRunConfig;
+  speed?: number;
+};
+
 export type BlockStackerHandle = {
   dispose: () => void;
+  setSpeed: (speed: number) => void;
+  setConfig: (config: HeadlessRunConfig) => void;
 };
 
 export { runNavcatBlockStackerHeadless };
@@ -93,13 +100,13 @@ const animatePath = async (
   path: Vec3[],
   world: WorldState,
   onUpdatePath: (points: Vec3[]) => void,
+  speed: number,
 ) => {
   if (path.length <= 1) {
     onUpdatePath([]);
     return;
   }
   onUpdatePath(path);
-  const speed = 1.4;
   const agentOffset = new THREE.Vector3(0, 0.3, 0);
   const carriedOffset = new THREE.Vector3(0, 0.6, 0);
   await new Promise<void>((resolve) => {
@@ -155,7 +162,10 @@ const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 export const createNavcatBlockStackerScene = async (
   container: HTMLElement,
   callbacks: BlockStackerCallbacks = {},
+  options: BlockStackerOptions = {},
 ): Promise<BlockStackerHandle> => {
+  const config = options.config ?? {};
+  let speed = options.speed ?? 1.4;
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x0f172a);
   const camera = new THREE.PerspectiveCamera(60, container.clientWidth / container.clientHeight, 0.1, 100);
@@ -222,11 +232,14 @@ export const createNavcatBlockStackerScene = async (
     console.warn("Stats init failed", err);
   }
 
-  const walkwayKeys = new Set<string>([cellKey(START_CELL), ...STAIRS.map((step) => cellKey(step.cell))]);
-  const initialGrid = createInitialGrid();
+  const startCell = config.startCell ?? START_CELL;
+  const stairs = config.stairs ?? STAIRS;
+  const goalCell = config.goalCell ?? GOAL_CELL;
+  const walkwayKeys = new Set<string>([cellKey(startCell), ...stairs.map((step) => cellKey(step.cell))]);
+  const initialGrid = createInitialGrid(config);
   const world: WorldState = {
     grid: initialGrid,
-    agentPos: cellTop(initialGrid, START_CELL),
+    agentPos: cellTop(initialGrid, startCell),
     carrying: false,
     navMesh: buildNavMeshForGrid(initialGrid),
   };
@@ -282,14 +295,15 @@ export const createNavcatBlockStackerScene = async (
         new BlockWorldContext(
           { grid: cloneGrid(world.grid), agentPos: [...world.agentPos] as Vec3, carrying: world.carrying },
           world.navMesh,
+          config,
         ),
       );
       log("planner: direct goal check", {
         iteration,
         reachable,
-        distanceToGoal: distance3(world.agentPos, cellTop(world.grid, GOAL_CELL)),
+        distanceToGoal: distance3(world.agentPos, cellTop(world.grid, goalCell)),
       });
-      if (reachable && distance3(world.agentPos, cellTop(world.grid, GOAL_CELL)) < 0.1) {
+      if (reachable && hasAgentReachedGoal(world.grid, world.agentPos, goalCell)) {
         log("planner: goal reached", { iteration });
         callbacks.onStatus?.("Agent reached the tower top!");
         carriedBlock.visible = false;
@@ -299,6 +313,7 @@ export const createNavcatBlockStackerScene = async (
       const planningContext = new BlockWorldContext(
         { grid: planningGrid, agentPos: [...world.agentPos] as Vec3, carrying: world.carrying },
         world.navMesh,
+        config,
       );
       log("planner: searching for plan", { iteration });
       const planResult = navcatBlockDomain.findPlan(planningContext);
@@ -324,7 +339,7 @@ export const createNavcatBlockStackerScene = async (
         callbacks.onAction?.(action.description);
         callbacks.onStatus?.(action.description);
         if (action.type === "navigate") {
-          await animatePath(agent, carriedBlock, action.path, world, onUpdatePath);
+          await animatePath(agent, carriedBlock, action.path, world, onUpdatePath, speed);
           if (world.carrying) {
             carriedBlock.visible = true;
             carriedBlock.position.copy(agent.position).add(new THREE.Vector3(0, 0.6, 0));
@@ -383,18 +398,29 @@ export const createNavcatBlockStackerScene = async (
 
   return {
     dispose: () => {
+      if (disposed) {
+        return;
+      }
       disposed = true;
       window.removeEventListener("resize", resize);
-      renderer.dispose();
-      blocksMesh.dispose();
       pathGeometry.dispose();
       pathMaterial.dispose();
+      blocksMesh.dispose();
       blockGeometry.dispose();
       blockMaterial.dispose();
+      renderer.dispose();
       if (stats) {
         stats.domElement.remove();
       }
       container.innerHTML = "";
+    },
+    setSpeed: (newSpeed: number) => {
+      speed = Math.max(0.1, Math.min(10, newSpeed));
+    },
+    setConfig: (_newConfig: HeadlessRunConfig) => {
+      // Note: This would require restarting the planner, which is complex
+      // For now, this is a placeholder that could trigger a restart
+      logWarn("setConfig: Changing config requires restarting the scene");
     },
   };
 };

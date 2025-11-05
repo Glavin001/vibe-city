@@ -179,8 +179,10 @@ describe("navcat block stacker module", () => {
   // TODO(backtracking): enable this when the planner supports multi-step lookahead/backtracking
   it("headless planner reaches goal and completes staircase", async () => {
     const { runNavcatBlockStackerHeadless, STAIRS, GOAL_CELL, GOAL_HEIGHT } = await import("./navcat-block-stacker-core");
+    const { getScenarioById } = await import("./navcat-block-stacker-scenarios");
 
-    const result = runNavcatBlockStackerHeadless();
+    const scenario = getScenarioById("default");
+    const result = runNavcatBlockStackerHeadless(scenario.config);
 
     expect(result.reachedGoal).toBe(true);
     expect(result.iterations).toBeGreaterThan(0);
@@ -188,12 +190,15 @@ describe("navcat block stacker module", () => {
     expect(result.actions.length).toBeGreaterThan(0);
 
     // Verify all stairs reach their target height
-    for (const step of STAIRS) {
+    const stairs = scenario.config.stairs ?? STAIRS;
+    for (const step of stairs) {
       expect(result.finalGrid[step.cell.x][step.cell.z]).toBe(step.targetHeight);
     }
 
     // Verify goal cell has correct height
-    expect(result.finalGrid[GOAL_CELL.x][GOAL_CELL.z]).toBe(GOAL_HEIGHT);
+    const goalCell = scenario.config.goalCell ?? GOAL_CELL;
+    const goalHeight = scenario.config.goalHeight ?? GOAL_HEIGHT;
+    expect(result.finalGrid[goalCell.x][goalCell.z]).toBe(goalHeight);
 
     // Verify action types are present
     const actionTypes = new Set(result.actions.map((a) => a.type));
@@ -213,33 +218,32 @@ describe("navcat block stacker module", () => {
 
   it("immediately succeeds when already at goal", async () => {
     const { runNavcatBlockStackerHeadless } = await import("./navcat-block-stacker-core");
+    const { getScenarioById } = await import("./navcat-block-stacker-scenarios");
 
-    const goalCell = { x: 3, z: 3 };
-    const result = runNavcatBlockStackerHeadless({
-      startCell: goalCell,
-      goalCell,
-      goalHeight: 1,
-      stairs: [],
-      supplySources: [],
-    });
+    const scenario = getScenarioById("atGoal");
+    const result = runNavcatBlockStackerHeadless(scenario.config);
 
     expect(result.reachedGoal).toBe(true);
     expect(result.actions.length).toBe(0);
     expect(result.iterations).toBe(1);
   });
 
+  it("treats slight offsets near the goal as reaching the goal", async () => {
+    const { createInitialGrid, GOAL_CELL, cellTop, hasAgentReachedGoal } = await import("./navcat-block-stacker-core");
+
+    const grid = createInitialGrid();
+    const goalTop = cellTop(grid, GOAL_CELL);
+    const nearlyAtGoal: [number, number, number] = [goalTop[0] + 0.12, goalTop[1] - 0.05, goalTop[2] - 0.08];
+
+    expect(hasAgentReachedGoal(grid, nearlyAtGoal, GOAL_CELL)).toBe(true);
+  });
+
   it("navigates to goal when goal height is 1 (no pick/place needed)", async () => {
     const { runNavcatBlockStackerHeadless } = await import("./navcat-block-stacker-core");
+    const { getScenarioById } = await import("./navcat-block-stacker-scenarios");
 
-    const startCell = { x: 1, z: 1 };
-    const goalCell = { x: 3, z: 3 };
-    const result = runNavcatBlockStackerHeadless({
-      startCell,
-      goalCell,
-      goalHeight: 1,
-      stairs: [],
-      supplySources: [],
-    });
+    const scenario = getScenarioById("simpleNavigate");
+    const result = runNavcatBlockStackerHeadless(scenario.config);
 
     expect(result.reachedGoal).toBe(true);
     expect(result.iterations).toBeGreaterThan(0);
@@ -251,17 +255,10 @@ describe("navcat block stacker module", () => {
 
   it("walks an existing single step to the goal", async () => {
     const { runNavcatBlockStackerHeadless } = await import("./navcat-block-stacker-core");
+    const { getScenarioById } = await import("./navcat-block-stacker-scenarios");
 
-    const startCell = { x: 3, z: 1 };
-    const goalCell = { x: 3, z: 2 };
-    const result = runNavcatBlockStackerHeadless({
-      startCell,
-      goalCell,
-      goalHeight: 1,
-      stairs: [],
-      supplySources: [],
-      maxIterations: 10,
-    });
+    const scenario = getScenarioById("walkStep");
+    const result = runNavcatBlockStackerHeadless(scenario.config);
 
     expect(result.reachedGoal).toBe(true);
     expect(result.iterations).toBeGreaterThan(0);
@@ -269,26 +266,16 @@ describe("navcat block stacker module", () => {
     expect(actionTypes.has("navigate")).toBe(true);
     expect(actionTypes.has("pick")).toBe(false);
     expect(actionTypes.has("place")).toBe(false);
+    const goalCell = scenario.config.goalCell!;
     expect(result.finalGrid[goalCell.x][goalCell.z]).toBe(1);
   });
 
   it("picks and places one block when goal height is 2", async () => {
     const { runNavcatBlockStackerHeadless } = await import("./navcat-block-stacker-core");
+    const { getScenarioById } = await import("./navcat-block-stacker-scenarios");
 
-    // Goal at (2,2) height 2, stair step at (2,1) needs height 1 to reach goal
-    // Supply at (0,1) - agent starts at (0,0), can stand at (0,2) or (1,1) to pick
-    const startCell = { x: 0, z: 0 };
-    const goalCell = { x: 2, z: 2 };
-    const supplyCell = { x: 0, z: 1 };
-    const stairStep = { cell: { x: 2, z: 1 }, targetHeight: 1, label: "Step to goal" };
-    const result = runNavcatBlockStackerHeadless({
-      startCell,
-      goalCell,
-      goalHeight: 2,
-      stairs: [stairStep],
-      supplySources: [{ cell: supplyCell, height: 1 }],
-      maxIterations: 20,
-    });
+    const scenario = getScenarioById("pickPlaceOne");
+    const result = runNavcatBlockStackerHeadless(scenario.config);
 
     // Verify pick and place actions occurred
     const pickCount = result.actions.filter((a) => a.type === "pick").length;
@@ -296,6 +283,7 @@ describe("navcat block stacker module", () => {
     expect(pickCount).toBe(1);
     expect(placeCount).toBe(1);
     // Verify the stair step was built
+    const stairStep = scenario.config.stairs![0];
     expect(result.finalGrid[stairStep.cell.x][stairStep.cell.z]).toBe(1);
     // Note: Goal might not be reached if planner can't find path from step to goal
     // but the core functionality (pick and place) is verified
@@ -303,27 +291,10 @@ describe("navcat block stacker module", () => {
 
   it("walks an existing two-step staircase to the goal", async () => {
     const { runNavcatBlockStackerHeadless } = await import("./navcat-block-stacker-core");
+    const { getScenarioById } = await import("./navcat-block-stacker-scenarios");
 
-    const startCell = { x: 3, z: 1 };
-    const goalCell = { x: 3, z: 3 };
-    const stairs = [
-      { cell: { x: 3, z: 2 }, targetHeight: 1, label: "Step 1" },
-      { cell: { x: 3, z: 3 }, targetHeight: 2, label: "Goal column" },
-    ];
-    const supplySources: Array<{ cell: { x: number; z: number }; height: number }> = [];
-
-    const result = runNavcatBlockStackerHeadless({
-      startCell,
-      goalCell,
-      goalHeight: 0,
-      stairs,
-      supplySources,
-      initialHeights: [
-        { cell: { x: 3, z: 2 }, height: 1 },
-        { cell: { x: 3, z: 3 }, height: 2 },
-      ],
-      maxIterations: 20,
-    });
+    const scenario = getScenarioById("walkExistingStairs");
+    const result = runNavcatBlockStackerHeadless(scenario.config);
 
     expect(result.reachedGoal).toBe(true);
     expect(result.iterations).toBeGreaterThan(0);
@@ -331,30 +302,16 @@ describe("navcat block stacker module", () => {
     expect(actionTypes.has("navigate")).toBe(true);
     expect(actionTypes.has("pick")).toBe(false);
     expect(actionTypes.has("place")).toBe(false);
+    const goalCell = scenario.config.goalCell!;
     expect(result.finalGrid[goalCell.x][goalCell.z]).toBe(2);
   });
 
   it("builds two-step staircase and reaches goal", async () => {
     const { runNavcatBlockStackerHeadless } = await import("./navcat-block-stacker-core");
+    const { getScenarioById } = await import("./navcat-block-stacker-scenarios");
 
-    const startCell = { x: 3, z: 1 };
-    const goalCell = { x: 3, z: 3 };
-    const stairs = [
-      { cell: { x: 3, z: 2 }, targetHeight: 1, label: "Step 1" },
-      { cell: { x: 3, z: 3 }, targetHeight: 2, label: "Goal column" },
-    ];
-    const supplySources = [
-      { cell: { x: 1, z: 1 }, height: 2 },
-      { cell: { x: 5, z: 2 }, height: 2 },
-    ];
-    const result = runNavcatBlockStackerHeadless({
-      startCell,
-      goalCell,
-      goalHeight: 0,
-      stairs,
-      supplySources,
-      maxIterations: 200,
-    });
+    const scenario = getScenarioById("buildTwoSteps");
+    const result = runNavcatBlockStackerHeadless(scenario.config);
 
     expect(result.reachedGoal).toBe(true);
     const pickCount = result.actions.filter((a) => a.type === "pick").length;
@@ -362,36 +319,19 @@ describe("navcat block stacker module", () => {
     expect(pickCount).toBeGreaterThanOrEqual(2);
     expect(placeCount).toBeGreaterThanOrEqual(2);
 
+    const stairs = scenario.config.stairs!;
     expect(result.finalGrid[stairs[0].cell.x][stairs[0].cell.z]).toBe(stairs[0].targetHeight);
     expect(result.finalGrid[stairs[1].cell.x][stairs[1].cell.z]).toBe(stairs[1].targetHeight);
+    const goalCell = scenario.config.goalCell!;
     expect(result.finalGrid[goalCell.x][goalCell.z]).toBe(stairs[1].targetHeight);
   });
 
   it("places block directly on adjacent cell when at same height", async () => {
     const { runNavcatBlockStackerHeadless } = await import("./navcat-block-stacker-core");
+    const { getScenarioById } = await import("./navcat-block-stacker-scenarios");
 
-    // Agent starts at (2, 2) height 1, supply at (2, 2) height 2
-    // Goal at (3, 2) height 2, needs step at (3, 2) height 1
-    // Agent should pick from (2, 2), then place directly on (3, 2) without climbing
-    const startCell = { x: 2, z: 2 };
-    const goalCell = { x: 3, z: 3 };
-    const stairs = [
-      { cell: { x: 3, z: 2 }, targetHeight: 1, label: "Step to goal" },
-    ];
-    const supplySources = [
-      { cell: { x: 2, z: 2 }, height: 2 }, // Agent starts here, can pick from here
-    ];
-    const result = runNavcatBlockStackerHeadless({
-      startCell,
-      goalCell,
-      goalHeight: 2,
-      stairs,
-      supplySources,
-      initialHeights: [
-        { cell: startCell, height: 1 }, // Agent starts at height 1
-      ],
-      maxIterations: 50,
-    });
+    const scenario = getScenarioById("directPlaceAdjacent");
+    const result = runNavcatBlockStackerHeadless(scenario.config);
 
     // Should reach goal
     expect(result.reachedGoal).toBe(true);

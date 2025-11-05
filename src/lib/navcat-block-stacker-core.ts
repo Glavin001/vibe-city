@@ -192,6 +192,19 @@ export const cellTop = (grid: number[][], cell: Cell): Vec3 => [
 export const distance3 = (a: Vec3, b: Vec3) =>
   Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
 
+export const GOAL_HORIZONTAL_TOLERANCE = BLOCK_SIZE * 0.25;
+export const GOAL_VERTICAL_TOLERANCE = BLOCK_SIZE * 0.25;
+
+export const hasAgentReachedGoal = (grid: number[][], agentPos: Vec3, goalCell: Cell): boolean => {
+  const goalTop = cellTop(grid, goalCell);
+  const horizontalDistance = Math.hypot(agentPos[0] - goalTop[0], agentPos[2] - goalTop[2]);
+  const verticalDistance = Math.abs(agentPos[1] - goalTop[1]);
+  return (
+    horizontalDistance <= GOAL_HORIZONTAL_TOLERANCE &&
+    verticalDistance <= GOAL_VERTICAL_TOLERANCE
+  );
+};
+
 export const pathToPoints = (path: ReturnType<typeof findPath>): Vec3[] => {
   if (!path.success) return [];
   return path.path.map((p) => [p.position[0], p.position[1], p.position[2]] as Vec3);
@@ -810,13 +823,9 @@ export const runNavcatBlockStackerHeadless = (config?: HeadlessRunConfig): Headl
 
     const goalTop = cellTop(world.grid, goalCell);
     // Check if agent is close enough to goal (nearly centered on the goal column at the right height)
-    const horizontalDistance = Math.hypot(world.agentPos[0] - goalTop[0], world.agentPos[2] - goalTop[2]);
-    const verticalDistance = Math.abs(world.agentPos[1] - goalTop[1]);
-    const goalHorizontalTolerance = BLOCK_SIZE * 0.25;
-    const goalVerticalTolerance = BLOCK_SIZE * 0.25;
-    const isAtGoal = horizontalDistance <= goalHorizontalTolerance && verticalDistance <= goalVerticalTolerance;
+    const goalReached = currentFrontier === null && hasAgentReachedGoal(world.grid, world.agentPos, goalCell);
 
-    if (currentFrontier === null && isAtGoal) {
+    if (goalReached) {
       log("planner: goal reached", { iteration });
       return {
         reachedGoal: true,
