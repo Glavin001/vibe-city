@@ -1,7 +1,7 @@
 import RAPIER, { type RigidBody as RapierRigidBody } from '@dimforge/rapier3d-compat';
 import { loadStressSolver } from 'blast-stress-solver';
 import type { DestructibleCore, ScenarioDesc, ChunkData, Vec3, ProjectileSpawn, BondRef } from './types';
-import { DestructibleDamageSystem, type DamageOptions } from './damage';
+import { DestructibleDamageSystem, type DamageOptions, type DamageStateSnapshot } from './damage';
 
 type BuildCoreOptions = {
   scenario: ScenarioDesc;
@@ -19,6 +19,7 @@ type BuildCoreOptions = {
   maxResimulationPasses?: number; // default 1
   snapshotMode?: 'perBody' | 'world'; // default 'perBody'
   onWorldReplaced?: (newWorld: RAPIER.World) => void; // only used when snapshotMode==='world'
+  resimulateOnDamageDestroy?: boolean;
 };
 
 const isDev = true; //process.env.NODE_ENV !== 'production';
@@ -37,6 +38,7 @@ export async function buildDestructibleCore({
   maxResimulationPasses = 1,
   snapshotMode = 'perBody',
   onWorldReplaced,
+  resimulateOnDamageDestroy = !!damage?.enabled,
 }: BuildCoreOptions): Promise<DestructibleCore> {
   await RAPIER.init();
   const runtime = await loadStressSolver();
@@ -199,6 +201,7 @@ export async function buildDestructibleCore({
   const projectiles: Array<{ bodyHandle: number; radius: number; type: 'ball'|'box'; mesh?: unknown }> = [];
   const removedBondIndices = new Set<number>();
   const pendingExternalForces: Array<{ nodeIndex:number; point: Vec3; force: Vec3 }> = [];
+  const pendingDamageFractures = new Map<number, Set<number>>();
 
   let safeFrames = 0;
   let warnedColliderMapEmptyOnce = false;
@@ -631,14 +634,34 @@ export async function buildDestructibleCore({
     solver.update();
 
     const hasFracture = solver.overstressedBondCount() > 0;
-    if (!doResim || !hasFracture) {
-      // Accept first pass; apply buffered damage and external pushes, optionally queue immediate split
+    const dt = getDt();
+    const damagePreviewEnabled = damageSystem.isEnabled() && !!resimulateOnDamageDestroy;
+    const shouldSnapshotDamage = damageSystem.isEnabled() && (damagePreviewEnabled || (doResim && hasFracture));
+    let damageSnapshot: DamageStateSnapshot | null = null;
+    if (shouldSnapshotDamage) {
+      try { damageSnapshot = damageSystem.captureImpactState(); } catch {}
+    }
+    let damagePreviewDestroyed: number[] = [];
+    if (damageSystem.isEnabled()) {
       replayBufferedContacts();
+      if (damagePreviewEnabled) {
+        try {
+          damagePreviewDestroyed = damageSystem.previewTick(dt) ?? [];
+        } catch {
+          damagePreviewDestroyed = [];
+        }
+      }
+    }
+    const shouldResimFracture = doResim && hasFracture;
+    const shouldResimDamage = damagePreviewEnabled && damagePreviewDestroyed.length > 0;
+    if (!shouldResimFracture && !shouldResimDamage) {
       const hadExternalForces = injectPendingExternalForces();
       if (hadExternalForces && process.env.NODE_ENV !== 'production') {
         try { ((window as unknown as { debugStressSolver?: { printSolver?: () => unknown } }).debugStressSolver)?.printSolver?.(); } catch {}
       }
       applyDamageTick();
+      flushPendingDamageFractures();
+      removeDisabledHandles();
 
       if (hasFracture) {
         try {
@@ -654,6 +677,8 @@ export async function buildDestructibleCore({
       return;
     }
 
+    const preDestroyedNodes = shouldResimDamage ? Array.from(new Set(damagePreviewDestroyed)) : [];
+
     // Rollback and resimulate (accepted pass)
     try {
       if (useWorldSnapshot && worldSnap) {
@@ -666,11 +691,15 @@ export async function buildDestructibleCore({
       } else if (bodySnap) {
         restoreBodySnapshot(bodySnap);
       }
+      if (damageSnapshot) {
+        try { damageSystem.restoreImpactState(damageSnapshot); } catch {}
+      }
     } catch (e) {
       console.error('[Core] rollback failed; proceeding without resim', e);
-      replayBufferedContacts();
       injectPendingExternalForces();
       applyDamageTick();
+      flushPendingDamageFractures();
+      removeDisabledHandles();
       return;
     }
 
@@ -684,6 +713,20 @@ export async function buildDestructibleCore({
         removeDisabledHandles();
       }
     } catch (e) { console.error('[Core] applyFractureCommands (resim)', e); }
+
+    if (preDestroyedNodes.length > 0) {
+      damageSystem.applyPreDestruction(preDestroyedNodes);
+      for (const nodeIndex of preDestroyedNodes) {
+        const seg = chunks[nodeIndex];
+        if (!seg || seg.destroyed) continue;
+        if (seg.isSupport) continue;
+        try { handleNodeDestroyed(nodeIndex, 'impact'); } catch (err) {
+          if (isDev) console.warn('[Core] preDestroy handleNodeDestroyed failed', err);
+        }
+      }
+    }
+    flushPendingDamageFractures();
+    removeDisabledHandles();
 
     // Accepted pass
     clearBufferedContacts();
@@ -699,6 +742,8 @@ export async function buildDestructibleCore({
     }
     solver.update();
     applyDamageTick();
+    flushPendingDamageFractures();
+    removeDisabledHandles();
   }
 
   // Back-compat aliases
@@ -942,6 +987,52 @@ export async function buildDestructibleCore({
     return any;
   }
 
+  function enqueueDamageFracturesForNode(nodeIndex: number) {
+    const bonds = getNodeBonds(nodeIndex);
+    if (bonds.length === 0) return;
+    for (const br of bonds) {
+      if (removedBondIndices.has(br.index)) continue;
+      const actor0 = nodeToActor.get(br.node0);
+      const actor1 = nodeToActor.get(br.node1);
+      const actorIndex = actor0 != null ? actor0 : actor1;
+      if (actorIndex == null) continue;
+      if (actor0 != null && actor1 != null && actor0 !== actor1) continue;
+      let set = pendingDamageFractures.get(actorIndex);
+      if (!set) {
+        set = new Set<number>();
+        pendingDamageFractures.set(actorIndex, set);
+      }
+      set.add(br.index);
+    }
+  }
+
+  function flushPendingDamageFractures() {
+    if (pendingDamageFractures.size === 0) return;
+    const fractureSets: Array<{ actorIndex:number; fractures:Array<{ userdata:number; nodeIndex0:number; nodeIndex1:number; health:number }> }> = [];
+    for (const [actorIndex, bondSet] of Array.from(pendingDamageFractures.entries())) {
+      const fractures: Array<{ userdata:number; nodeIndex0:number; nodeIndex1:number; health:number }> = [];
+      for (const bondIndex of Array.from(bondSet.values())) {
+        const bond = bondTable[bondIndex];
+        if (!bond || removedBondIndices.has(bondIndex)) continue;
+        fractures.push({ userdata: bondIndex, nodeIndex0: bond.node0, nodeIndex1: bond.node1, health: 1e9 });
+        removedBondIndices.add(bondIndex);
+      }
+      if (fractures.length > 0) fractureSets.push({ actorIndex, fractures });
+    }
+    pendingDamageFractures.clear();
+    if (fractureSets.length === 0) return;
+    try {
+      const splitEvents = solver.applyFractureCommands(fractureSets as Array<{ actorIndex:number; fractures:Array<{ userdata:number; nodeIndex0:number; nodeIndex1:number; health:number }> }>);
+      if (Array.isArray(splitEvents) && splitEvents.length > 0) {
+        queueSplitResults(splitEvents as Array<{ parentActorIndex:number; children:Array<{ actorIndex:number; nodes:number[] }> }>);
+        applyPendingMigrations();
+        removeDisabledHandles();
+      }
+    } catch (e) {
+      if (isDev) console.error('[Core] flushPendingDamageFractures failed', e);
+    }
+  }
+
   function dispose() {
     try { solver.destroy?.(); } catch {}
   }
@@ -955,7 +1046,11 @@ export async function buildDestructibleCore({
 
     // Detach bonds in solver
     if (damageOptions.autoDetachOnDestroy) {
-      try { cutNodeBonds(nodeIndex); } catch {}
+      if (reason === 'impact') {
+        try { enqueueDamageFracturesForNode(nodeIndex); } catch {}
+      } else {
+        try { cutNodeBonds(nodeIndex); } catch {}
+      }
     }
 
     // Cleanup physics collider and possibly body

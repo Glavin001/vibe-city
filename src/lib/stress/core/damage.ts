@@ -1,5 +1,17 @@
 import type { ChunkData, ScenarioDesc } from './types';
 
+export type DamageTickOptions = {
+  preview?: boolean;
+};
+
+export type DamageStateSnapshot = {
+  timeMs: number;
+  pendingDamage: number[];
+  health: number[];
+  destroyed: boolean[];
+  nextAllowedImpactTimeMs: number[];
+};
+
 export type DamageOptions = {
   enabled?: boolean;
   strengthPerVolume?: number;
@@ -193,35 +205,87 @@ export class DestructibleDamageSystem {
     return { health: ch.health, maxHealth: ch.maxHealth, destroyed: !!ch.destroyed };
   }
 
-  public tick(_dt: number, onDestroyed?: DestroyCallback) {
-    if (!this.options.enabled) return;
-    this.timeMs += Math.max(0, _dt) * 1000.0;
+  public tick(_dt: number, onDestroyed?: DestroyCallback, options?: DamageTickOptions) {
+    const destroyedNodes: number[] = [];
+    if (!this.options.enabled) return destroyedNodes;
+    const preview = !!options?.preview;
+    const dtMs = Math.max(0, _dt) * 1000.0;
+    if (!preview) this.timeMs += dtMs;
     for (let i = 0; i < this.chunks.length; i++) {
       const ch = this.chunks[i];
-
       const isSupport = this.chunks[i]?.isSupport;
-
-      if (!ch || ch.destroyed) continue;
+      if (!ch) continue;
+      if (ch.destroyed) continue;
       const maxH = ch.maxHealth ?? 0;
       if (!(maxH > 0)) continue;
       const dmg = ch.pendingDamage ?? 0;
-    //   if (dmg > 10) {
-    //     console.log("[DestructibleDamageSystem] tick: dmg", i, dmg, ch.health);
-    //   }
       if (dmg <= 0) continue;
-      const h = Math.max(0, (ch.health ?? maxH) - dmg);
-      ch.health = h;
-      ch.pendingDamage = 0;
-      if (h <= 0 && !ch.destroyed) {
-
+      const currentHealth = ch.health ?? maxH;
+      const nextHealth = Math.max(0, currentHealth - dmg);
+      if (!preview) {
+        ch.health = nextHealth;
+        ch.pendingDamage = 0;
+      }
+      if (nextHealth <= 0 && !ch.destroyed) {
         if (isSupport) {
-        //   console.log("[DestructibleDamageSystem] tick: support node not destroyed", { nodeIndex: i });
+          // Supports currently remain even when depleted
           continue;
         }
-
-        ch.destroyed = true;
-        if (onDestroyed) onDestroyed(i, 'impact');
+        destroyedNodes.push(i);
+        if (!preview) {
+          ch.destroyed = true;
+          if (onDestroyed) onDestroyed(i, 'impact');
+        }
       }
+    }
+    return destroyedNodes;
+  }
+
+  public previewTick(_dt: number): number[] {
+    return this.tick(_dt, undefined, { preview: true }) ?? [];
+  }
+
+  public captureImpactState(): DamageStateSnapshot {
+    const pendingDamage = this.chunks.map((ch) => ch?.pendingDamage ?? 0);
+    const health = this.chunks.map((ch) => {
+      if (!ch) return 0;
+      if (typeof ch.health === 'number') return ch.health;
+      if (typeof ch.maxHealth === 'number') return ch.maxHealth;
+      return 0;
+    });
+    const destroyed = this.chunks.map((ch) => !!ch?.destroyed);
+    return {
+      timeMs: this.timeMs,
+      pendingDamage,
+      health,
+      destroyed,
+      nextAllowedImpactTimeMs: [...this.nextAllowedImpactTimeMs],
+    };
+  }
+
+  public restoreImpactState(snapshot: DamageStateSnapshot | null | undefined) {
+    if (!snapshot) return;
+    this.timeMs = snapshot.timeMs;
+    this.nextAllowedImpactTimeMs = [...snapshot.nextAllowedImpactTimeMs];
+    for (let i = 0; i < this.chunks.length; i++) {
+      const ch = this.chunks[i];
+      if (!ch) continue;
+      ch.pendingDamage = snapshot.pendingDamage[i] ?? 0;
+      const restoredHealth = snapshot.health[i];
+      if (typeof restoredHealth === 'number') {
+        ch.health = restoredHealth;
+      }
+      ch.destroyed = snapshot.destroyed[i] ?? false;
+    }
+  }
+
+  public applyPreDestruction(nodes: number[]) {
+    if (!Array.isArray(nodes) || nodes.length === 0) return;
+    for (const idx of nodes) {
+      const ch = this.chunks[idx];
+      if (!ch) continue;
+      ch.pendingDamage = 0;
+      ch.health = 0;
     }
   }
 }
