@@ -55,6 +55,7 @@ type SceneProps = {
   gravity: number;
   solverGravityEnabled: boolean;
   limitSinglesCollisions: boolean;
+  skipSingleBodies: boolean;
   damageEnabled: boolean;
   damageClickRatio: number;
   contactDamageScale: number;
@@ -200,6 +201,7 @@ function Scene({
   gravity,
   solverGravityEnabled,
   limitSinglesCollisions,
+  skipSingleBodies,
   damageEnabled,
   damageClickRatio,
   contactDamageScale,
@@ -365,6 +367,7 @@ function Scene({
         },
         gravity: buildGravityRef.current,
         materialScale: materialScale,
+        skipSingleBodies,
         damage: {
           enabled: damageEnabled,
           autoDetachOnDestroy: true,
@@ -509,6 +512,7 @@ function Scene({
     autoBondingEnabled,
     scene,
     materialScale,
+    skipSingleBodies,
     damageEnabled,
     contactDamageScale,
     minImpulseThreshold,
@@ -963,6 +967,8 @@ function HtmlOverlay({
   setSolverGravityEnabled,
   limitSinglesCollisions,
   setLimitSinglesCollisions,
+  skipSingleBodies,
+  setSkipSingleBodies,
   damageEnabled,
   setDamageEnabled,
   mode,
@@ -1048,6 +1054,8 @@ function HtmlOverlay({
   setSolverGravityEnabled: (v: boolean) => void;
   limitSinglesCollisions: boolean;
   setLimitSinglesCollisions: (v: boolean) => void;
+  skipSingleBodies: boolean;
+  setSkipSingleBodies: (v: boolean) => void;
   damageEnabled: boolean;
   setDamageEnabled: (v: boolean) => void;
   mode: "projectile" | "cutter" | "push" | "damage";
@@ -1355,6 +1363,23 @@ function HtmlOverlay({
           style={{ accentColor: "#4da2ff", width: 16, height: 16 }}
         />
         Limit singles collisions (no SINGLE↔SINGLE)
+      </label>
+      <label
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          color: "#d1d5db",
+          fontSize: 14,
+        }}
+      >
+        <input
+          type="checkbox"
+          checked={skipSingleBodies}
+          onChange={(e) => setSkipSingleBodies(e.target.checked)}
+          style={{ accentColor: "#4da2ff", width: 16, height: 16 }}
+        />
+        Destroy single fragment bodies
       </label>
       <div style={{ height: 8 }} />
       <div style={{ color: "#9ca3af", fontSize: 13 }}>Fracture Rollback</div>
@@ -2048,6 +2073,7 @@ export default function Page() {
   const [gravity, setGravity] = useState(-9.81);
   const [solverGravityEnabled, setSolverGravityEnabled] = useState(true);
   const [limitSinglesCollisions, setLimitSinglesCollisions] = useState(false);
+  const [skipSingleBodies, setSkipSingleBodies] = useState(false);
   const [damageEnabled, setDamageEnabled] = useState(true);
   const [iteration, setIteration] = useState(0);
   const [mode, setMode] = useState<"projectile" | "cutter" | "push" | "damage">(
@@ -2108,6 +2134,8 @@ export default function Page() {
         setSolverGravityEnabled={setSolverGravityEnabled}
         limitSinglesCollisions={limitSinglesCollisions}
         setLimitSinglesCollisions={setLimitSinglesCollisions}
+        skipSingleBodies={skipSingleBodies}
+        setSkipSingleBodies={setSkipSingleBodies}
         damageClickRatio={damageClickRatio}
         setDamageClickRatio={setDamageClickRatio}
         mode={mode}
@@ -2191,6 +2219,7 @@ export default function Page() {
           gravity={gravity}
           solverGravityEnabled={solverGravityEnabled}
           limitSinglesCollisions={limitSinglesCollisions}
+        skipSingleBodies={skipSingleBodies}
           iteration={iteration}
           structureId={structureId}
           mode={mode}

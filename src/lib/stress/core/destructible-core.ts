@@ -20,6 +20,7 @@ type BuildCoreOptions = {
   snapshotMode?: 'perBody' | 'world'; // default 'perBody'
   onWorldReplaced?: (newWorld: RAPIER.World) => void; // only used when snapshotMode==='world'
   resimulateOnDamageDestroy?: boolean;
+  skipSingleBodies?: boolean;
 };
 
 const isDev = true; //process.env.NODE_ENV !== 'production';
@@ -39,12 +40,14 @@ export async function buildDestructibleCore({
   snapshotMode = 'perBody',
   onWorldReplaced,
   resimulateOnDamageDestroy = !!damage?.enabled,
+  skipSingleBodies = false,
 }: BuildCoreOptions): Promise<DestructibleCore> {
   await RAPIER.init();
   const runtime = await loadStressSolver();
 
   const settings = runtime.defaultExtSettings();
   const scaledSettings = { ...settings };
+  const skipSingleBodiesEnabled = !!skipSingleBodies;
 
   // Reasonable defaults; caller can adjust later if needed
   // settings.maxSolverIterationsPerFrame = 64;
@@ -772,21 +775,35 @@ export async function buildDestructibleCore({
       const parentEntry = actorMap.get(parentActorIndex);
       const parentBodyHandle = parentEntry?.bodyHandle ?? rootBody.handle;
       for (const child of children) {
-        if (!child || !Array.isArray(child.nodes) || child.nodes.length === 0) continue;
+        const nodes = Array.isArray(child.nodes) ? child.nodes.slice() : [];
+        if (nodes.length === 0) continue;
+        const isActorSupport = actorNodesContainSupport(nodes);
+        const shouldCullSingle =
+          skipSingleBodiesEnabled &&
+          !isActorSupport &&
+          nodes.length === 1;
+        if (shouldCullSingle) {
+          const nodeIndex = nodes[0];
+          try {
+            handleNodeDestroyed(nodeIndex, 'manual');
+          } catch (err) {
+            if (isDev) console.warn('[Core] skipSingleBodies handleNodeDestroyed failed', err);
+          }
+          continue;
+        }
         // Update ownership: all nodes listed now belong to this child actor
-        for (const n of child.nodes) nodeToActor.set(n, child.actorIndex);
-        const isActorSupport = actorNodesContainSupport(child.nodes);
+        for (const n of nodes) nodeToActor.set(n, child.actorIndex);
         if (child.actorIndex === parentActorIndex) {
           // If the parent portion no longer contains supports, migrate it to a NEW dynamic body.
           if (!isActorSupport) {
-            pendingBodiesToCreate.push({ actorIndex: child.actorIndex, inheritFromBodyHandle: parentBodyHandle, nodes: child.nodes.slice(), isSupport: false });
+            pendingBodiesToCreate.push({ actorIndex: child.actorIndex, inheritFromBodyHandle: parentBodyHandle, nodes: nodes.slice(), isSupport: false });
           }
           actorMap.set(child.actorIndex, { bodyHandle: parentBodyHandle });
           console.log('queueSplitResults(parent)', child.actorIndex, parentBodyHandle, isActorSupport);
           continue;
         }
 
-        pendingBodiesToCreate.push({ actorIndex: child.actorIndex, inheritFromBodyHandle: parentBodyHandle, nodes: child.nodes.slice(), isSupport: isActorSupport });
+        pendingBodiesToCreate.push({ actorIndex: child.actorIndex, inheritFromBodyHandle: parentBodyHandle, nodes: nodes.slice(), isSupport: isActorSupport });
         actorMap.set(child.actorIndex, { bodyHandle: parentBodyHandle });
       }
     }
