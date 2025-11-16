@@ -1,10 +1,19 @@
-import * as THREE from 'three';
-import RAPIER from '@dimforge/rapier3d-compat';
-import { FractureOptions, fracture } from '@dgreenheck/three-pinata';
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
-import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import type { ScenarioDesc, Vec3, ColliderDescBuilder } from '@/lib/stress/core/types';
+import { FractureOptions, fracture } from "@dgreenheck/three-pinata";
+import RAPIER from "@dimforge/rapier3d-compat";
+import * as THREE from "three";
+import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
+import {
+  type AutoBondChunkInput,
+  type AutoBondingRequest,
+  generateAutoBondsFromChunks,
+} from "@/lib/stress/core/autoBonding";
+import type {
+  ColliderDescBuilder,
+  ScenarioDesc,
+  Vec3,
+} from "@/lib/stress/core/types";
 
 type FragmentInfo = {
   worldPosition: THREE.Vector3;
@@ -13,8 +22,12 @@ type FragmentInfo = {
   isSupport: boolean;
 };
 
-function projectExtentsOnAxisWorld(geometry: THREE.BufferGeometry, worldPos: THREE.Vector3, axis: THREE.Vector3): { min: number; max: number } {
-  const pos = geometry.getAttribute('position') as THREE.BufferAttribute;
+function projectExtentsOnAxisWorld(
+  geometry: THREE.BufferGeometry,
+  worldPos: THREE.Vector3,
+  axis: THREE.Vector3,
+): { min: number; max: number } {
+  const pos = geometry.getAttribute("position") as THREE.BufferAttribute;
   const ax = axis;
   let min = Infinity;
   let max = -Infinity;
@@ -29,15 +42,30 @@ function projectExtentsOnAxisWorld(geometry: THREE.BufferGeometry, worldPos: THR
   return { min, max };
 }
 
-function overlap1D(a: { min: number; max: number }, b: { min: number; max: number }) {
+function overlap1D(
+  a: { min: number; max: number },
+  b: { min: number; max: number },
+) {
   return Math.max(0, Math.min(a.max, b.max) - Math.max(a.min, b.min));
 }
 
-function computeBondsFromFragments(fragments: FragmentInfo[]): Array<{ a: number; b: number; centroid: Vec3; normal: Vec3; area: number }> {
-  const bonds: Array<{ a: number; b: number; centroid: Vec3; normal: Vec3; area: number }> = [];
+function computeBondsFromFragments(
+  fragments: FragmentInfo[],
+): Array<{ a: number; b: number; centroid: Vec3; normal: Vec3; area: number }> {
+  const bonds: Array<{
+    a: number;
+    b: number;
+    centroid: Vec3;
+    normal: Vec3;
+    area: number;
+  }> = [];
   if (fragments.length === 0) return bonds;
 
-  const globalTol = 0.12 * Math.min(...fragments.map((f) => Math.min(f.halfExtents.x, f.halfExtents.z)));
+  const globalTol =
+    0.12 *
+    Math.min(
+      ...fragments.map((f) => Math.min(f.halfExtents.x, f.halfExtents.z)),
+    );
 
   for (let i = 0; i < fragments.length; i += 1) {
     for (let j = i + 1; j < fragments.length; j += 1) {
@@ -48,7 +76,12 @@ function computeBondsFromFragments(fragments: FragmentInfo[]): Array<{ a: number
       if (A.isSupport && B.isSupport) continue;
 
       const n = B.worldPosition.clone().sub(A.worldPosition).normalize();
-      if (!Number.isFinite(n.x) || !Number.isFinite(n.y) || !Number.isFinite(n.z)) continue;
+      if (
+        !Number.isFinite(n.x) ||
+        !Number.isFinite(n.y) ||
+        !Number.isFinite(n.z)
+      )
+        continue;
 
       // Require small separation along the normal direction (nearly touching)
       const aN = projectExtentsOnAxisWorld(A.geometry, A.worldPosition, n);
@@ -56,7 +89,10 @@ function computeBondsFromFragments(fragments: FragmentInfo[]): Array<{ a: number
       const separation = bN.min - aN.max; // positive if B is in +n direction away from A
 
       // Use two tangents for overlap area test
-      const up = Math.abs(n.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
+      const up =
+        Math.abs(n.y) < 0.9
+          ? new THREE.Vector3(0, 1, 0)
+          : new THREE.Vector3(1, 0, 0);
       const t1 = new THREE.Vector3().crossVectors(n, up).normalize();
       const t2 = new THREE.Vector3().crossVectors(n, t1).normalize();
 
@@ -101,15 +137,27 @@ function computeBondsFromFragments(fragments: FragmentInfo[]): Array<{ a: number
   return bonds;
 }
 
-function normalizeFractureAreasByAxis(
-  list: Array<{ a?: number; b?: number; centroid: Vec3; normal: Vec3; area: number }>,
-  dims: { span: number; height: number; thickness: number }
+function _normalizeFractureAreasByAxis(
+  list: Array<{
+    a?: number;
+    b?: number;
+    centroid: Vec3;
+    normal: Vec3;
+    area: number;
+  }>,
+  dims: { span: number; height: number; thickness: number },
 ) {
-  const target = { x: dims.height * dims.thickness, y: dims.span * dims.thickness, z: dims.span * dims.height };
+  const target = {
+    x: dims.height * dims.thickness,
+    y: dims.span * dims.thickness,
+    z: dims.span * dims.height,
+  };
   const sum = { x: 0, y: 0, z: 0 } as { x: number; y: number; z: number };
-  const pick = (n: Vec3): 'x' | 'y' | 'z' => {
-    const ax = Math.abs(n.x), ay = Math.abs(n.y), az = Math.abs(n.z);
-    return ax >= ay && ax >= az ? 'x' : (ay >= az ? 'y' : 'z');
+  const pick = (n: Vec3): "x" | "y" | "z" => {
+    const ax = Math.abs(n.x),
+      ay = Math.abs(n.y),
+      az = Math.abs(n.z);
+    return ax >= ay && ax >= az ? "x" : ay >= az ? "y" : "z";
   };
   for (const b of list) sum[pick(b.normal)] += b.area;
   const scale = {
@@ -125,13 +173,25 @@ function normalizeFractureAreasByAxis(
 }
 
 function uniformizeBondAreasByAxis(
-  list: Array<{ a?: number; b?: number; centroid: Vec3; normal: Vec3; area: number }>,
-  dims: { span: number; height: number; thickness: number }
+  list: Array<{
+    a?: number;
+    b?: number;
+    centroid: Vec3;
+    normal: Vec3;
+    area: number;
+  }>,
+  dims: { span: number; height: number; thickness: number },
 ) {
-  const target = { x: dims.height * dims.thickness, y: dims.span * dims.thickness, z: dims.span * dims.height };
-  const pick = (n: Vec3): 'x' | 'y' | 'z' => {
-    const ax = Math.abs(n.x), ay = Math.abs(n.y), az = Math.abs(n.z);
-    return ax >= ay && ax >= az ? 'x' : (ay >= az ? 'y' : 'z');
+  const target = {
+    x: dims.height * dims.thickness,
+    y: dims.span * dims.thickness,
+    z: dims.span * dims.height,
+  };
+  const pick = (n: Vec3): "x" | "y" | "z" => {
+    const ax = Math.abs(n.x),
+      ay = Math.abs(n.y),
+      az = Math.abs(n.z);
+    return ax >= ay && ax >= az ? "x" : ay >= az ? "y" : "z";
   };
   const counts = { x: 0, y: 0, z: 0 } as { x: number; y: number; z: number };
   for (const b of list) counts[pick(b.normal)] += 1;
@@ -140,15 +200,20 @@ function uniformizeBondAreasByAxis(
     y: counts.y > 0 ? Math.max(1e-8, target.y / counts.y) : 0,
     z: counts.z > 0 ? Math.max(1e-8, target.z / counts.z) : 0,
   } as const;
-  return list.map((b) => ({ ...b, area: areaPerAxis[pick(b.normal)] || Math.max(1e-8, b.area) }));
+  return list.map((b) => ({
+    ...b,
+    area: areaPerAxis[pick(b.normal)] || Math.max(1e-8, b.area),
+  }));
 }
 
-async function loadMergedGeometryFromGlb(url: string): Promise<THREE.BufferGeometry | null> {
+async function _loadMergedGeometryFromGlb(
+  url: string,
+): Promise<THREE.BufferGeometry | null> {
   const loader = new GLTFLoader();
   try {
     const draco = new DRACOLoader();
     // Use Google's hosted decoders by default; swap to '/draco/' if you host locally
-    draco.setDecoderPath('https://www.gstatic.com/draco/v1/decoders/');
+    draco.setDecoderPath("https://www.gstatic.com/draco/v1/decoders/");
     loader.setDRACOLoader(draco);
   } catch {}
   const gltf = await loader.loadAsync(url);
@@ -162,7 +227,9 @@ async function loadMergedGeometryFromGlb(url: string): Promise<THREE.BufferGeome
     if (!geometry) return;
     const cloned = geometry.clone();
     const m = mesh.matrixWorld?.clone?.() ?? new THREE.Matrix4();
-    try { cloned.applyMatrix4(m); } catch {}
+    try {
+      cloned.applyMatrix4(m);
+    } catch {}
     geoms.push(cloned);
   });
   if (!geoms.length) return null;
@@ -171,36 +238,48 @@ async function loadMergedGeometryFromGlb(url: string): Promise<THREE.BufferGeome
 }
 
 export async function buildFracturedGlbScenario({
-  url = '/models/lion.glb',
+  url = "/models/lion.glb",
   // url = '/models/building.glb',
   // url = '/models/atlanta_corperate_office_building.glb',
   // url = '/models/big_soviet_panel_house_lowpoly.glb',
   fragmentCount = 120,
   // fragmentCount = 300,
   objectMass = 10_000,
-}: { url?: string; fragmentCount?: number; objectMass?: number } = {}): Promise<ScenarioDesc> {
+  autoBonding,
+}: {
+  url?: string;
+  fragmentCount?: number;
+  objectMass?: number;
+  autoBonding?: AutoBondingRequest;
+} = {}): Promise<ScenarioDesc> {
   // 1) Load GLB and merge meshes to a single geometry in world space
   const merged = await (async () => {
     const loader = new GLTFLoader();
     try {
       const draco = new DRACOLoader();
-      draco.setDecoderPath('https://www.gstatic.com/draco/v1/decoders/');
+      draco.setDecoderPath("https://www.gstatic.com/draco/v1/decoders/");
       loader.setDRACOLoader(draco);
     } catch {}
     const gltf = await loader.loadAsync(url);
-    try { gltf.scene.updateMatrixWorld(true); } catch {}
+    try {
+      gltf.scene.updateMatrixWorld(true);
+    } catch {}
     // Pick the largest Mesh geometry with a valid position attribute
     let best: { geom: THREE.BufferGeometry; volume: number } | null = null;
     gltf.scene.traverse((obj) => {
       const mesh = obj as THREE.Mesh;
       const geometry = mesh?.geometry as THREE.BufferGeometry | undefined;
       if (!geometry) return;
-      const hasPos = !!geometry.getAttribute('position');
+      const hasPos = !!geometry.getAttribute("position");
       if (!hasPos) return;
       const cloned = geometry.clone();
       const m = mesh.matrixWorld?.clone?.() ?? new THREE.Matrix4();
-      try { cloned.applyMatrix4(m); } catch {}
-      try { cloned.computeBoundingBox(); } catch {}
+      try {
+        cloned.applyMatrix4(m);
+      } catch {}
+      try {
+        cloned.computeBoundingBox();
+      } catch {}
       const bb = cloned.boundingBox as THREE.Box3 | null;
       if (!bb) return;
       const s = new THREE.Vector3();
@@ -217,7 +296,9 @@ export async function buildFracturedGlbScenario({
       if (!geometry) return;
       const cloned = geometry.clone();
       const m = mesh.matrixWorld?.clone?.() ?? new THREE.Matrix4();
-      try { cloned.applyMatrix4(m); } catch {}
+      try {
+        cloned.applyMatrix4(m);
+      } catch {}
       geoms.push(cloned);
     });
     if (!geoms.length) return null;
@@ -229,18 +310,41 @@ export async function buildFracturedGlbScenario({
     const g = new THREE.BoxGeometry(1, 1, 1);
     const center = new THREE.Vector3(0, 0.5, 0);
     return {
-      nodes: [{ centroid: { x: center.x, y: center.y, z: center.z }, mass: objectMass, volume: 1 }],
+      nodes: [
+        {
+          centroid: { x: center.x, y: center.y, z: center.z },
+          mass: objectMass,
+          volume: 1,
+        },
+      ],
       bonds: [],
-      parameters: { fragmentGeometries: [g], fragmentSizes: [{ x: 1, y: 1, z: 1 }], source: 'fallback' },
+      parameters: {
+        fragmentGeometries: [g],
+        fragmentSizes: [{ x: 1, y: 1, z: 1 }],
+        source: "fallback",
+      },
       colliderDescForNode: [() => RAPIER.ColliderDesc.cuboid(0.5, 0.5, 0.5)],
     } satisfies ScenarioDesc;
   }
 
   // Ensure geometry uses plain BufferAttributes (not interleaved) and has normals
   function ensurePlainAttributes(g: THREE.BufferGeometry) {
-    const names: Array<keyof typeof g.attributes> = ['position', 'normal', 'uv'] as unknown as Array<keyof typeof g.attributes>;
+    const names: Array<keyof typeof g.attributes> = [
+      "position",
+      "normal",
+      "uv",
+    ] as unknown as Array<keyof typeof g.attributes>;
     for (const n of names) {
-      const attr = g.getAttribute(n as unknown as string) as unknown as { count?: number; itemSize?: number; getX?: (i:number)=>number; getY?: (i:number)=>number; getZ?: (i:number)=>number; array?: unknown } | undefined;
+      const attr = g.getAttribute(n as unknown as string) as unknown as
+        | {
+            count?: number;
+            itemSize?: number;
+            getX?: (i: number) => number;
+            getY?: (i: number) => number;
+            getZ?: (i: number) => number;
+            array?: unknown;
+          }
+        | undefined;
       if (!attr) continue;
       const hasArray = (attr as { array?: unknown }).array != null;
       if (!hasArray) {
@@ -248,20 +352,28 @@ export async function buildFracturedGlbScenario({
         const itemSize = (attr.itemSize as number) ?? 3;
         const data = new Float32Array(Math.max(0, count * itemSize));
         for (let i = 0; i < count; i += 1) {
-          if (itemSize >= 1) data[i * itemSize + 0] = (attr.getX?.(i) as number) ?? 0;
-          if (itemSize >= 2) data[i * itemSize + 1] = (attr.getY?.(i) as number) ?? 0;
-          if (itemSize >= 3) data[i * itemSize + 2] = (attr.getZ?.(i) as number) ?? 0;
+          if (itemSize >= 1)
+            data[i * itemSize + 0] = (attr.getX?.(i) as number) ?? 0;
+          if (itemSize >= 2)
+            data[i * itemSize + 1] = (attr.getY?.(i) as number) ?? 0;
+          if (itemSize >= 3)
+            data[i * itemSize + 2] = (attr.getZ?.(i) as number) ?? 0;
         }
-        g.setAttribute(n as unknown as string, new THREE.BufferAttribute(data, itemSize));
+        g.setAttribute(
+          n as unknown as string,
+          new THREE.BufferAttribute(data, itemSize),
+        );
       }
     }
     // Recompute normals if absent
-    if (!g.getAttribute('normal')) {
-      try { g.computeVertexNormals(); } catch {}
+    if (!g.getAttribute("normal")) {
+      try {
+        g.computeVertexNormals();
+      } catch {}
     }
   }
   // Convert to non-indexed to avoid interleaved quirks in downstream libs
-  let prepared = merged.index ? merged.toNonIndexed() : merged;
+  const prepared = merged.index ? merged.toNonIndexed() : merged;
   ensurePlainAttributes(prepared);
 
   // Measure model extents
@@ -279,12 +391,11 @@ export async function buildFracturedGlbScenario({
   // Some pipelines produce interleaved attributes; ensure plain arrays on a clone
   const fractureInput = merged.clone();
   (function ensureAttributes(g: THREE.BufferGeometry) {
-    const pos = g.getAttribute('position') as THREE.BufferAttribute | null;
+    const pos = g.getAttribute("position") as THREE.BufferAttribute | null;
     if (!pos) {
       // If no position, nothing to fracture
-        
     }
-    const names: string[] = ['position', 'normal', 'uv'];
+    const names: string[] = ["position", "normal", "uv"];
     for (const n of names) {
       const attr = g.getAttribute(n) as THREE.BufferAttribute | null;
       if (!attr) continue;
@@ -300,10 +411,12 @@ export async function buildFracturedGlbScenario({
         g.setAttribute(n, new THREE.BufferAttribute(data, itemSize));
       }
     }
-    try { if (!g.getAttribute('normal')) g.computeVertexNormals(); } catch {}
+    try {
+      if (!g.getAttribute("normal")) g.computeVertexNormals();
+    } catch {}
   })(fractureInput);
   const pieces = fracture(fractureInput, opts);
-  console.log('Fractured pieces', pieces.length);
+  console.log("Fractured pieces", pieces.length);
 
   // Placement above foundation
   const foundationHeight = Math.min(0.08, size.y * 0.06);
@@ -312,13 +425,17 @@ export async function buildFracturedGlbScenario({
   // Place fractured object so its lowest original vertex rests exactly on the foundation top
   const originalMinY = bbox.min.y;
   const contactEpsilon = 0.0005; // tiny lift to avoid z-fighting
-  const modelCenter = new THREE.Vector3(0, foundationTop - originalMinY + contactEpsilon, 0);
+  const modelCenter = new THREE.Vector3(
+    0,
+    foundationTop - originalMinY + contactEpsilon,
+    0,
+  );
 
   // 3) Build fragments list (recenter each geom to its own COM, compute world placement)
   const fragments: FragmentInfo[] = pieces.map((g) => {
     // Ensure fractured piece has plain attributes for later convexHull
     (function ensureAttrs(geom: THREE.BufferGeometry) {
-      const pos = geom.getAttribute('position') as THREE.BufferAttribute | null;
+      const pos = geom.getAttribute("position") as THREE.BufferAttribute | null;
       if (!pos || !(pos.array instanceof Float32Array)) {
         const count = pos?.count ?? 0;
         const itemSize = pos?.itemSize ?? 3;
@@ -328,9 +445,14 @@ export async function buildFracturedGlbScenario({
           if (itemSize >= 2) data[i * itemSize + 1] = pos?.getY(i) ?? 0;
           if (itemSize >= 3) data[i * itemSize + 2] = pos?.getZ(i) ?? 0;
         }
-        geom.setAttribute('position', new THREE.BufferAttribute(data, itemSize));
+        geom.setAttribute(
+          "position",
+          new THREE.BufferAttribute(data, itemSize),
+        );
       }
-      try { if (!geom.getAttribute('normal')) geom.computeVertexNormals(); } catch {}
+      try {
+        if (!geom.getAttribute("normal")) geom.computeVertexNormals();
+      } catch {}
     })(g);
     g.computeBoundingBox();
     const gb = g.boundingBox as THREE.Box3;
@@ -339,21 +461,41 @@ export async function buildFracturedGlbScenario({
     g.translate(-localCenter.x, -localCenter.y, -localCenter.z);
     const gsize = new THREE.Vector3();
     gb.getSize(gsize);
-    const worldPosition = new THREE.Vector3(modelCenter.x + localCenter.x, modelCenter.y + localCenter.y, modelCenter.z + localCenter.z);
+    const worldPosition = new THREE.Vector3(
+      modelCenter.x + localCenter.x,
+      modelCenter.y + localCenter.y,
+      modelCenter.z + localCenter.z,
+    );
     return {
       worldPosition,
-      halfExtents: new THREE.Vector3(Math.max(0.05, gsize.x * 0.5), Math.max(0.05, gsize.y * 0.5), Math.max(0.05, gsize.z * 0.5)),
+      halfExtents: new THREE.Vector3(
+        Math.max(0.05, gsize.x * 0.5),
+        Math.max(0.05, gsize.y * 0.5),
+        Math.max(0.05, gsize.z * 0.5),
+      ),
       geometry: g,
       isSupport: false,
     };
   });
 
   // 4) Add a single foundation support plate sized to the GLB footprint
-  const foundationGeom = new THREE.BoxGeometry(size.x, foundationHeight, size.z);
-  const foundationWorldPos = new THREE.Vector3(0, groundClearance + foundationHeight * 0.5, 0);
+  const foundationGeom = new THREE.BoxGeometry(
+    size.x,
+    foundationHeight,
+    size.z,
+  );
+  const foundationWorldPos = new THREE.Vector3(
+    0,
+    groundClearance + foundationHeight * 0.5,
+    0,
+  );
   fragments.push({
     worldPosition: foundationWorldPos,
-    halfExtents: new THREE.Vector3(size.x * 0.5, foundationHeight * 0.5, size.z * 0.5),
+    halfExtents: new THREE.Vector3(
+      size.x * 0.5,
+      foundationHeight * 0.5,
+      size.z * 0.5,
+    ),
     geometry: foundationGeom,
     isSupport: true,
   });
@@ -363,7 +505,9 @@ export async function buildFracturedGlbScenario({
   // Ensure at least one (and preferably all touching) lowest fragments are bonded to the foundation
   const foundationIdx = fragments.length - 1;
   const lowestBottomY = Math.min(
-    ...fragments.slice(0, foundationIdx).map((f) => f.worldPosition.y - f.halfExtents.y)
+    ...fragments
+      .slice(0, foundationIdx)
+      .map((f) => f.worldPosition.y - f.halfExtents.y),
   );
   const touchThreshold = Math.max(0.001, foundationHeight * 0.1);
   const desiredContactY = groundClearance + foundationHeight; // top of foundation
@@ -380,7 +524,10 @@ export async function buildFracturedGlbScenario({
     for (let i = 0; i < foundationIdx; i += 1) {
       const f = fragments[i];
       const bottomY = f.worldPosition.y - f.halfExtents.y;
-      if (bottomY === lowestBottomY) { candidates.push(i); break; }
+      if (bottomY === lowestBottomY) {
+        candidates.push(i);
+        break;
+      }
     }
   }
   for (const i of candidates) {
@@ -391,16 +538,24 @@ export async function buildFracturedGlbScenario({
     rawBonds.push({
       a: foundationIdx,
       b: i,
-      centroid: { x: f.worldPosition.x, y: desiredContactY, z: f.worldPosition.z },
+      centroid: {
+        x: f.worldPosition.x,
+        y: desiredContactY,
+        z: f.worldPosition.z,
+      },
       normal: { x: 0, y: 1, z: 0 },
       area: approxArea,
     });
   }
   // Replace area magnitudes with uniform per-axis values so material behaves uniformly
-  const normBonds = uniformizeBondAreasByAxis(rawBonds, { span: size.x, height: size.y, thickness: size.z });
+  const normBonds = uniformizeBondAreasByAxis(rawBonds, {
+    span: size.x,
+    height: size.y,
+    thickness: size.z,
+  });
 
   // 6) Emit ScenarioDesc: nodes, mass scaling with objectMass, bonds, colliders, and parameters
-  const nodes: ScenarioDesc['nodes'] = [];
+  const nodes: ScenarioDesc["nodes"] = [];
   const fragmentSizes: Vec3[] = [];
   const fragmentGeometries: THREE.BufferGeometry[] = [];
   const colliderDescForNode: (ColliderDescBuilder | null)[] = [];
@@ -415,14 +570,25 @@ export async function buildFracturedGlbScenario({
     const isSupport = f.isSupport;
     const mass = isSupport ? 0 : volume;
     if (!isSupport) totalVolume += volume;
-    nodes.push({ centroid: { x: f.worldPosition.x, y: f.worldPosition.y, z: f.worldPosition.z }, mass, volume });
+    nodes.push({
+      centroid: {
+        x: f.worldPosition.x,
+        y: f.worldPosition.y,
+        z: f.worldPosition.z,
+      },
+      mass,
+      volume,
+    });
     fragmentSizes.push(sizeVec);
     fragmentGeometries.push(f.geometry);
     if (isSupport) {
       colliderDescForNode[i] = () => RAPIER.ColliderDesc.cuboid(hx, hy, hz);
     } else {
-      const pos = f.geometry.getAttribute('position') as THREE.BufferAttribute;
-      const points = pos?.array instanceof Float32Array ? pos.array : new Float32Array((pos?.array ?? []) as ArrayLike<number>);
+      const pos = f.geometry.getAttribute("position") as THREE.BufferAttribute;
+      const points =
+        pos?.array instanceof Float32Array
+          ? pos.array
+          : new Float32Array((pos?.array ?? []) as ArrayLike<number>);
       colliderDescForNode[i] = () => RAPIER.ColliderDesc.convexHull(points);
     }
   });
@@ -430,14 +596,18 @@ export async function buildFracturedGlbScenario({
   const massScale = totalVolume > 0 ? objectMass / totalVolume : 0;
   if (massScale > 0) {
     for (let i = 0; i < nodes.length; i += 1) {
-      if (fragments[i]?.isSupport) { nodes[i].mass = 0; continue; }
+      if (fragments[i]?.isSupport) {
+        nodes[i].mass = 0;
+        continue;
+      }
       nodes[i].mass = nodes[i].volume > 0 ? nodes[i].volume * massScale : 0;
     }
   } else {
-    for (let i = 0; i < nodes.length; i += 1) nodes[i].mass = fragments[i]?.isSupport ? 0 : 0;
+    for (let i = 0; i < nodes.length; i += 1)
+      nodes[i].mass = fragments[i]?.isSupport ? 0 : 0;
   }
 
-  const bonds: ScenarioDesc['bonds'] = normBonds.map((b) => ({
+  const legacyBonds: ScenarioDesc["bonds"] = normBonds.map((b) => ({
     node0: (b as { a: number }).a,
     node1: (b as { b: number }).b,
     centroid: b.centroid,
@@ -445,9 +615,29 @@ export async function buildFracturedGlbScenario({
     area: Math.max(b.area, 1e-8),
   }));
 
+  let resolvedBonds = legacyBonds;
+  if (autoBonding?.enabled) {
+    const autoBondChunks: AutoBondChunkInput[] = fragments.map((frag) => ({
+      geometry: frag.geometry,
+      isSupport: frag.isSupport,
+      matrix: new THREE.Matrix4().makeTranslation(
+        frag.worldPosition.x,
+        frag.worldPosition.y,
+        frag.worldPosition.z,
+      ),
+    }));
+    const autoBonds = await generateAutoBondsFromChunks(autoBondChunks, {
+      ...autoBonding,
+      label: "FracturedGlb",
+    });
+    if (autoBonds?.length) {
+      resolvedBonds = autoBonds;
+    }
+  }
+
   return {
     nodes,
-    bonds,
+    bonds: resolvedBonds,
     parameters: {
       fragmentSizes,
       fragmentGeometries,
@@ -457,5 +647,3 @@ export async function buildFracturedGlbScenario({
     colliderDescForNode,
   } satisfies ScenarioDesc;
 }
-
-
