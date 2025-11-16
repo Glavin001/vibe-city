@@ -2,7 +2,13 @@
 
 import { OrbitControls, StatsGl } from "@react-three/drei";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type MutableRefObject,
+} from "react";
 import * as THREE from "three";
 import RapierDebugRenderer from "@/lib/rapier/rapier-debug-renderer";
 import type { AutoBondingRequest } from "@/lib/stress/core/autoBonding";
@@ -86,6 +92,7 @@ type SceneProps = {
   bondsZEnabled: boolean;
   autoBondingEnabled: boolean;
   onReset: () => void;
+  bodyCountRef?: MutableRefObject<HTMLSpanElement | null>;
 };
 
 type ScenarioBuilderParams = {
@@ -230,6 +237,7 @@ function Scene({
   bondsZEnabled,
   autoBondingEnabled,
   onReset: _onReset,
+  bodyCountRef,
 }: SceneProps) {
   const coreRef = useRef<DestructibleCore | null>(null);
   const debugHelperRef = useRef<ReturnType<
@@ -867,6 +875,8 @@ function Scene({
   ]);
 
   const hasCrashed = useRef(false);
+  const lastBodyCountRef = useRef<number | null>(null);
+  const activeBodyHandlesRef = useRef<Set<number>>(new Set());
   useFrame(() => {
     if (hasCrashed.current) return;
 
@@ -891,6 +901,37 @@ function Scene({
       debugHelperRef.current.update(worldLines, showAllDebugLines);
     } else if (debugHelperRef.current) {
       debugHelperRef.current.update([], false);
+    }
+
+    if (bodyCountRef?.current) {
+      let liveCount = 0;
+      try {
+        const handles = activeBodyHandlesRef.current;
+        handles.clear();
+        for (const chunk of core.chunks) {
+          if (!chunk || chunk.destroyed) continue;
+          if (chunk.colliderHandle == null) continue;
+          const bodyHandle = chunk.bodyHandle;
+          if (bodyHandle == null) continue;
+          handles.add(bodyHandle);
+        }
+        const projectiles = core.projectiles ?? [];
+        for (const projectile of projectiles) {
+          if (!projectile) continue;
+          const bodyHandle = projectile.bodyHandle;
+          if (bodyHandle == null) continue;
+          const body = core.world.getRigidBody(bodyHandle);
+          if (!body) continue;
+          handles.add(bodyHandle);
+        }
+        liveCount = handles.size;
+      } catch {
+        liveCount = 0;
+      }
+      if (lastBodyCountRef.current !== liveCount) {
+        bodyCountRef.current.textContent = liveCount.toString();
+        lastBodyCountRef.current = liveCount;
+      }
     }
   });
 
@@ -995,6 +1036,7 @@ function HtmlOverlay({
   setSnapshotMode,
   resimulateOnDamageDestroy,
   setResimulateOnDamageDestroy,
+  bodyCountRef,
 }: {
   debug: boolean;
   setDebug: (v: boolean) => void;
@@ -1079,6 +1121,7 @@ function HtmlOverlay({
   setSnapshotMode: (v: "perBody" | "world") => void;
   resimulateOnDamageDestroy: boolean;
   setResimulateOnDamageDestroy: (v: boolean) => void;
+  bodyCountRef: MutableRefObject<HTMLSpanElement | null>;
 }) {
   const isWallStructure =
     structureId === "wall" || structureId === "fracturedWall";
@@ -1158,6 +1201,19 @@ function HtmlOverlay({
           {structureDescription}
         </p>
       ) : null}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          color: "#e5e7eb",
+          fontSize: 14,
+          fontVariantNumeric: "tabular-nums",
+        }}
+      >
+        <span>Rigid bodies</span>
+        <span ref={bodyCountRef}>-</span>
+      </div>
       <label
         style={{
           display: "flex",
@@ -2034,6 +2090,7 @@ export default function Page() {
   const [bondsYEnabled, setBondsYEnabled] = useState(true);
   const [bondsZEnabled, setBondsZEnabled] = useState(true);
   const [autoBondingEnabled, setAutoBondingEnabled] = useState(false);
+  const rigidBodyCountRef = useRef<HTMLSpanElement | null>(null);
   const structures = STRESS_PRESET_METADATA;
   const currentStructure =
     structures.find((item) => item.id === structureId) ?? structures[0];
@@ -2124,6 +2181,7 @@ export default function Page() {
         setSnapshotMode={setSnapshotMode}
         resimulateOnDamageDestroy={resimulateOnDamageDestroy}
         setResimulateOnDamageDestroy={setResimulateOnDamageDestroy}
+        bodyCountRef={rigidBodyCountRef}
       />
       <Canvas shadows camera={{ position: [7, 5, 9], fov: 45 }}>
         <color attach="background" args={["#0e0e12"]} />
@@ -2170,6 +2228,7 @@ export default function Page() {
           bondsZEnabled={bondsZEnabled}
           autoBondingEnabled={autoBondingEnabled}
           onReset={() => setIteration((v) => v + 1)}
+          bodyCountRef={rigidBodyCountRef}
         />
         <StatsGl className="absolute top-2 left-2" />
       </Canvas>

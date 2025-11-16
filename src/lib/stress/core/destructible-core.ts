@@ -455,6 +455,20 @@ export async function buildDestructibleCore({
   }
   function setSolverGravityEnabled(v: boolean) { solverGravityEnabled = !!v; }
 
+  function getRigidBodyCount(): number {
+    try {
+      const getCount = (world as unknown as { numRigidBodies?: () => number }).numRigidBodies;
+      if (typeof getCount === 'function') return getCount.call(world);
+    } catch {}
+    let count = 0;
+    try {
+      world.forEachRigidBody(() => {
+        count += 1;
+      });
+    } catch {}
+    return count;
+  }
+
   function addForceForCollider(handle: number, direction: number, totalForce: { x:number; y:number; z:number }, worldPoint: { x:number; y:number; z:number }) {
     if (!colliderToNode.has(handle)) return;
     const nodeIndex = colliderToNode.get(handle);
@@ -1104,6 +1118,7 @@ export async function buildDestructibleCore({
     stepSafe,
     setGravity,
     setSolverGravityEnabled,
+    getRigidBodyCount,
     setLimitSinglesCollisions: (v: boolean) => {
       limitSinglesCollisionsEnabled = !!v;
       try {

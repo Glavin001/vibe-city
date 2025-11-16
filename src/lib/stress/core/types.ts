@@ -92,6 +92,7 @@ export type DestructibleCore = {
   setGravity: (g: number) => void;
   setSolverGravityEnabled: (v: boolean) => void;
   setLimitSinglesCollisions: (v: boolean) => void;
+  getRigidBodyCount: () => number;
   getSolverDebugLines: () => Array<{ p0: Vec3; p1: Vec3; color0: number; color1: number }>;
   // Bond interaction helpers
   getNodeBonds: (nodeIndex: number) => BondRef[];
