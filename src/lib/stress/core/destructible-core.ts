@@ -831,14 +831,20 @@ export async function buildDestructibleCore({
           const pt = inherit.translation();
           const pq = inherit.rotation();
           const lv = inherit.linvel?.();
+          const av = inherit.angvel?.();
+          const linDamp = typeof inherit.linearDamping === 'function' ? inherit.linearDamping() : undefined;
+          const angDamp = typeof inherit.angularDamping === 'function' ? inherit.angularDamping() : undefined;
+          const angvelVec = { x: av?.x ?? 0, y: av?.y ?? 0, z: av?.z ?? 0 };
           desc.setTranslation(pt.x, pt.y, pt.z)
             .setRotation(pq)
             .setLinvel(lv?.x ?? 0, lv?.y ?? 0, lv?.z ?? 0)
-            .setUserData({
-              body: true,
-              recreated: true,
-            })
-            ;
+            .setAngvel(angvelVec);
+          if (typeof linDamp === 'number') desc.setLinearDamping(linDamp);
+          if (typeof angDamp === 'number') desc.setAngularDamping(angDamp);
+          desc.setUserData({
+            body: true,
+            recreated: true,
+          });
         }
         try { if (!pb.isSupport) (desc as unknown as { setCcdEnabled?: (v:boolean)=>unknown }).setCcdEnabled?.(true); } catch {}
         const body = world.createRigidBody(desc);
