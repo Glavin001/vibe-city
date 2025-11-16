@@ -284,14 +284,30 @@ export function buildBridgeScenario({ bondsX = true, bondsY = true, bondsZ = tru
   });
 }
 
-export function buildTowerScenario({ bondsX = true, bondsY = true, bondsZ = true }: PresetOptions = {}): ScenarioDesc {
-  const segments = { x: 16, y: 22, z: 16 };
-  const floorHeights = [0, Math.floor(segments.y * 0.33), Math.floor(segments.y * 0.66), segments.y - 2];
-  const columnPositions = [Math.floor(segments.x * 0.25), Math.floor(segments.x * 0.75)];
+const TOWER_HEIGHT_CONFIG = {
+  /** Number of vertical layers; tweak this to make the tower taller or shorter. */
+  segmentCount: 58,
+  /**
+   * Maintain the original per-layer scale (9.2 m over 22 layers) so the new
+   * height simply stretches the existing detailing proportionally.
+   */
+  metersPerSegment: 9.2 / 22,
+} as const;
 
+export function buildTowerScenario({ bondsX = true, bondsY = true, bondsZ = true }: PresetOptions = {}): ScenarioDesc {
+  const towerSegments = { x: 16, y: TOWER_HEIGHT_CONFIG.segmentCount, z: 16 };
+  const towerHeightMeters = towerSegments.y * TOWER_HEIGHT_CONFIG.metersPerSegment;
+  const floorHeights = [
+    0,
+    Math.floor(towerSegments.y * 0.33),
+    Math.floor(towerSegments.y * 0.66),
+    towerSegments.y - 2,
+  ];
+  const columnPositions = [Math.floor(towerSegments.x * 0.25), Math.floor(towerSegments.x * 0.75)];
+  
   return buildRectilinearScenario({
-    size: makeVec(6.8, 9.2, 6.8),
-    segments,
+    size: makeVec(6.8, towerHeightMeters, 6.8),
+    segments: towerSegments,
     deckMass: 280_000,
     areaScale: 0.055,
     addDiagonals: true,
