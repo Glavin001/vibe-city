@@ -1,6 +1,14 @@
 import * as THREE from 'three';
 import type { DestructibleCore } from '@/lib/stress/core/types';
 
+const HEALTHY_COLOR = new THREE.Color(0x2fbf71);
+const CRITICAL_COLOR = new THREE.Color(0xd72638);
+const DAMAGE_TINT = new THREE.Color();
+const PROJECTILE_MAX_LIFETIME = 12; // seconds
+const PROJECTILE_MIN_Y = -50;
+const nowSeconds = () =>
+  (typeof performance !== 'undefined' ? performance.now() : Date.now()) / 1000;
+
 export function buildChunkMeshes(core: DestructibleCore, materials?: { deck?: THREE.Material; support?: THREE.Material }) {
   const deckMat = (materials?.deck ?? new THREE.MeshStandardMaterial({ color: 0x4b6fe8, roughness: 0.4, metalness: 0.45 }));
   const supportMat = (materials?.support ?? new THREE.MeshStandardMaterial({ color: 0x2f3e56, roughness: 0.6, metalness: 0.25 }));
@@ -54,12 +62,12 @@ export function updateChunkMeshes(core: DestructibleCore, meshes: THREE.Mesh[]) 
     }
     const handle = chunk.bodyHandle;
     if (handle == null) {
-      if (process.env.NODE_ENV !== 'production') console.warn('[Adapter] Missing bodyHandle for chunk', { chunkIndex: i });
+      // if (process.env.NODE_ENV !== 'production') console.warn('[Adapter] Missing bodyHandle for chunk', { chunkIndex: i });
       continue;
     }
     const body = core.world.getRigidBody(handle);
     if (!body) {
-      if (process.env.NODE_ENV !== 'production') console.warn('[Adapter] Missing body for chunk', { chunkIndex: i });
+      // if (process.env.NODE_ENV !== 'production') console.warn('[Adapter] Missing body for chunk', { chunkIndex: i });
       continue;
     }
 
@@ -82,13 +90,9 @@ export function updateChunkMeshes(core: DestructibleCore, meshes: THREE.Mesh[]) 
         const info = healthGetter(chunk.nodeIndex);
         if (info && info.maxHealth > 0) {
           const ratio = Math.max(0, Math.min(1, info.health / info.maxHealth));
-          const healthy = new THREE.Color(0x2fbf71);
-          const critical = new THREE.Color(0xd72638);
-          const lerped = healthy.clone().lerp(critical, 1 - ratio);
-          mat.color.copy(lerped);
+          DAMAGE_TINT.copy(HEALTHY_COLOR).lerp(CRITICAL_COLOR, 1 - ratio);
+          mat.color.copy(DAMAGE_TINT);
           continue;
-        } else {
-          console.warn("[Adapter] Missing health for chunk", chunk.nodeIndex);
         }
       }
       // Fallback when damage disabled or unknown
@@ -127,27 +131,72 @@ export function buildSolverDebugHelper() {
   return { object, update };
 }
 
-export function updateProjectileMeshes(core: DestructibleCore, root: THREE.Group) {
-  for (const p of core.projectiles as Array<{ bodyHandle:number; radius:number; type:'ball'|'box'; mesh?: THREE.Mesh }>) {
+export function updateProjectileMeshes(
+  core: DestructibleCore,
+  root: THREE.Group,
+) {
+  const projectiles = core.projectiles as Array<{
+    bodyHandle: number;
+    radius: number;
+    type: 'ball' | 'box';
+    mesh?: THREE.Mesh;
+    spawnTime?: number;
+  }>;
+  const now = nowSeconds();
+  for (let i = projectiles.length - 1; i >= 0; i -= 1) {
+    const p = projectiles[i];
     const body = core.world.getRigidBody(p.bodyHandle);
-    if (!body) {
-      if (process.env.NODE_ENV !== 'production') console.warn('[Adapter] Projectile body missing', p);
+    const lifetime =
+      typeof p.spawnTime === 'number' ? now - p.spawnTime : 0;
+    const shouldCullLifetime = lifetime > PROJECTILE_MAX_LIFETIME;
+    const shouldCullBody = !body;
+    const bodyTranslation = body?.translation();
+    const shouldCullFall =
+      bodyTranslation && bodyTranslation.y < PROJECTILE_MIN_Y;
+
+    if (shouldCullLifetime || shouldCullBody || shouldCullFall) {
+      if (p.mesh) {
+        root.remove(p.mesh);
+        try {
+          p.mesh.geometry?.dispose?.();
+        } catch {}
+        try {
+          (p.mesh.material as THREE.Material | undefined)?.dispose?.();
+        } catch {}
+      }
+      if (body) {
+        try {
+          core.world.removeRigidBody(body);
+        } catch {}
+      }
+      projectiles.splice(i, 1);
       continue;
     }
+
     if (!p.mesh) {
-      const geom = p.type === 'ball' ? new THREE.SphereGeometry(p.radius, 24, 24) : new THREE.BoxGeometry(p.radius * 2, p.radius * 2, p.radius * 2);
-      const mat = new THREE.MeshStandardMaterial({ color: 0xff9147, emissive: 0x331100, roughness: 0.4, metalness: 0.2 });
+      const geom =
+        p.type === 'ball'
+          ? new THREE.SphereGeometry(p.radius, 24, 24)
+          : new THREE.BoxGeometry(p.radius * 2, p.radius * 2, p.radius * 2);
+      const mat = new THREE.MeshStandardMaterial({
+        color: 0xff9147,
+        emissive: 0x331100,
+        roughness: 0.4,
+        metalness: 0.2,
+      });
       const mesh = new THREE.Mesh(geom, mat);
-      mesh.castShadow = true; mesh.receiveShadow = true;
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
       p.mesh = mesh;
       root.add(mesh);
-      // if (process.env.NODE_ENV !== 'production') console.debug('[Adapter] Created projectile mesh', p);
     }
-    (p.mesh as THREE.Mesh).visible = true;
-    const t = body.translation();
-    const q = body.rotation();
-    (p.mesh as THREE.Mesh).position.set(t.x, t.y, t.z);
-    (p.mesh as THREE.Mesh).quaternion.set(q.x, q.y, q.z, q.w);
+    if (!body) continue;
+    const mesh = p.mesh as THREE.Mesh;
+    mesh.visible = true;
+    if (!bodyTranslation) continue;
+    const rotation = body.rotation();
+    mesh.position.set(bodyTranslation.x, bodyTranslation.y, bodyTranslation.z);
+    mesh.quaternion.set(rotation.x, rotation.y, rotation.z, rotation.w);
   }
 }
 

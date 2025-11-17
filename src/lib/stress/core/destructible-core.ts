@@ -1,6 +1,6 @@
 import RAPIER, { type RigidBody as RapierRigidBody } from '@dimforge/rapier3d-compat';
 import { loadStressSolver } from 'blast-stress-solver';
-import type { DestructibleCore, ScenarioDesc, ChunkData, Vec3, ProjectileSpawn, BondRef } from './types';
+import type { DestructibleCore, ScenarioDesc, ChunkData, Vec3, ProjectileSpawn, BondRef, ProjectileState } from './types';
 import { DestructibleDamageSystem, type DamageOptions, type DamageStateSnapshot } from './damage';
 
 type BuildCoreOptions = {
@@ -121,6 +121,7 @@ export async function buildDestructibleCore({
   const colliderToNode = new Map<number, number>();
   const activeContactColliders = new Set<number>();
   const actorMap = new Map<number, { bodyHandle: number }>();
+  const nodesByBodyHandle = new Map<number, Set<number>>();
   // Track which actor currently owns each node (updated on splits)
   const nodeToActor = new Map<number, number>();
   for (let i = 0; i < scenario.nodes.length; i += 1) nodeToActor.set(i, 0);
@@ -131,6 +132,30 @@ export async function buildDestructibleCore({
     const bodyHandle = entry?.bodyHandle ?? rootBody.handle;
     const body = world.getRigidBody(bodyHandle);
     return { actorIndex, bodyHandle, body };
+  }
+
+  function registerNodeBodyLink(
+    nodeIndex: number,
+    bodyHandle: number | null | undefined,
+  ) {
+    if (bodyHandle == null) return;
+    let set = nodesByBodyHandle.get(bodyHandle);
+    if (!set) {
+      set = new Set<number>();
+      nodesByBodyHandle.set(bodyHandle, set);
+    }
+    set.add(nodeIndex);
+  }
+
+  function unregisterNodeBodyLink(
+    nodeIndex: number,
+    bodyHandle: number | null | undefined,
+  ) {
+    if (bodyHandle == null) return;
+    const set = nodesByBodyHandle.get(bodyHandle);
+    if (!set) return;
+    set.delete(nodeIndex);
+    if (set.size === 0) nodesByBodyHandle.delete(bodyHandle);
   }
 
   // const spacing = scenario.spacing ?? { x: 0.5, y: 0.5, z: 0.5 };
@@ -177,6 +202,7 @@ export async function buildDestructibleCore({
     chunk.colliderHandle = col.handle;
     colliderToNode.set(col.handle, nodeIndex);
     activeContactColliders.add(col.handle);
+    registerNodeBodyLink(nodeIndex, chunk.bodyHandle);
     chunks.push(chunk);
   });
 
@@ -201,10 +227,13 @@ export async function buildDestructibleCore({
   const disabledCollidersToRemove = new Set<number>();
   const bodiesToRemove = new Set<number>();
   const pendingBallSpawns: ProjectileSpawn[] = [];
-  const projectiles: Array<{ bodyHandle: number; radius: number; type: 'ball'|'box'; mesh?: unknown }> = [];
+  const projectiles: ProjectileState[] = [];
   const removedBondIndices = new Set<number>();
   const pendingExternalForces: Array<{ nodeIndex:number; point: Vec3; force: Vec3 }> = [];
   const pendingDamageFractures = new Map<number, Set<number>>();
+  const nowSeconds = () =>
+    (typeof performance !== 'undefined' ? performance.now() : Date.now()) /
+    1000;
 
   let safeFrames = 0;
   let warnedColliderMapEmptyOnce = false;
@@ -233,8 +262,18 @@ export async function buildDestructibleCore({
     fastSpeedFactor: damage?.fastSpeedFactor ?? 3.0,
   } as const;
 
-  const damageSystem = new DestructibleDamageSystem({ chunks, scenario, materialScale, options: damageOptions });
+  const damageSystem = new DestructibleDamageSystem({
+    chunks,
+    scenario,
+    materialScale,
+    options: damageOptions,
+    nodesForBody: (bodyHandle: number) =>
+      nodesByBodyHandle.get(bodyHandle)?.values(),
+  });
   const MIN_STEP_DT = 1e-4;
+  const MAX_STEP_DT = 1 / 30;
+  const clampStepDt = (value: number) =>
+    Math.min(MAX_STEP_DT, Math.max(MIN_STEP_DT, value));
   const readWorldDt = (): number => {
     try {
       const params = world.integrationParameters;
@@ -248,7 +287,7 @@ export async function buildDestructibleCore({
     return 1 / 60;
   };
   const setWorldDtValue = (value: number) => {
-    const clamped = Math.max(MIN_STEP_DT, value);
+    const clamped = clampStepDt(value);
     try {
       (world as unknown as { timestep?: number | undefined }).timestep = clamped;
     } catch {}
@@ -632,7 +671,7 @@ export async function buildDestructibleCore({
   function step(dtOverride?: number) {
     const prevDt = readWorldDt();
     const hasOverride = typeof dtOverride === 'number' && Number.isFinite(dtOverride) && dtOverride > 0;
-    const targetDt = hasOverride ? Math.max(MIN_STEP_DT, dtOverride) : prevDt;
+    const targetDt = hasOverride ? clampStepDt(dtOverride) : clampStepDt(prevDt);
     lastStepDt = targetDt;
 
     const applyOverrideDt = () => {
@@ -655,158 +694,283 @@ export async function buildDestructibleCore({
     };
 
     try {
-      // Apply queued spawns up front
       applyPendingSpawns();
 
-      const doResim = !!resimulateOnFracture && Math.max(0, maxResimulationPasses) > 0;
       const useWorldSnapshot = snapshotMode === 'world';
+      const maxPasses = Math.max(0, maxResimulationPasses);
+      const fractureResimEnabled = !!resimulateOnFracture && maxPasses > 0;
+      const damageResimEnabled =
+        damageSystem.isEnabled() &&
+        !!resimulateOnDamageDestroy &&
+        maxPasses > 0;
+      let passesRemaining = maxPasses;
 
-      // Snapshot pre-step state
-      let bodySnap: BodySnapshot | null = null;
-      let worldSnap: Uint8Array | null = null;
-      if (doResim) {
-        if (useWorldSnapshot) {
-          try { worldSnap = world.takeSnapshot(); } catch (e) { console.warn('[Core] World.takeSnapshot failed; falling back to perBody', e); bodySnap = captureBodySnapshot(); }
-        } else {
-          bodySnap = captureBodySnapshot();
-        }
-      }
-
-      // First pass
-      clearBufferedContacts();
-      // Defensive: keep collider mapping coherent
-      if (colliderToNode.size === 0) {
-        try { rebuildColliderToNodeFromChunks(); } catch {}
-        if (colliderToNode.size === 0 && process.env.NODE_ENV !== 'production' && !warnedColliderMapEmptyOnce) {
-          console.warn('[Core] colliderToNode is empty before event drain; contact forces will be dropped');
-          warnedColliderMapEmptyOnce = true;
-        }
-      }
-      preStepSweep();
-      if (!stepWorld((error) => console.error('world.step', error))) return;
-      // Drain contacts: inject solver forces, buffer damage (no apply yet)
-      drainContactForces({ injectSolverForces: true, applyDamage: false, recordForReplay: true });
-
-      // Gravity and solver update for detection phase
-      if (solverGravityEnabled) {
-        try {
-          const g = world.gravity as unknown as { x:number; y:number; z:number };
-          solver.addGravity({ x: g.x ?? 0, y: g.y ?? 0, z: g.z ?? 0 });
-        } catch {}
-      }
-      solver.update();
-
-      const hasFracture = solver.overstressedBondCount() > 0;
-      const dt = getDt();
-      const damagePreviewEnabled = damageSystem.isEnabled() && !!resimulateOnDamageDestroy;
-      const shouldSnapshotDamage = damageSystem.isEnabled() && (damagePreviewEnabled || (doResim && hasFracture));
-      let damageSnapshot: DamageStateSnapshot | null = null;
-      if (shouldSnapshotDamage) {
-        try { damageSnapshot = damageSystem.captureImpactState(); } catch {}
-      }
-      let damagePreviewDestroyed: number[] = [];
-      if (damageSystem.isEnabled()) {
-        replayBufferedContacts();
-        if (damagePreviewEnabled) {
-          try {
-            damagePreviewDestroyed = damageSystem.previewTick(dt) ?? [];
-          } catch {
-            damagePreviewDestroyed = [];
-          }
-        }
-      }
-      const shouldResimFracture = doResim && hasFracture;
-      const shouldResimDamage = damagePreviewEnabled && damagePreviewDestroyed.length > 0;
-      if (!shouldResimFracture && !shouldResimDamage) {
-        const hadExternalForces = injectPendingExternalForces();
-        if (hadExternalForces && process.env.NODE_ENV !== 'production') {
-          try { ((window as unknown as { debugStressSolver?: { printSolver?: () => unknown } }).debugStressSolver)?.printSolver?.(); } catch {}
-        }
-        applyDamageTick();
-        flushPendingDamageFractures();
-        removeDisabledHandles();
-
-        if (hasFracture) {
-          try {
-            const perActor = solver.generateFractureCommandsPerActor();
-            const splitEvents = solver.applyFractureCommands(perActor) as Array<{ parentActorIndex:number; children:Array<{ actorIndex:number; nodes:number[] }> }> | undefined;
-            if (Array.isArray(splitEvents) && splitEvents.length > 0) {
-              queueSplitResults(splitEvents);
-              applyPendingMigrations();
-              removeDisabledHandles();
+      // Allow multiple rollback attempts in a single frame.
+      // Each loop re-simulates the same dt and only breaks once a pass completes without additional rollbacks.
+      while (true) {
+        let bodySnap: BodySnapshot | null = null;
+        let worldSnap: Uint8Array | null = null;
+        const snapshotNeeded =
+          (fractureResimEnabled || damageResimEnabled) &&
+          passesRemaining > 0;
+        if (snapshotNeeded) {
+          if (useWorldSnapshot) {
+            try {
+              worldSnap = world.takeSnapshot();
+            } catch (e) {
+              console.warn(
+                '[Core] World.takeSnapshot failed; falling back to perBody',
+                e,
+              );
+              bodySnap = captureBodySnapshot();
             }
-          } catch (e) { console.error('[Core] applyFractureCommands', e); }
-        }
-        return;
-      }
-
-      const preDestroyedNodes = shouldResimDamage ? Array.from(new Set(damagePreviewDestroyed)) : [];
-
-      // Rollback and resimulate (accepted pass)
-      try {
-        if (useWorldSnapshot && worldSnap) {
-          const newWorld = RAPIER.World.restoreSnapshot(worldSnap);
-          if (newWorld) {
-            world = newWorld as unknown as RAPIER.World;
-            try { if (corePublic) (corePublic as unknown as { world: RAPIER.World }).world = world; } catch {}
-            try { onWorldReplaced?.(world); } catch {}
+          } else {
+            bodySnap = captureBodySnapshot();
           }
-        } else if (bodySnap) {
-          restoreBodySnapshot(bodySnap);
         }
-        if (damageSnapshot) {
-          try { damageSystem.restoreImpactState(damageSnapshot); } catch {}
+
+        clearBufferedContacts();
+        if (colliderToNode.size === 0) {
+          try {
+            rebuildColliderToNodeFromChunks();
+          } catch {}
+          if (
+            colliderToNode.size === 0 &&
+            process.env.NODE_ENV !== 'production' &&
+            !warnedColliderMapEmptyOnce
+          ) {
+            console.warn(
+              '[Core] colliderToNode is empty before event drain; contact forces will be dropped',
+            );
+            warnedColliderMapEmptyOnce = true;
+          }
         }
-      } catch (e) {
-        console.error('[Core] rollback failed; proceeding without resim', e);
-        injectPendingExternalForces();
-        applyDamageTick();
+        preStepSweep();
+        if (!stepWorld((error) => console.error('world.step', error))) return;
+        drainContactForces({
+          injectSolverForces: true,
+          applyDamage: false,
+          recordForReplay: true,
+        });
+
+        if (solverGravityEnabled) {
+          try {
+            const g = world.gravity as unknown as { x: number; y: number; z: number };
+            solver.addGravity({ x: g.x ?? 0, y: g.y ?? 0, z: g.z ?? 0 });
+          } catch {}
+        }
+        solver.update();
+
+        const hasFracture = solver.overstressedBondCount() > 0;
+        const dt = getDt();
+        const damagePreviewEnabled =
+          damageSystem.isEnabled() && !!resimulateOnDamageDestroy;
+        const shouldSnapshotDamage =
+          damageSystem.isEnabled() &&
+          (damagePreviewEnabled ||
+            ((fractureResimEnabled || damageResimEnabled) && hasFracture));
+        let damageSnapshot: DamageStateSnapshot | null = null;
+        if (shouldSnapshotDamage) {
+          try {
+            damageSnapshot = damageSystem.captureImpactState();
+          } catch {}
+        }
+        let damagePreviewDestroyed: number[] = [];
+        if (damageSystem.isEnabled()) {
+          replayBufferedContacts();
+          if (damagePreviewEnabled) {
+            try {
+              damagePreviewDestroyed = damageSystem.previewTick(dt) ?? [];
+            } catch {
+              damagePreviewDestroyed = [];
+            }
+          }
+        }
+        const shouldResimFracture = fractureResimEnabled && hasFracture;
+        const shouldResimDamage =
+          damageResimEnabled && damagePreviewDestroyed.length > 0;
+
+        if (!shouldResimFracture && !shouldResimDamage) {
+          const hadExternalForces = injectPendingExternalForces();
+          if (hadExternalForces && process.env.NODE_ENV !== 'production') {
+            try {
+              (
+                (window as unknown as {
+                  debugStressSolver?: { printSolver?: () => unknown };
+                }).debugStressSolver
+              )?.printSolver?.();
+            } catch {}
+          }
+          applyDamageTick();
+          flushPendingDamageFractures();
+          removeDisabledHandles();
+
+          if (hasFracture) {
+            try {
+              const perActor = solver.generateFractureCommandsPerActor();
+              const splitEvents = solver.applyFractureCommands(
+                perActor,
+              ) as Array<{
+                parentActorIndex: number;
+                children: Array<{ actorIndex: number; nodes: number[] }>;
+              }> | undefined;
+              if (Array.isArray(splitEvents) && splitEvents.length > 0) {
+                queueSplitResults(splitEvents);
+                applyPendingMigrations();
+                removeDisabledHandles();
+              }
+            } catch (e) {
+              console.error('[Core] applyFractureCommands', e);
+            }
+          }
+          return;
+        }
+
+        if (!snapshotNeeded) {
+          if (process.env.NODE_ENV !== 'production') {
+            console.warn(
+              '[Core] Resimulation requested but no passes remaining',
+              {
+                hasFracture,
+                damagePreviewCount: damagePreviewDestroyed.length,
+              },
+            );
+          }
+          const hadExternalForces = injectPendingExternalForces();
+          if (hadExternalForces && process.env.NODE_ENV !== 'production') {
+            try {
+              (
+                (window as unknown as {
+                  debugStressSolver?: { printSolver?: () => unknown };
+                }).debugStressSolver
+              )?.printSolver?.();
+            } catch {}
+          }
+          applyDamageTick();
+          flushPendingDamageFractures();
+          removeDisabledHandles();
+          if (hasFracture) {
+            try {
+              const perActor = solver.generateFractureCommandsPerActor();
+              const splitEvents = solver.applyFractureCommands(
+                perActor,
+              ) as Array<{
+                parentActorIndex: number;
+                children: Array<{ actorIndex: number; nodes: number[] }>;
+              }> | undefined;
+              if (Array.isArray(splitEvents) && splitEvents.length > 0) {
+                queueSplitResults(splitEvents);
+                applyPendingMigrations();
+                removeDisabledHandles();
+              }
+            } catch (e) {
+              console.error('[Core] applyFractureCommands (fallback)', e);
+            }
+          }
+          return;
+        }
+
+        passesRemaining -= 1;
+        const preDestroyedNodes = shouldResimDamage
+          ? Array.from(new Set(damagePreviewDestroyed))
+          : [];
+
+        try {
+          if (useWorldSnapshot && worldSnap) {
+            const newWorld = RAPIER.World.restoreSnapshot(worldSnap);
+            if (newWorld) {
+              world = newWorld as unknown as RAPIER.World;
+              try {
+                if (corePublic)
+                  (corePublic as unknown as { world: RAPIER.World }).world =
+                    world;
+              } catch {}
+              try {
+                onWorldReplaced?.(world);
+              } catch {}
+            }
+          } else if (bodySnap) {
+            restoreBodySnapshot(bodySnap);
+          }
+          if (damageSnapshot) {
+            try {
+              damageSystem.restoreImpactState(damageSnapshot);
+            } catch {}
+          }
+        } catch (e) {
+          console.error('[Core] rollback failed; proceeding without resim', e);
+          const hadExternalForces = injectPendingExternalForces();
+          if (hadExternalForces && process.env.NODE_ENV !== 'production') {
+            try {
+              (
+                (window as unknown as {
+                  debugStressSolver?: { printSolver?: () => unknown };
+                }).debugStressSolver
+              )?.printSolver?.();
+            } catch {}
+          }
+          applyDamageTick();
+          flushPendingDamageFractures();
+          removeDisabledHandles();
+          if (hasFracture) {
+            try {
+              const perActor = solver.generateFractureCommandsPerActor();
+              const splitEvents = solver.applyFractureCommands(
+                perActor,
+              ) as Array<{
+                parentActorIndex: number;
+                children: Array<{ actorIndex: number; nodes: number[] }>;
+              }> | undefined;
+              if (Array.isArray(splitEvents) && splitEvents.length > 0) {
+                queueSplitResults(splitEvents);
+                applyPendingMigrations();
+                removeDisabledHandles();
+              }
+            } catch (err) {
+              console.error('[Core] applyFractureCommands (rollback fallback)', err);
+            }
+          }
+          return;
+        }
+
+        try {
+          const perActor = solver.generateFractureCommandsPerActor();
+          const splitEvents = solver.applyFractureCommands(
+            perActor,
+          ) as Array<{
+            parentActorIndex: number;
+            children: Array<{ actorIndex: number; nodes: number[] }>;
+          }> | undefined;
+          if (Array.isArray(splitEvents) && splitEvents.length > 0) {
+            queueSplitResults(splitEvents);
+            applyPendingMigrations();
+            removeDisabledHandles();
+          }
+        } catch (e) {
+          console.error('[Core] applyFractureCommands (resim)', e);
+        }
+
+        if (preDestroyedNodes.length > 0) {
+          damageSystem.applyPreDestruction(preDestroyedNodes);
+          for (const nodeIndex of preDestroyedNodes) {
+            const seg = chunks[nodeIndex];
+            if (!seg || seg.destroyed) continue;
+            if (seg.isSupport) continue;
+            try {
+              handleNodeDestroyed(nodeIndex, 'impact');
+            } catch (err) {
+              if (isDev)
+                console.warn(
+                  '[Core] preDestroy handleNodeDestroyed failed',
+                  err,
+                );
+            }
+          }
+        }
         flushPendingDamageFractures();
         removeDisabledHandles();
-        return;
+        // Loop to rerun detection with updated solver state.
       }
-
-      // Apply splits before accepted step
-      try {
-        const perActor = solver.generateFractureCommandsPerActor();
-        const splitEvents = solver.applyFractureCommands(perActor) as Array<{ parentActorIndex:number; children:Array<{ actorIndex:number; nodes:number[] }> }> | undefined;
-        if (Array.isArray(splitEvents) && splitEvents.length > 0) {
-          queueSplitResults(splitEvents);
-          applyPendingMigrations();
-          removeDisabledHandles();
-        }
-      } catch (e) { console.error('[Core] applyFractureCommands (resim)', e); }
-
-      if (preDestroyedNodes.length > 0) {
-        damageSystem.applyPreDestruction(preDestroyedNodes);
-        for (const nodeIndex of preDestroyedNodes) {
-          const seg = chunks[nodeIndex];
-          if (!seg || seg.destroyed) continue;
-          if (seg.isSupport) continue;
-          try { handleNodeDestroyed(nodeIndex, 'impact'); } catch (err) {
-            if (isDev) console.warn('[Core] preDestroy handleNodeDestroyed failed', err);
-          }
-        }
-      }
-      flushPendingDamageFractures();
-      removeDisabledHandles();
-
-      // Accepted pass
-      clearBufferedContacts();
-      preStepSweep();
-      stepWorld((error) => console.error('world.step (resim)', error));
-      drainContactForces({ injectSolverForces: true, applyDamage: true, recordForReplay: false });
-      injectPendingExternalForces();
-      if (solverGravityEnabled) {
-        try {
-          const g = world.gravity as unknown as { x:number; y:number; z:number };
-          solver.addGravity({ x: g.x ?? 0, y: g.y ?? 0, z: g.z ?? 0 });
-        } catch {}
-      }
-      solver.update();
-      applyDamageTick();
-      flushPendingDamageFractures();
-      removeDisabledHandles();
     } finally {
       restoreDt();
     }
@@ -817,7 +981,7 @@ export async function buildDestructibleCore({
   const stepSafe = step;
 
   function queueSplitResults(splitEvents: Array<{ parentActorIndex:number; children:Array<{ actorIndex:number; nodes:number[] }> }>) {
-    console.debug('[Core] queueSplitResults', splitEvents?.[0]?.children);
+    if (isDev) console.debug('[Core] queueSplitResults', splitEvents?.[0]?.children);
     for (const evt of splitEvents) {
       const parentActorIndex = evt?.parentActorIndex;
       const children = Array.isArray(evt?.children) ? evt.children : [];
@@ -895,7 +1059,12 @@ export async function buildDestructibleCore({
     // Apply collision-group policy for projectiles
     try { if (limitSinglesCollisionsEnabled) applyCollisionGroupsForBody(body, { enabled: limitSinglesCollisionsEnabled, groundBodyHandle: groundBody.handle }); } catch {}
     if (process.env.NODE_ENV !== 'production') console.debug('[Core] spawnProjectile', { body: body.handle, collider: collider.handle, start, params });
-    projectiles.push({ bodyHandle: body.handle, radius: params.radius, type: params.type });
+    projectiles.push({
+      bodyHandle: body.handle,
+      radius: params.radius,
+      type: params.type,
+      spawnTime: nowSeconds(),
+    });
   }
 
   function applyPendingMigrations() {
@@ -940,6 +1109,7 @@ export async function buildDestructibleCore({
       for (const mig of jobs) {
         const seg = chunks[mig.nodeIndex];
         if (!seg) continue;
+        unregisterNodeBodyLink(seg.nodeIndex, seg.bodyHandle);
         if (seg.colliderHandle != null) {
           const oldC = world.getCollider(seg.colliderHandle);
           if (oldC) oldC.setEnabled(false);
@@ -974,6 +1144,7 @@ export async function buildDestructibleCore({
         seg.bodyHandle = body.handle;
         seg.colliderHandle = col.handle;
         seg.detached = true;
+        registerNodeBodyLink(seg.nodeIndex, seg.bodyHandle);
         colliderToNode.set(col.handle, seg.nodeIndex);
         createdCountByBody.set(body.handle, (createdCountByBody.get(body.handle) ?? 0) + 1);
         // Update groups after migration; collider count may be 1
@@ -991,7 +1162,10 @@ export async function buildDestructibleCore({
     }
     for (const bh of Array.from(bodiesToRemove)) {
       const b = world.getRigidBody(bh);
-      if (b) world.removeRigidBody(b);
+      if (b) {
+        world.removeRigidBody(b);
+        nodesByBodyHandle.delete(bh);
+      }
       bodiesToRemove.delete(bh);
     }
   }
@@ -1004,6 +1178,18 @@ export async function buildDestructibleCore({
         colliderToNode.delete(h);
       }
     }
+    world.forEachRigidBody((b: RAPIER.RigidBody) => {
+      if (!b) return;
+      const handle = b.handle;
+      if (handle === rootBody.handle || handle === groundBody.handle) return;
+      try {
+        const rb = b as unknown as { numColliders?: () => number };
+        const count = typeof rb.numColliders === 'function' ? rb.numColliders() : 0;
+        if (count === 0) {
+          bodiesToRemove.add(handle);
+        }
+      } catch {}
+    });
   }
 
   function getSolverDebugLines() {
@@ -1154,6 +1340,8 @@ export async function buildDestructibleCore({
         if (isDev) console.warn('[Core] cleanup on destroy failed', e);
       }
     }
+
+    unregisterNodeBodyLink(nodeIndex, seg.bodyHandle);
 
     // Notify
     try {

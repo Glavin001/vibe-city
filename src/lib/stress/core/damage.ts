@@ -45,8 +45,17 @@ export class DestructibleDamageSystem {
   private materialScale: number;
   private timeMs = 0;
   private nextAllowedImpactTimeMs: number[];
+  private nodesForBody?: (
+    bodyHandle: number,
+  ) => Iterable<number> | undefined;
 
-  constructor(args: { chunks: ChunkData[]; scenario: ScenarioDesc; materialScale: number; options?: DamageOptions }) {
+  constructor(args: {
+    chunks: ChunkData[];
+    scenario: ScenarioDesc;
+    materialScale: number;
+    options?: DamageOptions;
+    nodesForBody?: (bodyHandle: number) => Iterable<number> | undefined;
+  }) {
     const defaults: Required<DamageOptions> = {
       enabled: false,
       strengthPerVolume: 10000,
@@ -73,6 +82,7 @@ export class DestructibleDamageSystem {
     this.options = opts;
     this.materialScale = Math.max(1e-9, args.materialScale ?? 1);
     this.nextAllowedImpactTimeMs = new Array(this.chunks.length).fill(0);
+    this.nodesForBody = args.nodesForBody;
 
     // Initialize per-node health if enabled
     if (opts.enabled) {
@@ -145,8 +155,12 @@ export class DestructibleDamageSystem {
     const hitBody = this.chunks[nodeIndex]?.bodyHandle;
 
     if (lp && hitBody != null) {
-      // Apply AOE to chunks on the same rigid body; center chunk always gets full damage
-      for (let i = 0; i < this.chunks.length; i++) {
+      const targetNodes =
+        typeof this.nodesForBody === 'function'
+          ? this.nodesForBody(hitBody)
+          : undefined;
+      const iterateNodes = targetNodes ?? this.allNodeIndices();
+      for (const i of iterateNodes) {
         const c = this.chunks[i];
         if (!c || c.destroyed) continue;
         if (c.bodyHandle !== hitBody) continue;
@@ -157,7 +171,7 @@ export class DestructibleDamageSystem {
         const d = Math.hypot(dx, dy, dz);
         let w = 0;
         if (i === nodeIndex) {
-          w = 1; // ensure full damage on the hit collider
+          w = 1;
         } else if (d <= radius) {
           w = Math.pow(Math.max(0, 1 - d / radius), exp);
         }
@@ -276,6 +290,12 @@ export class DestructibleDamageSystem {
         ch.health = restoredHealth;
       }
       ch.destroyed = snapshot.destroyed[i] ?? false;
+    }
+  }
+
+  private *allNodeIndices() {
+    for (let i = 0; i < this.chunks.length; i += 1) {
+      yield i;
     }
   }
 

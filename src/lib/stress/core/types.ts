@@ -63,6 +63,14 @@ export type ProjectileSpawn = {
   restitution: number;
 };
 
+export type ProjectileState = {
+  bodyHandle: number;
+  radius: number;
+  type: 'ball' | 'box';
+  spawnTime: number;
+  mesh?: unknown;
+};
+
 export type BondRef = {
   index: number;
   node0: number;
@@ -85,7 +93,13 @@ export type DestructibleCore = {
   actorMap: Map<number, { bodyHandle: number }>;
   // Internal step control handled by core
   step: (dtOverride?: number) => void;
-  projectiles: Array<{ bodyHandle: number; radius: number; type: 'ball'|'box'; mesh?: unknown }>;
+  projectiles: Array<{
+    bodyHandle: number;
+    radius: number;
+    type: 'ball' | 'box';
+    mesh?: unknown;
+    spawnTime: number;
+  }>;
   enqueueProjectile: (s: ProjectileSpawn) => void;
   stepEventful: (dtOverride?: number) => void;
   stepSafe: (dtOverride?: number) => void;

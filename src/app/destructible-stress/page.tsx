@@ -883,15 +883,49 @@ function Scene({
   const hasCrashed = useRef(false);
   const lastBodyCountRef = useRef<number | null>(null);
   const activeBodyHandlesRef = useRef<Set<number>>(new Set());
+  const accumulatorRef = useRef(0);
+  const FIXED_STEP_DT = 1 / 60;
+  const MIN_STEP_DT = 1 / 240;
+  const MAX_STEP_DT = 1 / 30;
+  const MAX_FRAME_DELTA = 0.1;
+  const MAX_SUBSTEPS_PER_FRAME = 5;
   useFrame((_, delta) => {
     if (hasCrashed.current) return;
 
     const core = coreRef.current;
     if (!core) return;
+    const clampedDelta =
+      Number.isFinite(delta) && delta > 0
+        ? Math.min(delta, MAX_FRAME_DELTA)
+        : FIXED_STEP_DT;
+    let stepsRun = 0;
+    const stepWithDt = (dt: number) => {
+      const clamped = Math.min(MAX_STEP_DT, Math.max(MIN_STEP_DT, dt));
+      core.step(clamped);
+      stepsRun += 1;
+    };
     try {
-      const stepDt =
-        adaptiveDt && Number.isFinite(delta) ? Math.max(delta, 0) : undefined;
-      core.step(stepDt);
+      if (adaptiveDt) {
+        let remaining = clampedDelta;
+        while (remaining > 0 && stepsRun < MAX_SUBSTEPS_PER_FRAME) {
+          const dt = Math.min(remaining, MAX_STEP_DT);
+          stepWithDt(dt);
+          remaining -= dt;
+        }
+      } else {
+        accumulatorRef.current = Math.min(
+          accumulatorRef.current + clampedDelta,
+          MAX_FRAME_DELTA,
+        );
+        while (
+          accumulatorRef.current >= FIXED_STEP_DT &&
+          stepsRun < MAX_SUBSTEPS_PER_FRAME
+        ) {
+          stepWithDt(FIXED_STEP_DT);
+          accumulatorRef.current -= FIXED_STEP_DT;
+        }
+      }
+      if (stepsRun === 0) return;
       // Update scene meshes first, then debug renderers to avoid Rapier aliasing issues
       if (chunkMeshesRef.current)
         updateChunkMeshes(core, chunkMeshesRef.current);
@@ -899,6 +933,7 @@ function Scene({
     } catch (e) {
       console.error(e);
       hasCrashed.current = true;
+      return;
     }
 
     // Update Rapier wireframe last
