@@ -84,11 +84,11 @@ export type DestructibleCore = {
   colliderToNode: Map<number, number>;
   actorMap: Map<number, { bodyHandle: number }>;
   // Internal step control handled by core
-  step: () => void;
+  step: (dtOverride?: number) => void;
   projectiles: Array<{ bodyHandle: number; radius: number; type: 'ball'|'box'; mesh?: unknown }>;
   enqueueProjectile: (s: ProjectileSpawn) => void;
-  stepEventful: () => void;
-  stepSafe: () => void;
+  stepEventful: (dtOverride?: number) => void;
+  stepSafe: (dtOverride?: number) => void;
   setGravity: (g: number) => void;
   setSolverGravityEnabled: (v: boolean) => void;
   setLimitSinglesCollisions: (v: boolean) => void;

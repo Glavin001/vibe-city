@@ -234,14 +234,35 @@ export async function buildDestructibleCore({
   } as const;
 
   const damageSystem = new DestructibleDamageSystem({ chunks, scenario, materialScale, options: damageOptions });
+  const MIN_STEP_DT = 1e-4;
+  const readWorldDt = (): number => {
+    try {
+      const params = world.integrationParameters;
+      const dt = params?.dt;
+      if (typeof dt === 'number' && dt > 0) return dt;
+    } catch {}
+    try {
+      const raw = (world as unknown as { timestep?: number | undefined }).timestep;
+      if (typeof raw === 'number' && raw > 0) return raw;
+    } catch {}
+    return 1 / 60;
+  };
+  const setWorldDtValue = (value: number) => {
+    const clamped = Math.max(MIN_STEP_DT, value);
+    try {
+      (world as unknown as { timestep?: number | undefined }).timestep = clamped;
+    } catch {}
+    try {
+      if (world.integrationParameters) {
+        world.integrationParameters.dt = clamped;
+      }
+    } catch {}
+  };
+  let lastStepDt = readWorldDt();
 
   // --- Shared helpers for speed scaling and contact draining ---
   function getDt(): number {
-    try {
-      return world.timestep
-        ?? world.integrationParameters?.dt
-        ?? (1 / 60);
-    } catch { return (1 / 60); }
+    return lastStepDt;
   }
 
   function computeSpeedFactor(relSpeed: number, isInternal: boolean): number {
@@ -608,159 +629,187 @@ export async function buildDestructibleCore({
     });
   }
 
-  function step() {
-    // Apply queued spawns up front
-    applyPendingSpawns();
+  function step(dtOverride?: number) {
+    const prevDt = readWorldDt();
+    const hasOverride = typeof dtOverride === 'number' && Number.isFinite(dtOverride) && dtOverride > 0;
+    const targetDt = hasOverride ? Math.max(MIN_STEP_DT, dtOverride) : prevDt;
+    lastStepDt = targetDt;
 
-    const doResim = !!resimulateOnFracture && Math.max(0, maxResimulationPasses) > 0;
-    const useWorldSnapshot = snapshotMode === 'world';
-
-    // Snapshot pre-step state
-    let bodySnap: BodySnapshot | null = null;
-    let worldSnap: Uint8Array | null = null;
-    if (doResim) {
-      if (useWorldSnapshot) {
-        try { worldSnap = world.takeSnapshot(); } catch (e) { console.warn('[Core] World.takeSnapshot failed; falling back to perBody', e); bodySnap = captureBodySnapshot(); }
-      } else {
-        bodySnap = captureBodySnapshot();
-      }
-    }
-
-    // First pass
-    clearBufferedContacts();
-    // Defensive: keep collider mapping coherent
-    if (colliderToNode.size === 0) {
-      try { rebuildColliderToNodeFromChunks(); } catch {}
-      if (colliderToNode.size === 0 && process.env.NODE_ENV !== 'production' && !warnedColliderMapEmptyOnce) {
-        console.warn('[Core] colliderToNode is empty before event drain; contact forces will be dropped');
-        warnedColliderMapEmptyOnce = true;
-      }
-    }
-    preStepSweep();
-    try { world.step(eventQueue); } catch (error) { console.error('world.step', error); return; }
-    // Drain contacts: inject solver forces, buffer damage (no apply yet)
-    drainContactForces({ injectSolverForces: true, applyDamage: false, recordForReplay: true });
-
-    // Gravity and solver update for detection phase
-    if (solverGravityEnabled) {
+    const applyOverrideDt = () => {
+      if (!hasOverride) return;
+      setWorldDtValue(targetDt);
+    };
+    const restoreDt = () => {
+      if (!hasOverride) return;
+      setWorldDtValue(prevDt);
+    };
+    const stepWorld = (onError: (error: unknown) => void): boolean => {
       try {
-        const g = world.gravity as unknown as { x:number; y:number; z:number };
-        solver.addGravity({ x: g.x ?? 0, y: g.y ?? 0, z: g.z ?? 0 });
-      } catch {}
-    }
-    solver.update();
+        applyOverrideDt();
+        world.step(eventQueue);
+        return true;
+      } catch (error) {
+        onError(error);
+        return false;
+      }
+    };
 
-    const hasFracture = solver.overstressedBondCount() > 0;
-    const dt = getDt();
-    const damagePreviewEnabled = damageSystem.isEnabled() && !!resimulateOnDamageDestroy;
-    const shouldSnapshotDamage = damageSystem.isEnabled() && (damagePreviewEnabled || (doResim && hasFracture));
-    let damageSnapshot: DamageStateSnapshot | null = null;
-    if (shouldSnapshotDamage) {
-      try { damageSnapshot = damageSystem.captureImpactState(); } catch {}
-    }
-    let damagePreviewDestroyed: number[] = [];
-    if (damageSystem.isEnabled()) {
-      replayBufferedContacts();
-      if (damagePreviewEnabled) {
-        try {
-          damagePreviewDestroyed = damageSystem.previewTick(dt) ?? [];
-        } catch {
-          damagePreviewDestroyed = [];
+    try {
+      // Apply queued spawns up front
+      applyPendingSpawns();
+
+      const doResim = !!resimulateOnFracture && Math.max(0, maxResimulationPasses) > 0;
+      const useWorldSnapshot = snapshotMode === 'world';
+
+      // Snapshot pre-step state
+      let bodySnap: BodySnapshot | null = null;
+      let worldSnap: Uint8Array | null = null;
+      if (doResim) {
+        if (useWorldSnapshot) {
+          try { worldSnap = world.takeSnapshot(); } catch (e) { console.warn('[Core] World.takeSnapshot failed; falling back to perBody', e); bodySnap = captureBodySnapshot(); }
+        } else {
+          bodySnap = captureBodySnapshot();
         }
       }
-    }
-    const shouldResimFracture = doResim && hasFracture;
-    const shouldResimDamage = damagePreviewEnabled && damagePreviewDestroyed.length > 0;
-    if (!shouldResimFracture && !shouldResimDamage) {
-      const hadExternalForces = injectPendingExternalForces();
-      if (hadExternalForces && process.env.NODE_ENV !== 'production') {
-        try { ((window as unknown as { debugStressSolver?: { printSolver?: () => unknown } }).debugStressSolver)?.printSolver?.(); } catch {}
-      }
-      applyDamageTick();
-      flushPendingDamageFractures();
-      removeDisabledHandles();
 
-      if (hasFracture) {
+      // First pass
+      clearBufferedContacts();
+      // Defensive: keep collider mapping coherent
+      if (colliderToNode.size === 0) {
+        try { rebuildColliderToNodeFromChunks(); } catch {}
+        if (colliderToNode.size === 0 && process.env.NODE_ENV !== 'production' && !warnedColliderMapEmptyOnce) {
+          console.warn('[Core] colliderToNode is empty before event drain; contact forces will be dropped');
+          warnedColliderMapEmptyOnce = true;
+        }
+      }
+      preStepSweep();
+      if (!stepWorld((error) => console.error('world.step', error))) return;
+      // Drain contacts: inject solver forces, buffer damage (no apply yet)
+      drainContactForces({ injectSolverForces: true, applyDamage: false, recordForReplay: true });
+
+      // Gravity and solver update for detection phase
+      if (solverGravityEnabled) {
         try {
-          const perActor = solver.generateFractureCommandsPerActor();
-          const splitEvents = solver.applyFractureCommands(perActor) as Array<{ parentActorIndex:number; children:Array<{ actorIndex:number; nodes:number[] }> }> | undefined;
-          if (Array.isArray(splitEvents) && splitEvents.length > 0) {
-            queueSplitResults(splitEvents);
-            applyPendingMigrations();
-            removeDisabledHandles();
+          const g = world.gravity as unknown as { x:number; y:number; z:number };
+          solver.addGravity({ x: g.x ?? 0, y: g.y ?? 0, z: g.z ?? 0 });
+        } catch {}
+      }
+      solver.update();
+
+      const hasFracture = solver.overstressedBondCount() > 0;
+      const dt = getDt();
+      const damagePreviewEnabled = damageSystem.isEnabled() && !!resimulateOnDamageDestroy;
+      const shouldSnapshotDamage = damageSystem.isEnabled() && (damagePreviewEnabled || (doResim && hasFracture));
+      let damageSnapshot: DamageStateSnapshot | null = null;
+      if (shouldSnapshotDamage) {
+        try { damageSnapshot = damageSystem.captureImpactState(); } catch {}
+      }
+      let damagePreviewDestroyed: number[] = [];
+      if (damageSystem.isEnabled()) {
+        replayBufferedContacts();
+        if (damagePreviewEnabled) {
+          try {
+            damagePreviewDestroyed = damageSystem.previewTick(dt) ?? [];
+          } catch {
+            damagePreviewDestroyed = [];
           }
-        } catch (e) { console.error('[Core] applyFractureCommands', e); }
-      }
-      return;
-    }
-
-    const preDestroyedNodes = shouldResimDamage ? Array.from(new Set(damagePreviewDestroyed)) : [];
-
-    // Rollback and resimulate (accepted pass)
-    try {
-      if (useWorldSnapshot && worldSnap) {
-        const newWorld = RAPIER.World.restoreSnapshot(worldSnap);
-        if (newWorld) {
-          world = newWorld as unknown as RAPIER.World;
-          try { if (corePublic) (corePublic as unknown as { world: RAPIER.World }).world = world; } catch {}
-          try { onWorldReplaced?.(world); } catch {}
         }
-      } else if (bodySnap) {
-        restoreBodySnapshot(bodySnap);
       }
-      if (damageSnapshot) {
-        try { damageSystem.restoreImpactState(damageSnapshot); } catch {}
+      const shouldResimFracture = doResim && hasFracture;
+      const shouldResimDamage = damagePreviewEnabled && damagePreviewDestroyed.length > 0;
+      if (!shouldResimFracture && !shouldResimDamage) {
+        const hadExternalForces = injectPendingExternalForces();
+        if (hadExternalForces && process.env.NODE_ENV !== 'production') {
+          try { ((window as unknown as { debugStressSolver?: { printSolver?: () => unknown } }).debugStressSolver)?.printSolver?.(); } catch {}
+        }
+        applyDamageTick();
+        flushPendingDamageFractures();
+        removeDisabledHandles();
+
+        if (hasFracture) {
+          try {
+            const perActor = solver.generateFractureCommandsPerActor();
+            const splitEvents = solver.applyFractureCommands(perActor) as Array<{ parentActorIndex:number; children:Array<{ actorIndex:number; nodes:number[] }> }> | undefined;
+            if (Array.isArray(splitEvents) && splitEvents.length > 0) {
+              queueSplitResults(splitEvents);
+              applyPendingMigrations();
+              removeDisabledHandles();
+            }
+          } catch (e) { console.error('[Core] applyFractureCommands', e); }
+        }
+        return;
       }
-    } catch (e) {
-      console.error('[Core] rollback failed; proceeding without resim', e);
+
+      const preDestroyedNodes = shouldResimDamage ? Array.from(new Set(damagePreviewDestroyed)) : [];
+
+      // Rollback and resimulate (accepted pass)
+      try {
+        if (useWorldSnapshot && worldSnap) {
+          const newWorld = RAPIER.World.restoreSnapshot(worldSnap);
+          if (newWorld) {
+            world = newWorld as unknown as RAPIER.World;
+            try { if (corePublic) (corePublic as unknown as { world: RAPIER.World }).world = world; } catch {}
+            try { onWorldReplaced?.(world); } catch {}
+          }
+        } else if (bodySnap) {
+          restoreBodySnapshot(bodySnap);
+        }
+        if (damageSnapshot) {
+          try { damageSystem.restoreImpactState(damageSnapshot); } catch {}
+        }
+      } catch (e) {
+        console.error('[Core] rollback failed; proceeding without resim', e);
+        injectPendingExternalForces();
+        applyDamageTick();
+        flushPendingDamageFractures();
+        removeDisabledHandles();
+        return;
+      }
+
+      // Apply splits before accepted step
+      try {
+        const perActor = solver.generateFractureCommandsPerActor();
+        const splitEvents = solver.applyFractureCommands(perActor) as Array<{ parentActorIndex:number; children:Array<{ actorIndex:number; nodes:number[] }> }> | undefined;
+        if (Array.isArray(splitEvents) && splitEvents.length > 0) {
+          queueSplitResults(splitEvents);
+          applyPendingMigrations();
+          removeDisabledHandles();
+        }
+      } catch (e) { console.error('[Core] applyFractureCommands (resim)', e); }
+
+      if (preDestroyedNodes.length > 0) {
+        damageSystem.applyPreDestruction(preDestroyedNodes);
+        for (const nodeIndex of preDestroyedNodes) {
+          const seg = chunks[nodeIndex];
+          if (!seg || seg.destroyed) continue;
+          if (seg.isSupport) continue;
+          try { handleNodeDestroyed(nodeIndex, 'impact'); } catch (err) {
+            if (isDev) console.warn('[Core] preDestroy handleNodeDestroyed failed', err);
+          }
+        }
+      }
+      flushPendingDamageFractures();
+      removeDisabledHandles();
+
+      // Accepted pass
+      clearBufferedContacts();
+      preStepSweep();
+      stepWorld((error) => console.error('world.step (resim)', error));
+      drainContactForces({ injectSolverForces: true, applyDamage: true, recordForReplay: false });
       injectPendingExternalForces();
+      if (solverGravityEnabled) {
+        try {
+          const g = world.gravity as unknown as { x:number; y:number; z:number };
+          solver.addGravity({ x: g.x ?? 0, y: g.y ?? 0, z: g.z ?? 0 });
+        } catch {}
+      }
+      solver.update();
       applyDamageTick();
       flushPendingDamageFractures();
       removeDisabledHandles();
-      return;
+    } finally {
+      restoreDt();
     }
-
-    // Apply splits before accepted step
-    try {
-      const perActor = solver.generateFractureCommandsPerActor();
-      const splitEvents = solver.applyFractureCommands(perActor) as Array<{ parentActorIndex:number; children:Array<{ actorIndex:number; nodes:number[] }> }> | undefined;
-      if (Array.isArray(splitEvents) && splitEvents.length > 0) {
-        queueSplitResults(splitEvents);
-        applyPendingMigrations();
-        removeDisabledHandles();
-      }
-    } catch (e) { console.error('[Core] applyFractureCommands (resim)', e); }
-
-    if (preDestroyedNodes.length > 0) {
-      damageSystem.applyPreDestruction(preDestroyedNodes);
-      for (const nodeIndex of preDestroyedNodes) {
-        const seg = chunks[nodeIndex];
-        if (!seg || seg.destroyed) continue;
-        if (seg.isSupport) continue;
-        try { handleNodeDestroyed(nodeIndex, 'impact'); } catch (err) {
-          if (isDev) console.warn('[Core] preDestroy handleNodeDestroyed failed', err);
-        }
-      }
-    }
-    flushPendingDamageFractures();
-    removeDisabledHandles();
-
-    // Accepted pass
-    clearBufferedContacts();
-    preStepSweep();
-    try { world.step(eventQueue); } catch (e) { console.error('world.step (resim)', e); }
-    drainContactForces({ injectSolverForces: true, applyDamage: true, recordForReplay: false });
-    injectPendingExternalForces();
-    if (solverGravityEnabled) {
-      try {
-        const g = world.gravity as unknown as { x:number; y:number; z:number };
-        solver.addGravity({ x: g.x ?? 0, y: g.y ?? 0, z: g.z ?? 0 });
-      } catch {}
-    }
-    solver.update();
-    applyDamageTick();
-    flushPendingDamageFractures();
-    removeDisabledHandles();
   }
 
   // Back-compat aliases

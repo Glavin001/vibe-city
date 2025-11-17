@@ -92,6 +92,7 @@ type SceneProps = {
   bondsYEnabled: boolean;
   bondsZEnabled: boolean;
   autoBondingEnabled: boolean;
+  adaptiveDt: boolean;
   onReset: () => void;
   bodyCountRef?: MutableRefObject<HTMLSpanElement | null>;
 };
@@ -238,6 +239,7 @@ function Scene({
   bondsYEnabled,
   bondsZEnabled,
   autoBondingEnabled,
+  adaptiveDt,
   onReset: _onReset,
   bodyCountRef,
 }: SceneProps) {
@@ -881,13 +883,15 @@ function Scene({
   const hasCrashed = useRef(false);
   const lastBodyCountRef = useRef<number | null>(null);
   const activeBodyHandlesRef = useRef<Set<number>>(new Set());
-  useFrame(() => {
+  useFrame((_, delta) => {
     if (hasCrashed.current) return;
 
     const core = coreRef.current;
     if (!core) return;
     try {
-      core.step();
+      const stepDt =
+        adaptiveDt && Number.isFinite(delta) ? Math.max(delta, 0) : undefined;
+      core.step(stepDt);
       // Update scene meshes first, then debug renderers to avoid Rapier aliasing issues
       if (chunkMeshesRef.current)
         updateChunkMeshes(core, chunkMeshesRef.current);
@@ -1043,6 +1047,8 @@ function HtmlOverlay({
   resimulateOnDamageDestroy,
   setResimulateOnDamageDestroy,
   bodyCountRef,
+  adaptiveDt,
+  setAdaptiveDt,
 }: {
   debug: boolean;
   setDebug: (v: boolean) => void;
@@ -1130,6 +1136,8 @@ function HtmlOverlay({
   resimulateOnDamageDestroy: boolean;
   setResimulateOnDamageDestroy: (v: boolean) => void;
   bodyCountRef: MutableRefObject<HTMLSpanElement | null>;
+  adaptiveDt: boolean;
+  setAdaptiveDt: (v: boolean) => void;
 }) {
   const isWallStructure =
     structureId === "wall" || structureId === "fracturedWall";
@@ -1329,6 +1337,23 @@ function HtmlOverlay({
           style={{ accentColor: "#4da2ff", width: 16, height: 16 }}
         />
         Apply gravity to solver
+      </label>
+      <label
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          color: "#d1d5db",
+          fontSize: 14,
+        }}
+      >
+        <input
+          type="checkbox"
+          checked={adaptiveDt}
+          onChange={(e) => setAdaptiveDt(e.target.checked)}
+          style={{ accentColor: "#4da2ff", width: 16, height: 16 }}
+        />
+        Adaptive dt (render delta)
       </label>
       <label
         style={{
@@ -2072,6 +2097,7 @@ export default function Page() {
   const [physicsWireframe, setPhysicsWireframe] = useState(false);
   const [gravity, setGravity] = useState(-9.81);
   const [solverGravityEnabled, setSolverGravityEnabled] = useState(true);
+  const [adaptiveDt, setAdaptiveDt] = useState(true);
   const [limitSinglesCollisions, setLimitSinglesCollisions] = useState(false);
   const [skipSingleBodies, setSkipSingleBodies] = useState(false);
   const [damageEnabled, setDamageEnabled] = useState(true);
@@ -2210,6 +2236,8 @@ export default function Page() {
         resimulateOnDamageDestroy={resimulateOnDamageDestroy}
         setResimulateOnDamageDestroy={setResimulateOnDamageDestroy}
         bodyCountRef={rigidBodyCountRef}
+        adaptiveDt={adaptiveDt}
+        setAdaptiveDt={setAdaptiveDt}
       />
       <Canvas shadows camera={{ position: [7, 5, 9], fov: 45 }}>
         <color attach="background" args={["#0e0e12"]} />
@@ -2258,6 +2286,7 @@ export default function Page() {
           autoBondingEnabled={autoBondingEnabled}
           onReset={() => setIteration((v) => v + 1)}
           bodyCountRef={rigidBodyCountRef}
+        adaptiveDt={adaptiveDt}
         />
         <StatsGl className="absolute top-2 left-2" />
       </Canvas>
