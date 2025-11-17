@@ -1,6 +1,17 @@
 import RAPIER, { type RigidBody as RapierRigidBody } from '@dimforge/rapier3d-compat';
 import { loadStressSolver } from 'blast-stress-solver';
-import type { DestructibleCore, ScenarioDesc, ChunkData, Vec3, ProjectileSpawn, BondRef, ProjectileState } from './types';
+import type {
+  DestructibleCore,
+  ScenarioDesc,
+  ChunkData,
+  Vec3,
+  ProjectileSpawn,
+  BondRef,
+  ProjectileState,
+  CoreProfilerConfig,
+  CoreProfilerSample,
+  CoreProfilerPass,
+} from './types';
 import { DestructibleDamageSystem, type DamageOptions, type DamageStateSnapshot } from './damage';
 
 type BuildCoreOptions = {
@@ -25,6 +36,19 @@ type BuildCoreOptions = {
 
 const isDev = true; //process.env.NODE_ENV !== 'production';
 
+const perfNow =
+  typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? () => performance.now()
+    : () => Date.now();
+
+type MutableCoreProfilerSample = CoreProfilerSample & { finalized?: boolean };
+
+const clonePasses = (passes: CoreProfilerPass[]) =>
+  passes.map((pass) => ({
+    ...pass,
+    reasons: [...pass.reasons],
+  }));
+
 export async function buildDestructibleCore({
   scenario,
   nodeSize,
@@ -44,6 +68,46 @@ export async function buildDestructibleCore({
 }: BuildCoreOptions): Promise<DestructibleCore> {
   await RAPIER.init();
   const runtime = await loadStressSolver();
+  const profiler = {
+    enabled: false,
+    onSample: null as CoreProfilerConfig['onSample'] | null,
+    frameIndex: 0,
+  };
+
+  const createProfilerSample = (dt: number): MutableCoreProfilerSample => ({
+    frameIndex: profiler.frameIndex++,
+    timestamp: Date.now(),
+    dt,
+    rapierStepMs: 0,
+    contactDrainMs: 0,
+    solverUpdateMs: 0,
+    damageReplayMs: 0,
+    damagePreviewMs: 0,
+    damageTickMs: 0,
+    fractureMs: 0,
+    initialPassMs: 0,
+    resimMs: 0,
+    totalMs: 0,
+    resimPasses: 0,
+    resimReasons: [],
+    snapshotBytes: 0,
+    snapshotCaptureMs: 0,
+    snapshotRestoreMs: 0,
+    bufferedExternalContacts: 0,
+    bufferedInternalContacts: 0,
+    pendingExternalForces: 0,
+    projectiles: 0,
+    rigidBodies: 0,
+    passes: [],
+    finalized: false,
+  });
+
+  const setProfiler = (config: CoreProfilerConfig | null) => {
+    profiler.enabled = !!(config?.enabled && typeof config.onSample === 'function');
+    profiler.onSample = profiler.enabled ? config?.onSample ?? null : null;
+  };
+
+  let activeProfilerSample: MutableCoreProfilerSample | null = null;
 
   const settings = runtime.defaultExtSettings();
   const scaledSettings = { ...settings };
@@ -327,14 +391,21 @@ export async function buildDestructibleCore({
   const bufferedInternal: BufferedInternalContact[] = [];
   function clearBufferedContacts() { bufferedExternal.length = 0; bufferedInternal.length = 0; }
   function replayBufferedContacts() {
+    const profilerSample = activeProfilerSample;
+    const timerStart = profilerSample ? perfNow() : 0;
     if (!damageSystem.isEnabled()) return;
     for (const e of bufferedExternal) damageSystem.onImpact(e.node, e.effMag, e.dt, e.local ? { localPoint: e.local } : undefined);
     for (const i of bufferedInternal) damageSystem.onInternalImpact(i.a, i.b, i.effMag, i.dt, { localPointA: i.localA, localPointB: i.localB });
+    if (profilerSample) {
+      profilerSample.damageReplayMs += Math.max(0, perfNow() - timerStart);
+    }
   }
 
   function drainContactForces(params: { injectSolverForces: boolean; applyDamage: boolean; recordForReplay?: boolean }) {
     const applyDamage = !!params.applyDamage;
     const record = !!params.recordForReplay;
+    const profilerSample = activeProfilerSample;
+    const timerStart = profilerSample ? perfNow() : 0;
     eventQueue.drainContactForceEvents((ev: { totalForce: () => {x:number;y:number;z:number}; totalForceMagnitude: () => number; collider1: () => number; collider2: () => number; worldContactPoint?: () => {x:number; y:number; z:number}; worldContactPoint2?: () => {x:number; y:number; z:number} }) => {
       const tf = ev.totalForce?.();
       const mag = ev.totalForceMagnitude?.();
@@ -415,11 +486,23 @@ export async function buildDestructibleCore({
         }
       }
     });
+    if (profilerSample) {
+      profilerSample.contactDrainMs += Math.max(0, perfNow() - timerStart);
+      profilerSample.bufferedExternalContacts = Math.max(
+        profilerSample.bufferedExternalContacts,
+        bufferedExternal.length,
+      );
+      profilerSample.bufferedInternalContacts = Math.max(
+        profilerSample.bufferedInternalContacts,
+        bufferedInternal.length,
+      );
+    }
   }
 
-  function injectPendingExternalForces(): boolean {
-    const had = pendingExternalForces.length > 0;
-    if (!had) return false;
+  function injectPendingExternalForces(): number {
+    const count = pendingExternalForces.length;
+    if (count === 0) return 0;
+    const profilerSample = activeProfilerSample;
     try {
       const dt = getDt();
       for (const ef of pendingExternalForces) {
@@ -455,17 +538,25 @@ export async function buildDestructibleCore({
     } finally {
       pendingExternalForces.splice(0, pendingExternalForces.length);
     }
-    return had;
+    if (profilerSample) {
+      profilerSample.pendingExternalForces = Math.max(profilerSample.pendingExternalForces, count);
+    }
+    return count;
   }
 
   function applyDamageTick() {
     if (!damageSystem.isEnabled()) return;
+    const profilerSample = activeProfilerSample;
+    const timerStart = profilerSample ? perfNow() : 0;
     const dt = getDt();
     damageSystem.tick(dt, (nodeIndex, reason) => {
       try { handleNodeDestroyed(nodeIndex, reason as 'impact'|'manual'); } catch (e) {
         if (isDev) console.error('[Core] handleNodeDestroyed failed', e);
       }
     });
+    if (profilerSample) {
+      profilerSample.damageTickMs += Math.max(0, perfNow() - timerStart);
+    }
   }
 
   // Helper: determine if a set of nodes contains any supports (mass=0 or chunk flag)
@@ -693,7 +784,52 @@ export async function buildDestructibleCore({
       }
     };
 
+    const profilerSample =
+      profiler.enabled && typeof profiler.onSample === 'function'
+        ? createProfilerSample(targetDt)
+        : null;
+    if (profilerSample) activeProfilerSample = profilerSample;
+    let passStart = profilerSample ? perfNow() : 0;
+    let currentPassType: 'initial' | 'resim' = 'initial';
+    let profilerFinalized = false;
+    const recordPassDuration = (reasons: string[]) => {
+      if (!profilerSample) return;
+      const duration = Math.max(0, perfNow() - passStart);
+      profilerSample.passes.push({
+        type: currentPassType,
+        durationMs: duration,
+        reasons: [...reasons],
+      });
+      passStart = perfNow();
+      currentPassType = 'resim';
+    };
+    const finalizeProfilerSample = () => {
+      if (!profilerSample || profilerFinalized) {
+        activeProfilerSample = null;
+        return;
+      }
+      recordPassDuration([]);
+      profilerFinalized = true;
+      activeProfilerSample = null;
+      const totalMs = profilerSample.passes.reduce((sum, pass) => sum + pass.durationMs, 0);
+      profilerSample.totalMs = totalMs;
+      profilerSample.initialPassMs =
+        profilerSample.passes.find((pass) => pass.type === 'initial')?.durationMs ?? totalMs;
+      profilerSample.resimMs = totalMs - profilerSample.initialPassMs;
+      profilerSample.projectiles = projectiles.length;
+      profilerSample.rigidBodies = getRigidBodyCount();
+      profiler.onSample?.({
+        ...profilerSample,
+        passes: clonePasses(profilerSample.passes),
+      });
+    };
+    const finalizeAndReturn = () => {
+      finalizeProfilerSample();
+      return;
+    };
+
     try {
+      // Apply queued spawns up front
       applyPendingSpawns();
 
       const useWorldSnapshot = snapshotMode === 'world';
@@ -716,16 +852,34 @@ export async function buildDestructibleCore({
         if (snapshotNeeded) {
           if (useWorldSnapshot) {
             try {
+              const snapshotStart = profilerSample ? perfNow() : 0;
               worldSnap = world.takeSnapshot();
+              if (profilerSample) {
+                profilerSample.snapshotCaptureMs += Math.max(0, perfNow() - snapshotStart);
+                if (worldSnap) {
+                  profilerSample.snapshotBytes = Math.max(
+                    profilerSample.snapshotBytes,
+                    worldSnap.byteLength ?? 0,
+                  );
+                }
+              }
             } catch (e) {
               console.warn(
                 '[Core] World.takeSnapshot failed; falling back to perBody',
                 e,
               );
+              const fallbackStart = profilerSample ? perfNow() : 0;
               bodySnap = captureBodySnapshot();
+              if (profilerSample) {
+                profilerSample.snapshotCaptureMs += Math.max(0, perfNow() - fallbackStart);
+              }
             }
           } else {
+            const snapshotStart = profilerSample ? perfNow() : 0;
             bodySnap = captureBodySnapshot();
+            if (profilerSample) {
+              profilerSample.snapshotCaptureMs += Math.max(0, perfNow() - snapshotStart);
+            }
           }
         }
 
@@ -746,7 +900,12 @@ export async function buildDestructibleCore({
           }
         }
         preStepSweep();
-        if (!stepWorld((error) => console.error('world.step', error))) return;
+        const rapierStart = profilerSample ? perfNow() : 0;
+        const stepped = stepWorld((error) => console.error('world.step', error));
+        if (profilerSample) {
+          profilerSample.rapierStepMs += Math.max(0, perfNow() - rapierStart);
+        }
+        if (!stepped) return finalizeAndReturn();
         drainContactForces({
           injectSolverForces: true,
           applyDamage: false,
@@ -759,7 +918,11 @@ export async function buildDestructibleCore({
             solver.addGravity({ x: g.x ?? 0, y: g.y ?? 0, z: g.z ?? 0 });
           } catch {}
         }
+        const solverStart = profilerSample ? perfNow() : 0;
         solver.update();
+        if (profilerSample) {
+          profilerSample.solverUpdateMs += Math.max(0, perfNow() - solverStart);
+        }
 
         const hasFracture = solver.overstressedBondCount() > 0;
         const dt = getDt();
@@ -780,7 +943,11 @@ export async function buildDestructibleCore({
           replayBufferedContacts();
           if (damagePreviewEnabled) {
             try {
+              const previewStart = profilerSample ? perfNow() : 0;
               damagePreviewDestroyed = damageSystem.previewTick(dt) ?? [];
+              if (profilerSample) {
+                profilerSample.damagePreviewMs += Math.max(0, perfNow() - previewStart);
+              }
             } catch {
               damagePreviewDestroyed = [];
             }
@@ -789,10 +956,13 @@ export async function buildDestructibleCore({
         const shouldResimFracture = fractureResimEnabled && hasFracture;
         const shouldResimDamage =
           damageResimEnabled && damagePreviewDestroyed.length > 0;
+        const resimReasons: string[] = [];
+        if (shouldResimFracture) resimReasons.push('fracture');
+        if (shouldResimDamage) resimReasons.push('damage');
 
         if (!shouldResimFracture && !shouldResimDamage) {
-          const hadExternalForces = injectPendingExternalForces();
-          if (hadExternalForces && process.env.NODE_ENV !== 'production') {
+          const externalForceCount = injectPendingExternalForces();
+          if (externalForceCount > 0 && process.env.NODE_ENV !== 'production') {
             try {
               (
                 (window as unknown as {
@@ -807,6 +977,7 @@ export async function buildDestructibleCore({
 
           if (hasFracture) {
             try {
+              const fractureStart = profilerSample ? perfNow() : 0;
               const perActor = solver.generateFractureCommandsPerActor();
               const splitEvents = solver.applyFractureCommands(
                 perActor,
@@ -819,11 +990,14 @@ export async function buildDestructibleCore({
                 applyPendingMigrations();
                 removeDisabledHandles();
               }
+              if (profilerSample) {
+                profilerSample.fractureMs += Math.max(0, perfNow() - fractureStart);
+              }
             } catch (e) {
               console.error('[Core] applyFractureCommands', e);
             }
           }
-          return;
+          return finalizeAndReturn();
         }
 
         if (!snapshotNeeded) {
@@ -836,8 +1010,8 @@ export async function buildDestructibleCore({
               },
             );
           }
-          const hadExternalForces = injectPendingExternalForces();
-          if (hadExternalForces && process.env.NODE_ENV !== 'production') {
+          const externalForceCount = injectPendingExternalForces();
+          if (externalForceCount > 0 && process.env.NODE_ENV !== 'production') {
             try {
               (
                 (window as unknown as {
@@ -851,6 +1025,7 @@ export async function buildDestructibleCore({
           removeDisabledHandles();
           if (hasFracture) {
             try {
+              const fractureStart = profilerSample ? perfNow() : 0;
               const perActor = solver.generateFractureCommandsPerActor();
               const splitEvents = solver.applyFractureCommands(
                 perActor,
@@ -863,11 +1038,22 @@ export async function buildDestructibleCore({
                 applyPendingMigrations();
                 removeDisabledHandles();
               }
+              if (profilerSample) {
+                profilerSample.fractureMs += Math.max(0, perfNow() - fractureStart);
+              }
             } catch (e) {
               console.error('[Core] applyFractureCommands (fallback)', e);
             }
           }
-          return;
+          return finalizeAndReturn();
+        }
+
+        if (resimReasons.length > 0) {
+          if (profilerSample) {
+            profilerSample.resimPasses += 1;
+            profilerSample.resimReasons.push(...resimReasons);
+          }
+          recordPassDuration(resimReasons);
         }
 
         passesRemaining -= 1;
@@ -877,6 +1063,7 @@ export async function buildDestructibleCore({
 
         try {
           if (useWorldSnapshot && worldSnap) {
+            const restoreStart = profilerSample ? perfNow() : 0;
             const newWorld = RAPIER.World.restoreSnapshot(worldSnap);
             if (newWorld) {
               world = newWorld as unknown as RAPIER.World;
@@ -888,9 +1075,16 @@ export async function buildDestructibleCore({
               try {
                 onWorldReplaced?.(world);
               } catch {}
+              if (profilerSample) {
+                profilerSample.snapshotRestoreMs += Math.max(0, perfNow() - restoreStart);
+              }
             }
           } else if (bodySnap) {
+            const restoreStart = profilerSample ? perfNow() : 0;
             restoreBodySnapshot(bodySnap);
+            if (profilerSample) {
+              profilerSample.snapshotRestoreMs += Math.max(0, perfNow() - restoreStart);
+            }
           }
           if (damageSnapshot) {
             try {
@@ -899,8 +1093,8 @@ export async function buildDestructibleCore({
           }
         } catch (e) {
           console.error('[Core] rollback failed; proceeding without resim', e);
-          const hadExternalForces = injectPendingExternalForces();
-          if (hadExternalForces && process.env.NODE_ENV !== 'production') {
+          const externalForceCount = injectPendingExternalForces();
+          if (externalForceCount > 0 && process.env.NODE_ENV !== 'production') {
             try {
               (
                 (window as unknown as {
@@ -930,10 +1124,11 @@ export async function buildDestructibleCore({
               console.error('[Core] applyFractureCommands (rollback fallback)', err);
             }
           }
-          return;
+          return finalizeAndReturn();
         }
 
         try {
+          const fractureStart = profilerSample ? perfNow() : 0;
           const perActor = solver.generateFractureCommandsPerActor();
           const splitEvents = solver.applyFractureCommands(
             perActor,
@@ -945,6 +1140,9 @@ export async function buildDestructibleCore({
             queueSplitResults(splitEvents);
             applyPendingMigrations();
             removeDisabledHandles();
+          }
+          if (profilerSample) {
+            profilerSample.fractureMs += Math.max(0, perfNow() - fractureStart);
           }
         } catch (e) {
           console.error('[Core] applyFractureCommands (resim)', e);
@@ -972,6 +1170,7 @@ export async function buildDestructibleCore({
         // Loop to rerun detection with updated solver state.
       }
     } finally {
+      finalizeProfilerSample();
       restoreDt();
     }
   }
@@ -1398,6 +1597,7 @@ export async function buildDestructibleCore({
     } : undefined,
     damageEnabled: damageSystem.isEnabled(),
     dispose,
+    setProfiler: (config: CoreProfilerConfig | null) => setProfiler(config),
   };
   corePublic = api;
   return api;

@@ -5,6 +5,7 @@ import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type MutableRefObject,
@@ -14,7 +15,10 @@ import RapierDebugRenderer from "@/lib/rapier/rapier-debug-renderer";
 import type { AutoBondingRequest } from "@/lib/stress/core/autoBonding";
 import { buildDestructibleCore } from "@/lib/stress/core/destructible-core";
 import { debugPrintSolver } from "@/lib/stress/core/printSolver";
-import type { DestructibleCore } from "@/lib/stress/core/types";
+import type {
+  CoreProfilerSample,
+  DestructibleCore,
+} from "@/lib/stress/core/types";
 import { buildBeamBridgeScenario } from "@/lib/stress/scenarios/beamBridgeScenario";
 import { buildFracturedGlbScenario } from "@/lib/stress/scenarios/fracturedGlbScenario";
 import { buildFracturedWallScenario } from "@/lib/stress/scenarios/fracturedWallScenario";
@@ -95,6 +99,11 @@ type SceneProps = {
   adaptiveDt: boolean;
   onReset: () => void;
   bodyCountRef?: MutableRefObject<HTMLSpanElement | null>;
+  activeBodyCountRef?: MutableRefObject<HTMLSpanElement | null>;
+  profiling?: {
+    enabled: boolean;
+    onSample?: (sample: CoreProfilerSample) => void;
+  };
 };
 
 type ScenarioBuilderParams = {
@@ -242,6 +251,8 @@ function Scene({
   adaptiveDt,
   onReset: _onReset,
   bodyCountRef,
+  activeBodyCountRef,
+  profiling,
 }: SceneProps) {
   const coreRef = useRef<DestructibleCore | null>(null);
   const debugHelperRef = useRef<ReturnType<
@@ -257,6 +268,10 @@ function Scene({
   useEffect(() => {
     buildGravityRef.current = gravity;
   }, [gravity]);
+  const profilingRef = useRef(profiling);
+  useEffect(() => {
+    profilingRef.current = profiling;
+  }, [profiling]);
   const solverGravityRef = useRef<boolean>(solverGravityEnabled);
   useEffect(() => {
     solverGravityRef.current = solverGravityEnabled;
@@ -410,6 +425,17 @@ function Scene({
         return;
       }
       coreRef.current = core;
+      const latestProfiling = profilingRef.current;
+      if (
+        latestProfiling?.enabled &&
+        typeof latestProfiling.onSample === "function" &&
+        typeof core.setProfiler === "function"
+      ) {
+        core.setProfiler({
+          enabled: true,
+          onSample: latestProfiling.onSample,
+        });
+      }
 
       try {
         core.setSolverGravityEnabled(solverGravityRef.current);
@@ -636,6 +662,20 @@ function Scene({
     const core = coreRef.current;
     if (core) core.setGravity(gravity);
   }, [gravity]);
+
+  useEffect(() => {
+    const core = coreRef.current;
+    if (!core || typeof core.setProfiler !== "function") return;
+    if (!profiling?.enabled || typeof profiling.onSample !== "function") {
+      core.setProfiler(null);
+      return;
+    }
+    const config = { enabled: true, onSample: profiling.onSample };
+    core.setProfiler(config);
+    return () => {
+      core.setProfiler(null);
+    };
+  }, [profiling?.enabled, profiling?.onSample]);
 
   // Toggle whether gravity is applied to the solver without recreating the scene
   useEffect(() => {
@@ -882,7 +922,7 @@ function Scene({
 
   const hasCrashed = useRef(false);
   const lastBodyCountRef = useRef<number | null>(null);
-  const activeBodyHandlesRef = useRef<Set<number>>(new Set());
+  const lastActiveBodyCountRef = useRef<number | null>(null);
   const accumulatorRef = useRef(0);
   const FIXED_STEP_DT = 1 / 60;
   const MIN_STEP_DT = 1 / 240;
@@ -946,34 +986,33 @@ function Scene({
       debugHelperRef.current.update([], false);
     }
 
-    if (bodyCountRef?.current) {
+    if (bodyCountRef?.current || activeBodyCountRef?.current) {
       let liveCount = 0;
+      let activeCount = 0;
       try {
-        const handles = activeBodyHandlesRef.current;
-        handles.clear();
-        for (const chunk of core.chunks) {
-          if (!chunk || chunk.destroyed) continue;
-          if (chunk.colliderHandle == null) continue;
-          const bodyHandle = chunk.bodyHandle;
-          if (bodyHandle == null) continue;
-          handles.add(bodyHandle);
-        }
-        const projectiles = core.projectiles ?? [];
-        for (const projectile of projectiles) {
-          if (!projectile) continue;
-          const bodyHandle = projectile.bodyHandle;
-          if (bodyHandle == null) continue;
-          const body = core.world.getRigidBody(bodyHandle);
-          if (!body) continue;
-          handles.add(bodyHandle);
-        }
-        liveCount = handles.size;
+        core.world.forEachRigidBody(() => {
+          liveCount += 1;
+        });
       } catch {
         liveCount = 0;
       }
-      if (lastBodyCountRef.current !== liveCount) {
+      try {
+        core.world.forEachActiveRigidBody(() => {
+          activeCount += 1;
+        });
+      } catch {
+        activeCount = 0;
+      }
+      if (bodyCountRef?.current && lastBodyCountRef.current !== liveCount) {
         bodyCountRef.current.textContent = liveCount.toString();
         lastBodyCountRef.current = liveCount;
+      }
+      if (
+        activeBodyCountRef?.current &&
+        lastActiveBodyCountRef.current !== activeCount
+      ) {
+        activeBodyCountRef.current.textContent = activeCount.toString();
+        lastActiveBodyCountRef.current = activeCount;
       }
     }
   });
@@ -1082,8 +1121,13 @@ function HtmlOverlay({
   resimulateOnDamageDestroy,
   setResimulateOnDamageDestroy,
   bodyCountRef,
+  activeBodyCountRef,
   adaptiveDt,
   setAdaptiveDt,
+  profilingEnabled,
+  startProfiling,
+  stopProfiling,
+  profilerStats,
 }: {
   debug: boolean;
   setDebug: (v: boolean) => void;
@@ -1171,8 +1215,13 @@ function HtmlOverlay({
   resimulateOnDamageDestroy: boolean;
   setResimulateOnDamageDestroy: (v: boolean) => void;
   bodyCountRef: MutableRefObject<HTMLSpanElement | null>;
+  activeBodyCountRef: MutableRefObject<HTMLSpanElement | null>;
   adaptiveDt: boolean;
   setAdaptiveDt: (v: boolean) => void;
+  profilingEnabled: boolean;
+  startProfiling: () => void;
+  stopProfiling: () => void;
+  profilerStats: { sampleCount: number; lastFrameMs: number | null };
 }) {
   const isWallStructure =
     structureId === "wall" || structureId === "fracturedWall";
@@ -1192,6 +1241,58 @@ function HtmlOverlay({
         paddingRight: 8,
       }}
     >
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          gap: 4,
+          padding: "4px 0",
+        }}
+      >
+        <div style={{ display: "flex", gap: 8 }}>
+          {!profilingEnabled ? (
+            <button
+              type="button"
+              onClick={startProfiling}
+              style={{
+                padding: "4px 10px",
+                fontSize: 13,
+                borderRadius: 4,
+                border: "1px solid #374151",
+                background: "transparent",
+                color: "#e5e7eb",
+                cursor: "pointer",
+              }}
+            >
+              Start profiler
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={stopProfiling}
+              style={{
+                padding: "4px 10px",
+                fontSize: 13,
+                borderRadius: 4,
+                border: "1px solid #b91c1c",
+                background: "#b91c1c",
+                color: "#f9fafb",
+                cursor: "pointer",
+              }}
+            >
+              Stop & Download
+            </button>
+          )}
+        </div>
+        {profilingEnabled ? (
+          <div style={{ fontSize: 12, color: "#9ca3af" }}>
+            Status: Recording · Samples: {profilerStats.sampleCount}
+            {typeof profilerStats.lastFrameMs === "number"
+              ? ` · Last frame ${profilerStats.lastFrameMs.toFixed(2)} ms`
+              : ""}
+          </div>
+        ) : null}
+      </div>
       <div style={{ display: "flex", gap: 8 }}>
         <button
           type="button"
@@ -1264,6 +1365,19 @@ function HtmlOverlay({
       >
         <span>Rigid bodies</span>
         <span ref={bodyCountRef}>-</span>
+      </div>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          color: "#e5e7eb",
+          fontSize: 14,
+          fontVariantNumeric: "tabular-nums",
+        }}
+      >
+        <span>Active rigid bodies</span>
+        <span ref={activeBodyCountRef}>-</span>
       </div>
       <label
         style={{
@@ -2177,10 +2291,149 @@ export default function Page() {
   const [bondsYEnabled, setBondsYEnabled] = useState(true);
   const [bondsZEnabled, setBondsZEnabled] = useState(true);
   const [autoBondingEnabled, setAutoBondingEnabled] = useState(false);
+  const [profilingEnabled, setProfilingEnabled] = useState(false);
+  const profilerSamplesRef = useRef<CoreProfilerSample[]>([]);
+  const profilerSessionRef = useRef<{ startedAt: number; config: Record<string, unknown> } | null>(null);
+  const [profilerStats, setProfilerStats] = useState<{
+    sampleCount: number;
+    lastFrameMs: number | null;
+  }>({ sampleCount: 0, lastFrameMs: null });
+  const captureProfilerConfig = useCallback(
+    () => ({
+      structureId,
+      mode,
+      gravity,
+      solverGravityEnabled,
+      adaptiveDt,
+      limitSinglesCollisions,
+      skipSingleBodies,
+      damageEnabled,
+      damageClickRatio,
+      contactDamageScale,
+      minImpulseThreshold,
+      contactCooldownMs,
+      internalContactScale,
+      speedMinExternal,
+      speedMinInternal,
+      speedMax,
+      speedExponent,
+      slowSpeedFactor,
+      fastSpeedFactor,
+      projType,
+      projectileSpeed,
+      projectileMass,
+      projectileRadius,
+      materialScale,
+      pushForce,
+      resimulateOnFracture,
+      resimulateOnDamageDestroy,
+      maxResimulationPasses,
+      snapshotMode,
+      wallSpan,
+      wallHeight,
+      wallThickness,
+      wallSpanSeg,
+      wallHeightSeg,
+      wallLayers,
+      bondsXEnabled,
+      bondsYEnabled,
+      bondsZEnabled,
+      autoBondingEnabled,
+    }),
+    [
+      structureId,
+      mode,
+      gravity,
+      solverGravityEnabled,
+      adaptiveDt,
+      limitSinglesCollisions,
+      skipSingleBodies,
+      damageEnabled,
+      damageClickRatio,
+      contactDamageScale,
+      minImpulseThreshold,
+      contactCooldownMs,
+      internalContactScale,
+      speedMinExternal,
+      speedMinInternal,
+      speedMax,
+      speedExponent,
+      slowSpeedFactor,
+      fastSpeedFactor,
+      projType,
+      projectileSpeed,
+      projectileMass,
+      projectileRadius,
+      materialScale,
+      pushForce,
+      resimulateOnFracture,
+      resimulateOnDamageDestroy,
+      maxResimulationPasses,
+      snapshotMode,
+      wallSpan,
+      wallHeight,
+      wallThickness,
+      wallSpanSeg,
+      wallHeightSeg,
+      wallLayers,
+      bondsXEnabled,
+      bondsYEnabled,
+      bondsZEnabled,
+      autoBondingEnabled,
+    ],
+  );
   const rigidBodyCountRef = useRef<HTMLSpanElement | null>(null);
+  const activeRigidBodyCountRef = useRef<HTMLSpanElement | null>(null);
   const structures = STRESS_PRESET_METADATA;
   const currentStructure =
     structures.find((item) => item.id === structureId) ?? structures[0];
+  const handleProfilerSample = useCallback((sample: CoreProfilerSample) => {
+    profilerSamplesRef.current.push(sample);
+    setProfilerStats({
+      sampleCount: profilerSamplesRef.current.length,
+      lastFrameMs: sample.totalMs,
+    });
+  }, []);
+  const startProfiling = useCallback(() => {
+    profilerSamplesRef.current = [];
+    profilerSessionRef.current = {
+      startedAt: Date.now(),
+      config: captureProfilerConfig(),
+    };
+    setProfilerStats({ sampleCount: 0, lastFrameMs: null });
+    setProfilingEnabled(true);
+  }, [captureProfilerConfig]);
+  const stopProfiling = useCallback(() => {
+    setProfilingEnabled(false);
+    const payload = {
+      startedAt: profilerSessionRef.current?.startedAt ?? Date.now(),
+      stoppedAt: Date.now(),
+      config: profilerSessionRef.current?.config ?? captureProfilerConfig(),
+      sampleCount: profilerSamplesRef.current.length,
+      samples: profilerSamplesRef.current,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `stress-profiler-${new Date()
+      .toISOString()
+      .replace(/[:]/g, "-")}.json`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+    profilerSessionRef.current = null;
+    profilerSamplesRef.current = [];
+    setProfilerStats({ sampleCount: 0, lastFrameMs: null });
+  }, [captureProfilerConfig]);
+  const profilingControls = useMemo(
+    () => ({
+      enabled: profilingEnabled,
+      onSample: profilingEnabled ? handleProfilerSample : undefined,
+    }),
+    [handleProfilerSample, profilingEnabled],
+  );
   // Auto-spawn on first render disabled; click-to-spawn only.
   return (
     <div style={{ width: "100%", height: "100vh" }}>
@@ -2271,8 +2524,13 @@ export default function Page() {
         resimulateOnDamageDestroy={resimulateOnDamageDestroy}
         setResimulateOnDamageDestroy={setResimulateOnDamageDestroy}
         bodyCountRef={rigidBodyCountRef}
+        activeBodyCountRef={activeRigidBodyCountRef}
         adaptiveDt={adaptiveDt}
         setAdaptiveDt={setAdaptiveDt}
+        profilingEnabled={profilingEnabled}
+        startProfiling={startProfiling}
+        stopProfiling={stopProfiling}
+        profilerStats={profilerStats}
       />
       <Canvas shadows camera={{ position: [7, 5, 9], fov: 45 }}>
         <color attach="background" args={["#0e0e12"]} />
@@ -2321,7 +2579,9 @@ export default function Page() {
           autoBondingEnabled={autoBondingEnabled}
           onReset={() => setIteration((v) => v + 1)}
           bodyCountRef={rigidBodyCountRef}
+          activeBodyCountRef={activeRigidBodyCountRef}
         adaptiveDt={adaptiveDt}
+          profiling={profilingControls}
         />
         <StatsGl className="absolute top-2 left-2" />
       </Canvas>

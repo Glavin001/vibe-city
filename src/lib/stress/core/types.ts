@@ -80,6 +80,44 @@ export type BondRef = {
   normal: Vec3;
 };
 
+export type CoreProfilerPass = {
+  durationMs: number;
+  type: 'initial' | 'resim';
+  reasons: string[];
+};
+
+export type CoreProfilerSample = {
+  frameIndex: number;
+  timestamp: number;
+  dt: number;
+  rapierStepMs: number;
+  contactDrainMs: number;
+  solverUpdateMs: number;
+  damageReplayMs: number;
+  damagePreviewMs: number;
+  damageTickMs: number;
+  fractureMs: number;
+  initialPassMs: number;
+  resimMs: number;
+  totalMs: number;
+  resimPasses: number;
+  resimReasons: string[];
+  snapshotBytes: number;
+  snapshotCaptureMs: number;
+  snapshotRestoreMs: number;
+  bufferedExternalContacts: number;
+  bufferedInternalContacts: number;
+  pendingExternalForces: number;
+  projectiles: number;
+  rigidBodies: number;
+  passes: CoreProfilerPass[];
+};
+
+export type CoreProfilerConfig = {
+  enabled: boolean;
+  onSample?: (sample: CoreProfilerSample) => void;
+};
+
 export type DestructibleCore = {
   world: RAPIER.World;
   eventQueue: RAPIER.EventQueue;
@@ -119,6 +157,7 @@ export type DestructibleCore = {
   getNodeHealth?: (nodeIndex: number) => { health: number; maxHealth: number; destroyed: boolean } | null;
   damageEnabled?: boolean;
   dispose: () => void;
+  setProfiler: (config: CoreProfilerConfig | null) => void;
 };
 
 
