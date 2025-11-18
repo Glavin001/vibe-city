@@ -132,6 +132,14 @@ export type CoreProfilerSample = {
   projectiles: number;
   rigidBodies: number;
   passes: CoreProfilerPass[];
+  // Extended stats (optional)
+  splitChildCounts?: number[];
+  bodyCount?: number;
+  bodyColliderCountMin?: number | null;
+  bodyColliderCountMax?: number | null;
+  bodyColliderCountAvg?: number | null;
+  bodyColliderCountMedian?: number | null;
+  bodyColliderCountP95?: number | null;
 };
 
 export type CoreProfilerConfig = {

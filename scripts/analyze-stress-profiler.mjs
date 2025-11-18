@@ -80,6 +80,16 @@ function printBreakdownSection(title, fields, samples) {
   console.log("");
 }
 
+function topHistogram(values, limit = 5) {
+  const counts = values.reduce((acc, value) => {
+    acc.set(value, (acc.get(value) ?? 0) + 1);
+    return acc;
+  }, new Map());
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, limit);
+}
+
 async function main() {
   try {
     const payload = await readJson(targetPath);
@@ -198,6 +208,74 @@ async function main() {
     printBreakdownSection("Damage breakdown", damageFields, samples);
     printBreakdownSection("Maintenance breakdown", maintenanceFields, samples);
 
+    const splitChildCounts = samples.flatMap((sample) =>
+      Array.isArray(sample.splitChildCounts) ? sample.splitChildCounts : [],
+    );
+    if (splitChildCounts.length > 0) {
+      const childAvg =
+        splitChildCounts.reduce((sum, value) => sum + value, 0) /
+        splitChildCounts.length;
+      console.log("Split child node counts:");
+      console.log(
+        `  samples: ${splitChildCounts.length} · avg ${formatNumber(
+          childAvg,
+        )} · median ${formatNumber(percentile(splitChildCounts, 0.5))} · p95 ${formatNumber(
+          percentile(splitChildCounts, 0.95),
+        )} · max ${formatNumber(Math.max(...splitChildCounts))}`,
+      );
+      const histogram = topHistogram(splitChildCounts);
+      if (histogram.length > 0) {
+        console.log("  top buckets (nodes → count):");
+        for (const [bucket, count] of histogram) {
+          console.log(`    ${bucket}: ${count}`);
+        }
+      }
+      console.log("");
+    }
+
+    const bodyCountStats = summarize(samples, "bodyCount");
+    if (bodyCountStats.count > 0) {
+      const colliderAvgStats = summarize(samples, "bodyColliderCountAvg");
+      const colliderMedianStats = summarize(samples, "bodyColliderCountMedian");
+      const colliderMinStats = summarize(samples, "bodyColliderCountMin");
+      const colliderMaxStats = summarize(samples, "bodyColliderCountMax");
+      const colliderP95Stats = summarize(samples, "bodyColliderCountP95");
+      console.log("Rigid body topology:");
+      console.log(
+        `  bodies/frame: avg ${formatNumber(bodyCountStats.average)} · p95 ${formatNumber(
+          bodyCountStats.p95,
+        )} · max ${formatNumber(bodyCountStats.max)}`,
+      );
+      console.log(
+        `  colliders/body avg: avg ${formatNumber(colliderAvgStats.average)} · p95 ${formatNumber(
+          colliderAvgStats.p95,
+        )} · max ${formatNumber(colliderAvgStats.max)}`,
+      );
+      console.log(
+        `  colliders/body median: avg ${formatNumber(
+          colliderMedianStats.average,
+        )} · p95 ${formatNumber(colliderMedianStats.p95)} · max ${formatNumber(
+          colliderMedianStats.max,
+        )}`,
+      );
+      console.log(
+        `  colliders/body min: avg ${formatNumber(colliderMinStats.average)} · max ${formatNumber(
+          colliderMinStats.max,
+        )}`,
+      );
+      console.log(
+        `  colliders/body max: avg ${formatNumber(colliderMaxStats.average)} · max ${formatNumber(
+          colliderMaxStats.max,
+        )}`,
+      );
+      console.log(
+        `  colliders/body p95: avg ${formatNumber(colliderP95Stats.average)} · max ${formatNumber(
+          colliderP95Stats.max,
+        )}`,
+      );
+      console.log("");
+    }
+
     console.log("Resimulation reasons:");
     const reasonCounts = samples.reduce((acc, sample) => {
       const reasons = Array.isArray(sample.resimReasons)
@@ -233,6 +311,18 @@ async function main() {
           frame.resimReasons ?? []
         ).join(", ")})`,
       );
+      if (typeof frame.bodyCount === "number") {
+        console.log(
+          `    bodies: ${frame.bodyCount} · colliders avg ${formatNumber(
+            frame.bodyColliderCountAvg,
+          )} · median ${formatNumber(frame.bodyColliderCountMedian)} · min ${formatNumber(
+            frame.bodyColliderCountMin,
+          )} · max ${formatNumber(frame.bodyColliderCountMax)}`,
+        );
+      }
+      if (Array.isArray(frame.splitChildCounts) && frame.splitChildCounts.length > 0) {
+        console.log(`    split children (node counts): ${frame.splitChildCounts.join(", ")}`);
+      }
     }
     console.log("");
 

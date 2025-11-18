@@ -265,6 +265,48 @@ export async function buildDestructibleCore({
     if (set.size === 0) nodesByBodyHandle.delete(bodyHandle);
   }
 
+  function percentileFromSorted(sorted: number[], percentile: number): number {
+    if (!sorted.length) return 0;
+    const clamped = Math.min(1, Math.max(0, percentile));
+    const index = Math.min(
+      sorted.length - 1,
+      Math.round(clamped * (sorted.length - 1)),
+    );
+    return sorted[index];
+  }
+
+  function captureBodyColliderStats():
+    | null
+    | {
+        bodyCount: number;
+        min: number;
+        max: number;
+        avg: number;
+        median: number;
+        p95: number;
+      } {
+    const counts: number[] = [];
+    for (const set of nodesByBodyHandle.values()) {
+      if (!set || set.size === 0) continue;
+      counts.push(set.size);
+    }
+    if (counts.length === 0) return null;
+    counts.sort((a, b) => a - b);
+    const bodyCount = counts.length;
+    const total = counts.reduce((sum, value) => sum + value, 0);
+    const avg = total / bodyCount;
+    const median = percentileFromSorted(counts, 0.5);
+    const p95 = percentileFromSorted(counts, 0.95);
+    return {
+      bodyCount,
+      min: counts[0],
+      max: counts[counts.length - 1],
+      avg,
+      median,
+      p95,
+    };
+  }
+
   // const spacing = scenario.spacing ?? { x: 0.5, y: 0.5, z: 0.5 };
 
   function buildColliderDescForNode(args: { nodeIndex: number; halfX: number; halfY: number; halfZ: number; isSupport: boolean }) {
@@ -874,6 +916,15 @@ export async function buildDestructibleCore({
       profilerSample.resimMs = totalMs - profilerSample.initialPassMs;
       profilerSample.projectiles = projectiles.length;
       profilerSample.rigidBodies = getRigidBodyCount();
+      const colliderStats = captureBodyColliderStats();
+      if (colliderStats) {
+        profilerSample.bodyCount = colliderStats.bodyCount;
+        profilerSample.bodyColliderCountMin = colliderStats.min;
+        profilerSample.bodyColliderCountMax = colliderStats.max;
+        profilerSample.bodyColliderCountAvg = colliderStats.avg;
+        profilerSample.bodyColliderCountMedian = colliderStats.median;
+        profilerSample.bodyColliderCountP95 = colliderStats.p95;
+      }
       profiler.onSample?.({
         ...profilerSample,
         passes: clonePasses(profilerSample.passes),
@@ -1249,6 +1300,12 @@ export async function buildDestructibleCore({
       for (const child of children) {
         const nodes = Array.isArray(child.nodes) ? child.nodes.slice() : [];
         if (nodes.length === 0) continue;
+        if (activeProfilerSample) {
+          if (!activeProfilerSample.splitChildCounts) {
+            activeProfilerSample.splitChildCounts = [];
+          }
+          activeProfilerSample.splitChildCounts.push(nodes.length);
+        }
         const isActorSupport = actorNodesContainSupport(nodes);
         const shouldCullSingle =
           skipSingleBodiesEnabled &&
