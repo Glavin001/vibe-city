@@ -11,6 +11,7 @@ import type {
   CoreProfilerConfig,
   CoreProfilerSample,
   CoreProfilerPass,
+  SingleCollisionMode,
 } from './types';
 import { DestructibleDamageSystem, type DamageOptions, type DamageStateSnapshot } from './damage';
 
@@ -22,7 +23,7 @@ type BuildCoreOptions = {
   friction?: number;
   restitution?: number;
   materialScale?: number;
-  limitSinglesCollisions?: boolean;
+  singleCollisionMode?: SingleCollisionMode;
   damage?: DamageOptions & { autoDetachOnDestroy?: boolean; autoCleanupPhysics?: boolean };
   onNodeDestroyed?: (e: { nodeIndex: number; actorIndex: number; reason: 'impact'|'manual' }) => void;
   // Fracture rollback/resimulation controls
@@ -56,7 +57,7 @@ export async function buildDestructibleCore({
   friction = 0.25,
   restitution = 0.0,
   materialScale = 1.0,
-  limitSinglesCollisions = false,
+  singleCollisionMode = 'all',
   damage,
   onNodeDestroyed,
   resimulateOnFracture = true,
@@ -112,6 +113,7 @@ export async function buildDestructibleCore({
   const settings = runtime.defaultExtSettings();
   const scaledSettings = { ...settings };
   const skipSingleBodiesEnabled = !!skipSingleBodies;
+  let singleCollisionModeSetting: SingleCollisionMode = singleCollisionMode;
 
   // Reasonable defaults; caller can adjust later if needed
   // settings.maxSolverIterationsPerFrame = 64;
@@ -302,7 +304,6 @@ export async function buildDestructibleCore({
   let safeFrames = 0;
   let warnedColliderMapEmptyOnce = false;
   let solverGravityEnabled = true;
-  let limitSinglesCollisionsEnabled = !!limitSinglesCollisions;
   const damageOptions: Required<DamageOptions & { autoDetachOnDestroy?: boolean; autoCleanupPhysics?: boolean }> = {
     enabled: !!damage?.enabled,
     strengthPerVolume: damage?.strengthPerVolume ?? 10000,
@@ -595,8 +596,18 @@ export async function buildDestructibleCore({
   }
 
   // Now that options are ready, apply initial collision groups
-  try { applyCollisionGroupsForBody(rootBody, { enabled: limitSinglesCollisionsEnabled, groundBodyHandle: groundBody.handle }); } catch {}
-  try { applyCollisionGroupsForBody(groundBody, { enabled: limitSinglesCollisionsEnabled, groundBodyHandle: groundBody.handle }); } catch {}
+  try {
+    applyCollisionGroupsForBody(rootBody, {
+      mode: singleCollisionModeSetting,
+      groundBodyHandle: groundBody.handle,
+    });
+  } catch {}
+  try {
+    applyCollisionGroupsForBody(groundBody, {
+      mode: singleCollisionModeSetting,
+      groundBodyHandle: groundBody.handle,
+    });
+  } catch {}
 
   function setGravity(g: number) {
     try {
@@ -981,10 +992,7 @@ export async function buildDestructibleCore({
               const perActor = solver.generateFractureCommandsPerActor();
               const splitEvents = solver.applyFractureCommands(
                 perActor,
-              ) as Array<{
-                parentActorIndex: number;
-                children: Array<{ actorIndex: number; nodes: number[] }>;
-              }> | undefined;
+              );
               if (Array.isArray(splitEvents) && splitEvents.length > 0) {
                 queueSplitResults(splitEvents);
                 applyPendingMigrations();
@@ -1256,7 +1264,12 @@ export async function buildDestructibleCore({
       body
     );
     // Apply collision-group policy for projectiles
-    try { if (limitSinglesCollisionsEnabled) applyCollisionGroupsForBody(body, { enabled: limitSinglesCollisionsEnabled, groundBodyHandle: groundBody.handle }); } catch {}
+    try {
+      applyCollisionGroupsForBody(body, {
+        mode: singleCollisionModeSetting,
+        groundBodyHandle: groundBody.handle,
+      });
+    } catch {}
     if (process.env.NODE_ENV !== 'production') console.debug('[Core] spawnProjectile', { body: body.handle, collider: collider.handle, start, params });
     projectiles.push({
       bodyHandle: body.handle,
@@ -1347,7 +1360,12 @@ export async function buildDestructibleCore({
         colliderToNode.set(col.handle, seg.nodeIndex);
         createdCountByBody.set(body.handle, (createdCountByBody.get(body.handle) ?? 0) + 1);
         // Update groups after migration; collider count may be 1
-        try { if (limitSinglesCollisionsEnabled) applyCollisionGroupsForBody(body, { enabled: limitSinglesCollisionsEnabled, groundBodyHandle: groundBody.handle }); } catch {}
+        try {
+          applyCollisionGroupsForBody(body, {
+            mode: singleCollisionModeSetting,
+            groundBodyHandle: groundBody.handle,
+          });
+        } catch {}
       }
       // Do not proactively remove bodies here; allow existing sweeps to handle
     }
@@ -1572,16 +1590,37 @@ export async function buildDestructibleCore({
     setGravity,
     setSolverGravityEnabled,
     getRigidBodyCount,
-    setLimitSinglesCollisions: (v: boolean) => {
-      limitSinglesCollisionsEnabled = !!v;
+    setSingleCollisionMode: (mode: SingleCollisionMode) => {
+      if (mode === singleCollisionModeSetting) return;
+      singleCollisionModeSetting = mode;
       try {
-        world.forEachRigidBody((b) => applyCollisionGroupsForBody(b, { enabled: limitSinglesCollisionsEnabled, groundBodyHandle: groundBody.handle }));
+        world.forEachRigidBody((b) =>
+          applyCollisionGroupsForBody(b, {
+            mode: singleCollisionModeSetting,
+            groundBodyHandle: groundBody.handle,
+          }),
+        );
       } catch {
-        try { applyCollisionGroupsForBody(rootBody, { enabled: limitSinglesCollisionsEnabled, groundBodyHandle: groundBody.handle }); } catch {}
-        try { applyCollisionGroupsForBody(groundBody, { enabled: limitSinglesCollisionsEnabled, groundBodyHandle: groundBody.handle }); } catch {}
+        try {
+          applyCollisionGroupsForBody(rootBody, {
+            mode: singleCollisionModeSetting,
+            groundBodyHandle: groundBody.handle,
+          });
+        } catch {}
+        try {
+          applyCollisionGroupsForBody(groundBody, {
+            mode: singleCollisionModeSetting,
+            groundBodyHandle: groundBody.handle,
+          });
+        } catch {}
         for (const { bodyHandle } of Array.from(actorMap.values())) {
           const b = world.getRigidBody(bodyHandle);
-          if (b) applyCollisionGroupsForBody(b, { enabled: limitSinglesCollisionsEnabled, groundBodyHandle: groundBody.handle });
+          if (b) {
+            applyCollisionGroupsForBody(b, {
+              mode: singleCollisionModeSetting,
+              groundBodyHandle: groundBody.handle,
+            });
+          }
         }
       }
     },
@@ -1646,25 +1685,57 @@ function applyGroupsForCollider(c: RAPIER.Collider, groups: number) {
   } catch {}
 }
 
-function applyCollisionGroupsForBody(body: RAPIER.RigidBody, opts: { enabled: boolean; groundBodyHandle: number }) {
+function applyCollisionGroupsForBody(
+  body: RAPIER.RigidBody,
+  opts: { mode: SingleCollisionMode; groundBodyHandle: number },
+) {
   if (!body) return;
-  const n = body?.numColliders() || 0;
-  let groups = mkGroups(0xffff, 0xffff);
+  const n = body?.numColliders?.() ?? 0;
   const ud = (body as unknown as { userData?: unknown }).userData as { projectile?: boolean } | undefined;
+  let memberships = 0xffff;
+  let filters = 0xffff;
+
   if (ud?.projectile) {
-    groups = mkGroups(0xffff, 0xffff);
-  } else if (opts.enabled) {
+    memberships = 0xffff;
+    filters = 0xffff;
+  } else if (opts.mode === 'noSinglePairs' || opts.mode === 'singleGround') {
     if (body.handle === opts.groundBodyHandle) {
-      groups = mkGroups(GROUP_GROUND, GROUP_GROUND | GROUP_SINGLE | GROUP_MULTI);
+      memberships = GROUP_GROUND;
+      filters = GROUP_GROUND | GROUP_SINGLE | GROUP_MULTI;
     } else {
       const isDynamicLike = body.isDynamic() || body.isKinematic();
-      if (isDynamicLike && n === 1) {
-        groups = mkGroups(GROUP_SINGLE, GROUP_GROUND | GROUP_MULTI);
+      const isSingle = isDynamicLike && n === 1;
+      if (opts.mode === 'noSinglePairs') {
+        if (isSingle) {
+          memberships = GROUP_SINGLE;
+          filters = GROUP_GROUND | GROUP_MULTI;
+        } else {
+          memberships = GROUP_MULTI;
+          filters = GROUP_GROUND | GROUP_MULTI | GROUP_SINGLE;
+        }
       } else {
-        groups = mkGroups(GROUP_MULTI, GROUP_GROUND | GROUP_MULTI | GROUP_SINGLE);
+        if (isSingle) {
+          memberships = GROUP_SINGLE;
+          filters = GROUP_GROUND;
+        } else {
+          memberships = GROUP_MULTI;
+          filters = GROUP_GROUND | GROUP_MULTI;
+        }
       }
     }
+  } else if (opts.mode === 'singleNone') {
+    const isDynamicLike = body.isDynamic() || body.isKinematic();
+    const isSingle = isDynamicLike && n === 1;
+    if (isSingle) {
+      memberships = 0;
+      filters = 0;
+    } else if (body.handle === opts.groundBodyHandle) {
+      memberships = GROUP_GROUND;
+      filters = GROUP_GROUND | GROUP_SINGLE | GROUP_MULTI;
+    }
   }
+
+  const groups = mkGroups(memberships, filters);
   for (let i = 0; i < n; i += 1) {
     try {
       const col = body.collider(i);

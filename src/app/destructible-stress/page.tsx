@@ -18,6 +18,7 @@ import { debugPrintSolver } from "@/lib/stress/core/printSolver";
 import type {
   CoreProfilerSample,
   DestructibleCore,
+  SingleCollisionMode,
 } from "@/lib/stress/core/types";
 import { buildBeamBridgeScenario } from "@/lib/stress/scenarios/beamBridgeScenario";
 import { buildFracturedGlbScenario } from "@/lib/stress/scenarios/fracturedGlbScenario";
@@ -58,7 +59,7 @@ type SceneProps = {
   physicsWireframe: boolean;
   gravity: number;
   solverGravityEnabled: boolean;
-  limitSinglesCollisions: boolean;
+  singleCollisionMode: SingleCollisionMode;
   skipSingleBodies: boolean;
   damageEnabled: boolean;
   damageClickRatio: number;
@@ -210,7 +211,7 @@ function Scene({
   physicsWireframe,
   gravity,
   solverGravityEnabled,
-  limitSinglesCollisions,
+  singleCollisionMode,
   skipSingleBodies,
   damageEnabled,
   damageClickRatio,
@@ -276,10 +277,12 @@ function Scene({
   useEffect(() => {
     solverGravityRef.current = solverGravityEnabled;
   }, [solverGravityEnabled]);
-  const limitSinglesRef = useRef<boolean>(limitSinglesCollisions);
+  const singleCollisionModeRef = useRef<SingleCollisionMode>(
+    singleCollisionMode,
+  );
   useEffect(() => {
-    limitSinglesRef.current = limitSinglesCollisions;
-  }, [limitSinglesCollisions]);
+    singleCollisionModeRef.current = singleCollisionMode;
+  }, [singleCollisionMode]);
   const isDev = true; //process.env.NODE_ENV !== 'production';
   useEffect(() => {
     physicsWireframeStateRef.current = physicsWireframe;
@@ -419,6 +422,7 @@ function Scene({
         maxResimulationPasses,
         snapshotMode,
         resimulateOnDamageDestroy,
+        singleCollisionMode: singleCollisionModeRef.current,
       });
       if (!mounted) {
         core.dispose();
@@ -441,7 +445,7 @@ function Scene({
         core.setSolverGravityEnabled(solverGravityRef.current);
       } catch {}
       try {
-        core.setLimitSinglesCollisions(limitSinglesRef.current);
+        core.setSingleCollisionMode(singleCollisionModeRef.current);
       } catch {}
 
       const params = scenario.parameters as unknown as
@@ -598,14 +602,14 @@ function Scene({
     } catch {}
   }, [physicsWireframe]);
 
-  // Apply limitSinglesToGround when toggled
+  // Apply single-collision policy when toggled
   useEffect(() => {
     const core = coreRef.current;
     if (!core) return;
     try {
-      core.setLimitSinglesCollisions(limitSinglesCollisions);
+      core.setSingleCollisionMode(singleCollisionMode);
     } catch {}
-  }, [limitSinglesCollisions]);
+  }, [singleCollisionMode]);
 
   // Apply material scale to solver anytime it changes
   useEffect(() => {
@@ -1043,8 +1047,8 @@ function HtmlOverlay({
   setGravity,
   solverGravityEnabled,
   setSolverGravityEnabled,
-  limitSinglesCollisions,
-  setLimitSinglesCollisions,
+  singleCollisionMode,
+  setSingleCollisionMode,
   skipSingleBodies,
   setSkipSingleBodies,
   damageEnabled,
@@ -1137,8 +1141,8 @@ function HtmlOverlay({
   setGravity: (v: number) => void;
   solverGravityEnabled: boolean;
   setSolverGravityEnabled: (v: boolean) => void;
-  limitSinglesCollisions: boolean;
-  setLimitSinglesCollisions: (v: boolean) => void;
+  singleCollisionMode: SingleCollisionMode;
+  setSingleCollisionMode: (v: SingleCollisionMode) => void;
   skipSingleBodies: boolean;
   setSkipSingleBodies: (v: boolean) => void;
   damageEnabled: boolean;
@@ -1521,23 +1525,29 @@ function HtmlOverlay({
         />
         Enable damageable chunks
       </label>
-      <label
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          color: "#d1d5db",
-          fontSize: 14,
-        }}
-      >
-        <input
-          type="checkbox"
-          checked={limitSinglesCollisions}
-          onChange={(e) => setLimitSinglesCollisions(e.target.checked)}
-          style={{ accentColor: "#4da2ff", width: 16, height: 16 }}
-        />
-        Limit singles collisions (no SINGLE↔SINGLE)
-      </label>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        <span style={{ color: "#d1d5db", fontSize: 14 }}>
+          Single collision mode
+        </span>
+        <select
+          value={singleCollisionMode}
+          onChange={(e) =>
+            setSingleCollisionMode(e.target.value as SingleCollisionMode)
+          }
+          style={{
+            background: "#111",
+            color: "#eee",
+            border: "1px solid #333",
+            borderRadius: 6,
+            padding: "8px 10px",
+          }}
+        >
+          <option value="all">All collisions allowed</option>
+          <option value="noSinglePairs">Block single ↔ single</option>
+          <option value="singleGround">Singles vs ground only</option>
+          <option value="singleNone">Singles have no collisions</option>
+        </select>
+      </div>
       <label
         style={{
           display: "flex",
@@ -2247,7 +2257,8 @@ export default function Page() {
   const [gravity, setGravity] = useState(-9.81);
   const [solverGravityEnabled, setSolverGravityEnabled] = useState(true);
   const [adaptiveDt, setAdaptiveDt] = useState(true);
-  const [limitSinglesCollisions, setLimitSinglesCollisions] = useState(false);
+  const [singleCollisionMode, setSingleCollisionMode] =
+    useState<SingleCollisionMode>("all");
   const [skipSingleBodies, setSkipSingleBodies] = useState(false);
   const [damageEnabled, setDamageEnabled] = useState(true);
   const [iteration, setIteration] = useState(0);
@@ -2305,7 +2316,7 @@ export default function Page() {
       gravity,
       solverGravityEnabled,
       adaptiveDt,
-      limitSinglesCollisions,
+      singleCollisionMode,
       skipSingleBodies,
       damageEnabled,
       damageClickRatio,
@@ -2346,7 +2357,7 @@ export default function Page() {
       gravity,
       solverGravityEnabled,
       adaptiveDt,
-      limitSinglesCollisions,
+      singleCollisionMode,
       skipSingleBodies,
       damageEnabled,
       damageClickRatio,
@@ -2446,8 +2457,8 @@ export default function Page() {
         setGravity={setGravity}
         solverGravityEnabled={solverGravityEnabled}
         setSolverGravityEnabled={setSolverGravityEnabled}
-        limitSinglesCollisions={limitSinglesCollisions}
-        setLimitSinglesCollisions={setLimitSinglesCollisions}
+        singleCollisionMode={singleCollisionMode}
+        setSingleCollisionMode={setSingleCollisionMode}
         skipSingleBodies={skipSingleBodies}
         setSkipSingleBodies={setSkipSingleBodies}
         damageClickRatio={damageClickRatio}
@@ -2539,8 +2550,8 @@ export default function Page() {
           physicsWireframe={physicsWireframe}
           gravity={gravity}
           solverGravityEnabled={solverGravityEnabled}
-          limitSinglesCollisions={limitSinglesCollisions}
-        skipSingleBodies={skipSingleBodies}
+          singleCollisionMode={singleCollisionMode}
+          skipSingleBodies={skipSingleBodies}
           iteration={iteration}
           structureId={structureId}
           mode={mode}
@@ -2565,7 +2576,7 @@ export default function Page() {
           resimulateOnFracture={resimulateOnFracture}
           maxResimulationPasses={maxResimulationPasses}
           snapshotMode={snapshotMode}
-        resimulateOnDamageDestroy={resimulateOnDamageDestroy}
+          resimulateOnDamageDestroy={resimulateOnDamageDestroy}
           wallSpan={wallSpan}
           wallHeight={wallHeight}
           wallThickness={wallThickness}
@@ -2580,7 +2591,7 @@ export default function Page() {
           onReset={() => setIteration((v) => v + 1)}
           bodyCountRef={rigidBodyCountRef}
           activeBodyCountRef={activeRigidBodyCountRef}
-        adaptiveDt={adaptiveDt}
+          adaptiveDt={adaptiveDt}
           profiling={profilingControls}
         />
         <StatsGl className="absolute top-2 left-2" />

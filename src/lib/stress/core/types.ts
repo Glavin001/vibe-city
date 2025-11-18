@@ -3,6 +3,12 @@ import type { ColliderDesc } from '@dimforge/rapier3d-compat';
 import type { ExtStressSolver, StressRuntime } from 'blast-stress-solver';
 export type Vec3 = { x: number; y: number; z: number };
 
+export type SingleCollisionMode =
+  | 'all'
+  | 'noSinglePairs'
+  | 'singleGround'
+  | 'singleNone';
+
 // Builder that returns a Rapier collider descriptor for a node.
 // Static Rapier import is required by callers; this type reuses Rapier's own types.
 export type ColliderDescBuilder = () => ColliderDesc | null;
@@ -143,7 +149,7 @@ export type DestructibleCore = {
   stepSafe: (dtOverride?: number) => void;
   setGravity: (g: number) => void;
   setSolverGravityEnabled: (v: boolean) => void;
-  setLimitSinglesCollisions: (v: boolean) => void;
+  setSingleCollisionMode: (mode: SingleCollisionMode) => void;
   getRigidBodyCount: () => number;
   getSolverDebugLines: () => Array<{ p0: Vec3; p1: Vec3; color0: number; color1: number }>;
   // Bond interaction helpers
