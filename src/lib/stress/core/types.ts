@@ -134,12 +134,19 @@ export type CoreProfilerSample = {
   passes: CoreProfilerPass[];
   // Extended stats (optional)
   splitChildCounts?: number[];
+  splitPlannerMs?: number;
   bodyCount?: number;
   bodyColliderCountMin?: number | null;
   bodyColliderCountMax?: number | null;
   bodyColliderCountAvg?: number | null;
   bodyColliderCountMedian?: number | null;
   bodyColliderCountP95?: number | null;
+};
+
+export type SplitChild = {
+  actorIndex: number;
+  nodes: number[];
+  isSupport: boolean;
 };
 
 export type CoreProfilerConfig = {

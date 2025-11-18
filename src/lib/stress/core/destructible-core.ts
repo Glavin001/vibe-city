@@ -14,6 +14,7 @@ import type {
   SingleCollisionMode,
 } from './types';
 import { DestructibleDamageSystem, type DamageOptions, type DamageStateSnapshot } from './damage';
+import { planSplitMigration, type PlannerChild } from './splitMigrator';
 
 type BuildCoreOptions = {
   scenario: ScenarioDesc;
@@ -1297,6 +1298,7 @@ export async function buildDestructibleCore({
       const children = Array.isArray(evt?.children) ? evt.children : [];
       const parentEntry = actorMap.get(parentActorIndex);
       const parentBodyHandle = parentEntry?.bodyHandle ?? rootBody.handle;
+      const plannerChildren: PlannerChild[] = [];
       for (const child of children) {
         const nodes = Array.isArray(child.nodes) ? child.nodes.slice() : [];
         if (nodes.length === 0) continue;
@@ -1320,20 +1322,60 @@ export async function buildDestructibleCore({
           }
           continue;
         }
-        // Update ownership: all nodes listed now belong to this child actor
         for (const n of nodes) nodeToActor.set(n, child.actorIndex);
-        if (child.actorIndex === parentActorIndex) {
-          // If the parent portion no longer contains supports, migrate it to a NEW dynamic body.
-          if (!isActorSupport) {
-            pendingBodiesToCreate.push({ actorIndex: child.actorIndex, inheritFromBodyHandle: parentBodyHandle, nodes: nodes.slice(), isSupport: false });
-          }
-          actorMap.set(child.actorIndex, { bodyHandle: parentBodyHandle });
-          console.log('queueSplitResults(parent)', child.actorIndex, parentBodyHandle, isActorSupport);
-          continue;
-        }
+        const index = plannerChildren.length;
+        plannerChildren.push({
+          index,
+          actorIndex: child.actorIndex,
+          nodes,
+          isSupport: isActorSupport,
+        });
+      }
+      if (plannerChildren.length === 0) continue;
 
-        pendingBodiesToCreate.push({ actorIndex: child.actorIndex, inheritFromBodyHandle: parentBodyHandle, nodes: nodes.slice(), isSupport: isActorSupport });
-        actorMap.set(child.actorIndex, { bodyHandle: parentBodyHandle });
+      const parentNodes =
+        nodesByBodyHandle.get(parentBodyHandle) ?? new Set<number>();
+      const parentRigidBody = world.getRigidBody(parentBodyHandle);
+      const parentIsFixed = !!parentRigidBody?.isFixed?.();
+      let plannerDuration = 0;
+      const plan = planSplitMigration(
+        [
+          {
+            handle: parentBodyHandle,
+            nodeIndices: parentNodes,
+            isFixed: parentIsFixed,
+          },
+        ],
+        plannerChildren,
+        {
+          onDuration: (ms) => {
+            plannerDuration += ms;
+          },
+        },
+      );
+      if (activeProfilerSample) {
+        activeProfilerSample.splitPlannerMs =
+          (activeProfilerSample.splitPlannerMs ?? 0) + plannerDuration;
+      }
+
+      const reusedChildren = new Set<number>();
+      for (const reuse of plan.reuse) {
+        const entry = plannerChildren[reuse.childIndex];
+        if (!entry) continue;
+        actorMap.set(entry.actorIndex, { bodyHandle: reuse.bodyHandle });
+        reusedChildren.add(entry.index);
+      }
+
+      for (const create of plan.create) {
+        const entry = plannerChildren[create.childIndex];
+        if (!entry) continue;
+        pendingBodiesToCreate.push({
+          actorIndex: entry.actorIndex,
+          inheritFromBodyHandle: parentBodyHandle,
+          nodes: entry.nodes.slice(),
+          isSupport: entry.isSupport,
+        });
+        actorMap.set(entry.actorIndex, { bodyHandle: parentBodyHandle });
       }
     }
     stopTiming(timerStart, 'splitQueueMs');

@@ -275,6 +275,19 @@ async function main() {
       );
       console.log("");
     }
+    const plannerStats = summarize(samples, "splitPlannerMs");
+    if (plannerStats.count > 0) {
+      console.log(
+        "Split planner time: avg " +
+          formatNumber(plannerStats.average) +
+          " ms · p95 " +
+          formatNumber(plannerStats.p95) +
+          " ms · max " +
+          formatNumber(plannerStats.max) +
+          " ms",
+      );
+      console.log("");
+    }
 
     console.log("Resimulation reasons:");
     const reasonCounts = samples.reduce((acc, sample) => {
