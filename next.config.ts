@@ -4,6 +4,7 @@ const CopyWebpackPlugin = require('copy-webpack-plugin')
 
 const nextConfig: NextConfig = {
   /* config options here */
+  reactStrictMode: false, // Workaround to fix GPU tracking issues with React Three Fiber
   transpilePackages: ['three'],
   webpack: (config) => {
     config.resolve = config.resolve || {};

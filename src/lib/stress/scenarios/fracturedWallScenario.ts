@@ -1,7 +1,16 @@
-import * as THREE from 'three';
-import RAPIER from '@dimforge/rapier3d-compat';
-import { FractureOptions, fracture } from '@dgreenheck/three-pinata';
-import type { ScenarioDesc, Vec3, ColliderDescBuilder } from '@/lib/stress/core/types';
+import { FractureOptions, fracture } from "@dgreenheck/three-pinata";
+import RAPIER from "@dimforge/rapier3d-compat";
+import * as THREE from "three";
+import {
+  type AutoBondChunkInput,
+  type AutoBondingRequest,
+  generateAutoBondsFromChunks,
+} from "@/lib/stress/core/autoBonding";
+import type {
+  ColliderDescBuilder,
+  ScenarioDesc,
+  Vec3,
+} from "@/lib/stress/core/types";
 
 type FracturedWallOptions = {
   span?: number; // X
@@ -9,6 +18,7 @@ type FracturedWallOptions = {
   thickness?: number; // Z
   fragmentCount?: number;
   deckMass?: number;
+  autoBonding?: AutoBondingRequest;
 };
 
 type FragmentInfo = {
@@ -18,7 +28,19 @@ type FragmentInfo = {
   isSupport: boolean;
 };
 
-function buildFragments({ span, height, thickness, fragmentCount }: Required<Omit<FracturedWallOptions, 'deckMass'>>): FragmentInfo[] {
+type FragmentBuildOptions = Required<
+  Pick<
+    FracturedWallOptions,
+    "span" | "height" | "thickness" | "fragmentCount"
+  >
+>;
+
+function buildFragments({
+  span,
+  height,
+  thickness,
+  fragmentCount,
+}: FragmentBuildOptions): FragmentInfo[] {
   const geom = new THREE.BoxGeometry(span, height, thickness, 2, 3, 1);
   const opts = new FractureOptions();
   opts.fragmentCount = fragmentCount;
@@ -43,10 +65,18 @@ function buildFragments({ span, height, thickness, fragmentCount }: Required<Omi
     g.translate(-localCenter.x, -localCenter.y, -localCenter.z);
     const size = new THREE.Vector3();
     bbox.getSize(size);
-    const worldPosition = new THREE.Vector3(center.x + localCenter.x, center.y + localCenter.y, center.z + localCenter.z);
+    const worldPosition = new THREE.Vector3(
+      center.x + localCenter.x,
+      center.y + localCenter.y,
+      center.z + localCenter.z,
+    );
     return {
       worldPosition,
-      halfExtents: new THREE.Vector3(Math.max(0.05, size.x * 0.5), Math.max(0.05, size.y * 0.5), Math.max(0.05, size.z * 0.5)),
+      halfExtents: new THREE.Vector3(
+        Math.max(0.05, size.x * 0.5),
+        Math.max(0.05, size.y * 0.5),
+        Math.max(0.05, size.z * 0.5),
+      ),
       geometry: g,
       isSupport: false,
     };
@@ -63,7 +93,11 @@ function buildFragments({ span, height, thickness, fragmentCount }: Required<Omi
     const worldPosition = new THREE.Vector3(cx, cy, cz);
     fragments.push({
       worldPosition,
-      halfExtents: new THREE.Vector3(cellW * 0.5, foundationHeight * 0.5, thickness * 0.5),
+      halfExtents: new THREE.Vector3(
+        cellW * 0.5,
+        foundationHeight * 0.5,
+        thickness * 0.5,
+      ),
       geometry: g,
       isSupport: true,
     });
@@ -71,8 +105,12 @@ function buildFragments({ span, height, thickness, fragmentCount }: Required<Omi
   return fragments;
 }
 
-function projectExtentsOnAxisWorld(geometry: THREE.BufferGeometry, worldPos: THREE.Vector3, axis: THREE.Vector3): { min: number; max: number } {
-  const pos = geometry.getAttribute('position') as THREE.BufferAttribute;
+function projectExtentsOnAxisWorld(
+  geometry: THREE.BufferGeometry,
+  worldPos: THREE.Vector3,
+  axis: THREE.Vector3,
+): { min: number; max: number } {
+  const pos = geometry.getAttribute("position") as THREE.BufferAttribute;
   const ax = axis;
   let min = Infinity;
   let max = -Infinity;
@@ -87,16 +125,31 @@ function projectExtentsOnAxisWorld(geometry: THREE.BufferGeometry, worldPos: THR
   return { min, max };
 }
 
-function overlap1D(a: { min: number; max: number }, b: { min: number; max: number }) {
+function overlap1D(
+  a: { min: number; max: number },
+  b: { min: number; max: number },
+) {
   return Math.max(0, Math.min(a.max, b.max) - Math.max(a.min, b.min));
 }
 
-function computeBondsFromFragments(fragments: FragmentInfo[]): Array<{ a: number; b: number; centroid: Vec3; normal: Vec3; area: number }> {
-  const bonds: Array<{ a: number; b: number; centroid: Vec3; normal: Vec3; area: number }> = [];
+function computeBondsFromFragments(
+  fragments: FragmentInfo[],
+): Array<{ a: number; b: number; centroid: Vec3; normal: Vec3; area: number }> {
+  const bonds: Array<{
+    a: number;
+    b: number;
+    centroid: Vec3;
+    normal: Vec3;
+    area: number;
+  }> = [];
   if (fragments.length === 0) return bonds;
 
   // Global tolerance baseline; refined per-pair below
-  const globalTol = 0.12 * Math.min(...fragments.map((f) => Math.min(f.halfExtents.x, f.halfExtents.z)));
+  const globalTol =
+    0.12 *
+    Math.min(
+      ...fragments.map((f) => Math.min(f.halfExtents.x, f.halfExtents.z)),
+    );
 
   for (let i = 0; i < fragments.length; i += 1) {
     for (let j = i + 1; j < fragments.length; j += 1) {
@@ -107,7 +160,12 @@ function computeBondsFromFragments(fragments: FragmentInfo[]): Array<{ a: number
       if (A.isSupport && B.isSupport) continue;
 
       const n = B.worldPosition.clone().sub(A.worldPosition).normalize();
-      if (!Number.isFinite(n.x) || !Number.isFinite(n.y) || !Number.isFinite(n.z)) continue;
+      if (
+        !Number.isFinite(n.x) ||
+        !Number.isFinite(n.y) ||
+        !Number.isFinite(n.z)
+      )
+        continue;
 
       // Require small separation along the normal direction (nearly touching)
       const aN = projectExtentsOnAxisWorld(A.geometry, A.worldPosition, n);
@@ -115,7 +173,10 @@ function computeBondsFromFragments(fragments: FragmentInfo[]): Array<{ a: number
       const separation = bN.min - aN.max; // positive if B is in +n direction away from A
 
       // Use two tangents for overlap area test
-      const up = Math.abs(n.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
+      const up =
+        Math.abs(n.y) < 0.9
+          ? new THREE.Vector3(0, 1, 0)
+          : new THREE.Vector3(1, 0, 0);
       const t1 = new THREE.Vector3().crossVectors(n, up).normalize();
       const t2 = new THREE.Vector3().crossVectors(n, t1).normalize();
 
@@ -161,14 +222,26 @@ function computeBondsFromFragments(fragments: FragmentInfo[]): Array<{ a: number
 }
 
 function normalizeFractureAreasByAxis(
-  list: Array<{ a?: number; b?: number; centroid: Vec3; normal: Vec3; area: number }>,
-  dims: { span: number; height: number; thickness: number }
+  list: Array<{
+    a?: number;
+    b?: number;
+    centroid: Vec3;
+    normal: Vec3;
+    area: number;
+  }>,
+  dims: { span: number; height: number; thickness: number },
 ) {
-  const target = { x: dims.height * dims.thickness, y: dims.span * dims.thickness, z: dims.span * dims.height };
+  const target = {
+    x: dims.height * dims.thickness,
+    y: dims.span * dims.thickness,
+    z: dims.span * dims.height,
+  };
   const sum = { x: 0, y: 0, z: 0 };
-  const pick = (n: Vec3): 'x' | 'y' | 'z' => {
-    const ax = Math.abs(n.x), ay = Math.abs(n.y), az = Math.abs(n.z);
-    return ax >= ay && ax >= az ? 'x' : (ay >= az ? 'y' : 'z');
+  const pick = (n: Vec3): "x" | "y" | "z" => {
+    const ax = Math.abs(n.x),
+      ay = Math.abs(n.y),
+      az = Math.abs(n.z);
+    return ax >= ay && ax >= az ? "x" : ay >= az ? "y" : "z";
   };
   for (const b of list) sum[pick(b.normal)] += b.area;
   const scale = {
@@ -183,17 +256,18 @@ function normalizeFractureAreasByAxis(
   });
 }
 
-export function buildFracturedWallScenario({
+export async function buildFracturedWallScenario({
   span = 6.0,
   height = 3.0,
   thickness = 0.32,
   fragmentCount = 120,
   deckMass = 10_000,
-}: FracturedWallOptions = {}): ScenarioDesc {
+  autoBonding,
+}: FracturedWallOptions = {}): Promise<ScenarioDesc> {
   const frags = buildFragments({ span, height, thickness, fragmentCount });
 
   // Approximate per-fragment volume via bbox; supports (mass=0) if bottom touches ground
-  const nodes: ScenarioDesc['nodes'] = [];
+  const nodes: ScenarioDesc["nodes"] = [];
   const fragmentSizes: Vec3[] = [];
   const fragmentGeometries: THREE.BufferGeometry[] = [];
   const colliderDescForNode: (ColliderDescBuilder | null)[] = [];
@@ -211,15 +285,26 @@ export function buildFracturedWallScenario({
     const mass = isSupport ? 0 : volume; // scale later for non-supports
     if (!isSupport) totalVolume += volume;
 
-    nodes.push({ centroid: { x: f.worldPosition.x, y: f.worldPosition.y, z: f.worldPosition.z }, mass, volume });
+    nodes.push({
+      centroid: {
+        x: f.worldPosition.x,
+        y: f.worldPosition.y,
+        z: f.worldPosition.z,
+      },
+      mass,
+      volume,
+    });
     fragmentSizes.push(size);
     fragmentGeometries.push(f.geometry);
 
     if (isSupport) {
       colliderDescForNode[i] = () => RAPIER.ColliderDesc.cuboid(hx, hy, hz);
     } else {
-      const pos = f.geometry.getAttribute('position') as THREE.BufferAttribute;
-      const points = pos?.array instanceof Float32Array ? pos.array : new Float32Array((pos?.array ?? []) as ArrayLike<number>);
+      const pos = f.geometry.getAttribute("position") as THREE.BufferAttribute;
+      const points =
+        pos?.array instanceof Float32Array
+          ? pos.array
+          : new Float32Array((pos?.array ?? []) as ArrayLike<number>);
       colliderDescForNode[i] = () => RAPIER.ColliderDesc.convexHull(points);
     }
   });
@@ -238,9 +323,13 @@ export function buildFracturedWallScenario({
     for (const n of nodes) n.mass = 0;
   }
 
-  const rawBonds = computeBondsFromFragments(frags);
-  const normBonds = normalizeFractureAreasByAxis(rawBonds, { span, height, thickness });
-  const bonds: ScenarioDesc["bonds"] = normBonds.map((b) => ({
+  const legacyRawBonds = computeBondsFromFragments(frags);
+  const legacyNormBonds = normalizeFractureAreasByAxis(legacyRawBonds, {
+    span,
+    height,
+    thickness,
+  });
+  const legacyBonds: ScenarioDesc["bonds"] = legacyNormBonds.map((b) => ({
     node0: (b as { a: number }).a,
     node1: (b as { b: number }).b,
     centroid: b.centroid,
@@ -248,9 +337,29 @@ export function buildFracturedWallScenario({
     area: Math.max(b.area, 1e-8),
   }));
 
+  let resolvedBonds = legacyBonds;
+  if (autoBonding?.enabled) {
+    const autoBondChunks: AutoBondChunkInput[] = frags.map((frag) => ({
+      geometry: frag.geometry,
+      isSupport: frag.isSupport,
+      matrix: new THREE.Matrix4().makeTranslation(
+        frag.worldPosition.x,
+        frag.worldPosition.y,
+        frag.worldPosition.z,
+      ),
+    }));
+    const autoBonds = await generateAutoBondsFromChunks(autoBondChunks, {
+      ...autoBonding,
+      label: "FracturedWall",
+    });
+    if (autoBonds?.length) {
+      resolvedBonds = autoBonds;
+    }
+  }
+
   return {
     nodes,
-    bonds,
+    bonds: resolvedBonds,
     parameters: {
       fragmentSizes,
       fragmentGeometries,
@@ -262,5 +371,3 @@ export function buildFracturedWallScenario({
     colliderDescForNode,
   } satisfies ScenarioDesc;
 }
-
-

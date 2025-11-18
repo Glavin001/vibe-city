@@ -3,6 +3,12 @@ import type { ColliderDesc } from '@dimforge/rapier3d-compat';
 import type { ExtStressSolver, StressRuntime } from 'blast-stress-solver';
 export type Vec3 = { x: number; y: number; z: number };
 
+export type SingleCollisionMode =
+  | 'all'
+  | 'noSinglePairs'
+  | 'singleGround'
+  | 'singleNone';
+
 // Builder that returns a Rapier collider descriptor for a node.
 // Static Rapier import is required by callers; this type reuses Rapier's own types.
 export type ColliderDescBuilder = () => ColliderDesc | null;
@@ -42,6 +48,11 @@ export type ChunkData = {
   bodyHandle: number | null;
   active: boolean;
   detached: boolean;
+  // Damage/health tracking for damageable chunks feature
+  maxHealth?: number;
+  health?: number;
+  pendingDamage?: number;
+  destroyed?: boolean;
   baseWorldPosition?: Vec3;
 };
 
@@ -58,6 +69,14 @@ export type ProjectileSpawn = {
   restitution: number;
 };
 
+export type ProjectileState = {
+  bodyHandle: number;
+  radius: number;
+  type: 'ball' | 'box';
+  spawnTime: number;
+  mesh?: unknown;
+};
+
 export type BondRef = {
   index: number;
   node0: number;
@@ -65,6 +84,74 @@ export type BondRef = {
   area: number;
   centroid: Vec3;
   normal: Vec3;
+};
+
+export type CoreProfilerPass = {
+  durationMs: number;
+  type: 'initial' | 'resim';
+  reasons: string[];
+};
+
+export type CoreProfilerSample = {
+  frameIndex: number;
+  timestamp: number;
+  dt: number;
+  rapierStepMs: number;
+  contactDrainMs: number;
+  solverUpdateMs: number;
+  damageReplayMs: number;
+  damagePreviewMs: number;
+  damageTickMs: number;
+  fractureMs: number;
+  fractureGenerateMs: number;
+  fractureApplyMs: number;
+  splitQueueMs: number;
+  bodyCreateMs: number;
+  colliderRebuildMs: number;
+  cleanupDisabledMs: number;
+  spawnMs: number;
+  externalForceMs: number;
+  damageSnapshotMs: number;
+  damageRestoreMs: number;
+  damagePreDestroyMs: number;
+  damageFlushMs: number;
+  preStepSweepMs: number;
+  rebuildColliderMapMs: number;
+  projectileCleanupMs: number;
+  initialPassMs: number;
+  resimMs: number;
+  totalMs: number;
+  resimPasses: number;
+  resimReasons: string[];
+  snapshotBytes: number;
+  snapshotCaptureMs: number;
+  snapshotRestoreMs: number;
+  bufferedExternalContacts: number;
+  bufferedInternalContacts: number;
+  pendingExternalForces: number;
+  projectiles: number;
+  rigidBodies: number;
+  passes: CoreProfilerPass[];
+  // Extended stats (optional)
+  splitChildCounts?: number[];
+  splitPlannerMs?: number;
+  bodyCount?: number;
+  bodyColliderCountMin?: number | null;
+  bodyColliderCountMax?: number | null;
+  bodyColliderCountAvg?: number | null;
+  bodyColliderCountMedian?: number | null;
+  bodyColliderCountP95?: number | null;
+};
+
+export type SplitChild = {
+  actorIndex: number;
+  nodes: number[];
+  isSupport: boolean;
+};
+
+export type CoreProfilerConfig = {
+  enabled: boolean;
+  onSample?: (sample: CoreProfilerSample) => void;
 };
 
 export type DestructibleCore = {
@@ -79,14 +166,21 @@ export type DestructibleCore = {
   colliderToNode: Map<number, number>;
   actorMap: Map<number, { bodyHandle: number }>;
   // Internal step control handled by core
-  step: () => void;
-  projectiles: Array<{ bodyHandle: number; radius: number; type: 'ball'|'box'; mesh?: unknown }>;
+  step: (dtOverride?: number) => void;
+  projectiles: Array<{
+    bodyHandle: number;
+    radius: number;
+    type: 'ball' | 'box';
+    mesh?: unknown;
+    spawnTime: number;
+  }>;
   enqueueProjectile: (s: ProjectileSpawn) => void;
-  stepEventful: () => void;
-  stepSafe: () => void;
+  stepEventful: (dtOverride?: number) => void;
+  stepSafe: (dtOverride?: number) => void;
   setGravity: (g: number) => void;
   setSolverGravityEnabled: (v: boolean) => void;
-  setLimitSinglesCollisions: (v: boolean) => void;
+  setSingleCollisionMode: (mode: SingleCollisionMode) => void;
+  getRigidBodyCount: () => number;
   getSolverDebugLines: () => Array<{ p0: Vec3; p1: Vec3; color0: number; color1: number }>;
   // Bond interaction helpers
   getNodeBonds: (nodeIndex: number) => BondRef[];
@@ -94,7 +188,13 @@ export type DestructibleCore = {
   cutNodeBonds: (nodeIndex: number) => boolean;
   // External force application (non-contact force injection)
   applyExternalForce: (nodeIndex: number, worldPoint: Vec3, worldForce: Vec3) => void;
+  // Damageable chunks API (present when damage is enabled)
+  applyNodeDamage?: (nodeIndex: number, amount: number, reason?: string) => void;
+  getNodeHealth?: (nodeIndex: number) => { health: number; maxHealth: number; destroyed: boolean } | null;
+  damageEnabled?: boolean;
   dispose: () => void;
+  setProfiler: (config: CoreProfilerConfig | null) => void;
+  recordProjectileCleanupDuration?: (durationMs: number) => void;
 };
 
 
