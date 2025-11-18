@@ -42,6 +42,7 @@ import {
   updateChunkMeshes,
   updateProjectileMeshes,
 } from "@/lib/stress/three/destructible-adapter";
+import { Perf as R3FPerf } from 'r3f-perf'
 
 function Ground() {
   return (
@@ -2713,7 +2714,11 @@ export default function Page() {
           adaptiveDt={adaptiveDt}
           profiling={profilingControls}
         />
-        <StatsGl className="absolute top-2 left-2" />
+        <R3FPerf
+          // matrixUpdate deepAnalyze overClock
+          position="top-left"
+        />
+        {/* <StatsGl className="absolute top-2 left-2" trackGPU={true} horizontal={true} /> */}
       </Canvas>
     </div>
   );
