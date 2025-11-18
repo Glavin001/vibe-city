@@ -44,6 +44,14 @@ const perfNow =
     : () => Date.now();
 
 type MutableCoreProfilerSample = CoreProfilerSample & { finalized?: boolean };
+type NumericProfilerField = Exclude<
+  {
+    [K in keyof MutableCoreProfilerSample]: MutableCoreProfilerSample[K] extends number
+      ? K
+      : never;
+  }[keyof MutableCoreProfilerSample],
+  undefined
+>;
 
 const clonePasses = (passes: CoreProfilerPass[]) =>
   passes.map((pass) => ({
@@ -126,13 +134,17 @@ export async function buildDestructibleCore({
 
   let activeProfilerSample: MutableCoreProfilerSample | null = null;
   const startTiming = () => (activeProfilerSample ? perfNow() : null);
-  const stopTiming = (start: number | null, field: keyof MutableCoreProfilerSample) => {
+  const stopTiming = (start: number | null, field: NumericProfilerField) => {
     if (!activeProfilerSample || start == null) return;
-    activeProfilerSample[field] += Math.max(0, perfNow() - start);
+    const sample = activeProfilerSample as MutableCoreProfilerSample &
+      Record<NumericProfilerField, number>;
+    sample[field] += Math.max(0, perfNow() - start);
   };
-  const addDuration = (field: keyof MutableCoreProfilerSample, durationMs: number) => {
+  const addDuration = (field: NumericProfilerField, durationMs: number) => {
     if (!activeProfilerSample || !(durationMs > 0)) return;
-    activeProfilerSample[field] += durationMs;
+    const sample = activeProfilerSample as MutableCoreProfilerSample &
+      Record<NumericProfilerField, number>;
+    sample[field] += durationMs;
   };
   const profiledGenerateFractureCommands = (): ReturnType<typeof solver.generateFractureCommandsPerActor> => {
     const timerStart = startTiming();
@@ -140,13 +152,14 @@ export async function buildDestructibleCore({
     stopTiming(timerStart, 'fractureGenerateMs');
     return perActor;
   };
-  const profiledApplyFractureCommands = <T,>(
-    commands: T,
+  type FractureCommands = Parameters<typeof solver.applyFractureCommands>[0];
+  const profiledApplyFractureCommands = (
+    commands: FractureCommands,
   ): ReturnType<typeof solver.applyFractureCommands> => {
     const timerStart = startTiming();
-    const result = solver.applyFractureCommands(commands as unknown);
+    const result = solver.applyFractureCommands(commands);
     stopTiming(timerStart, 'fractureApplyMs');
-    return result as ReturnType<typeof solver.applyFractureCommands>;
+    return result;
   };
   const recordProjectileCleanupDurationInternal = (durationMs: number) => {
     addDuration('projectileCleanupMs', durationMs);

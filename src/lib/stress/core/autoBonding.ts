@@ -45,13 +45,18 @@ export async function generateAutoBondsFromChunks(
       mode: options?.mode ?? DEFAULT_MODE,
       maxSeparation: options?.maxSeparation,
     });
-    return bondDescs.map((bond) => ({
-      node0: bond.node0,
-      node1: bond.node1,
-      centroid: bond.centroid,
-      normal: bond.normal,
-      area: Math.max(bond.area ?? MIN_AREA, MIN_AREA),
-    }));
+    const bonds: ScenarioBond[] = [];
+    for (const bond of bondDescs) {
+      if (!bond.centroid || !bond.normal) continue;
+      bonds.push({
+        node0: bond.node0,
+        node1: bond.node1,
+        centroid: bond.centroid,
+        normal: bond.normal,
+        area: Math.max(bond.area ?? MIN_AREA, MIN_AREA),
+      });
+    }
+    return bonds;
   } catch (error) {
     const label = options?.label ?? "AutoBonding";
     console.error(`[${label}] Failed to generate bonds`, error);

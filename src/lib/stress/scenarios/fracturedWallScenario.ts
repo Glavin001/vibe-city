@@ -28,12 +28,19 @@ type FragmentInfo = {
   isSupport: boolean;
 };
 
+type FragmentBuildOptions = Required<
+  Pick<
+    FracturedWallOptions,
+    "span" | "height" | "thickness" | "fragmentCount"
+  >
+>;
+
 function buildFragments({
   span,
   height,
   thickness,
   fragmentCount,
-}: Required<Omit<FracturedWallOptions, "deckMass">>): FragmentInfo[] {
+}: FragmentBuildOptions): FragmentInfo[] {
   const geom = new THREE.BoxGeometry(span, height, thickness, 2, 3, 1);
   const opts = new FractureOptions();
   opts.fragmentCount = fragmentCount;
