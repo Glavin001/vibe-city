@@ -139,6 +139,18 @@ const demoCategories: DemoCategory[] = [
         title: "Ragdoll Physics",
         description: "Spawn humanoid ragdolls with Rapier joints. Click to place them on varied terrain; toggle debug and gravity with Leva."
       }
+      ,{
+        href: "/navcat-dynamic-objects",
+        icon: "🧭",
+        title: "Navcat Dynamic Obstacles",
+        description: "Navmesh regeneration demo with Rapier physics cubes acting as moving obstacles for crowd agents."
+      }
+      ,{
+        href: "/navcat-bunker",
+        icon: "🐾",
+        title: "Navcat Bunker Dynamics",
+        description: "Bunker courtyard rebuilt for Navcat crowds with Rapier debris carving live holes into the navmesh."
+      }
     ]
   },
   {
@@ -161,6 +173,13 @@ const demoCategories: DemoCategory[] = [
         icon: "💧",
         title: "Bunker (Fluid HTN + WASM)",
         description: "Advanced HTN planning with WASM performance. Fluid HTN allows dynamic replanning during execution."
+      },
+      {
+        href: "/bunker-htnai",
+        icon: "🧠",
+        title: "Bunker (HTN-AI)",
+        description:
+          "Pure TypeScript HTN planning using htn-ai with the bunker domain. No WASM worker required.",
       },
       {
         href: "/fluid-demo",

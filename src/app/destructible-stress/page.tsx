@@ -2,6 +2,7 @@
 
 import { OrbitControls, StatsGl } from "@react-three/drei";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
+import { Perf as R3FPerf } from "r3f-perf";
 import {
   useCallback,
   useEffect,
@@ -21,6 +22,7 @@ import type {
   SingleCollisionMode,
 } from "@/lib/stress/core/types";
 import { buildBeamBridgeScenario } from "@/lib/stress/scenarios/beamBridgeScenario";
+import { buildBrickWallScenario } from "@/lib/stress/scenarios/brickWallScenario";
 import { buildFracturedGlbScenario } from "@/lib/stress/scenarios/fracturedGlbScenario";
 import { buildFracturedWallScenario } from "@/lib/stress/scenarios/fracturedWallScenario";
 import {
@@ -42,7 +44,6 @@ import {
   updateChunkMeshes,
   updateProjectileMeshes,
 } from "@/lib/stress/three/destructible-adapter";
-import { Perf as R3FPerf } from 'r3f-perf'
 
 function Ground() {
   return (
@@ -148,6 +149,30 @@ const SCENARIO_BUILDERS: Record<StressPresetId, ScenarioBuilder> = {
       bondsX: bondsXEnabled,
       bondsY: bondsYEnabled,
       bondsZ: bondsZEnabled,
+    }),
+  brickWall: ({
+    wallSpan,
+    wallHeight,
+    wallThickness,
+    wallSpanSeg,
+    wallHeightSeg,
+    wallLayers,
+    bondsXEnabled,
+    bondsYEnabled,
+    bondsZEnabled,
+  }) =>
+    buildBrickWallScenario({
+      span: wallSpan,
+      height: wallHeight,
+      thickness: wallThickness,
+      spanBricks: wallSpanSeg,
+      courses: wallHeightSeg,
+      layers: wallLayers,
+      bondsX: bondsXEnabled,
+      bondsY: bondsYEnabled,
+      bondsZ: bondsZEnabled,
+      includeHalfBricks: true,
+      clumpCount: 7,
     }),
   hut: ({ bondsXEnabled, bondsYEnabled, bondsZEnabled }) =>
     buildHutScenario({
@@ -1282,7 +1307,9 @@ function HtmlOverlay({
       ]
     : [];
   const isWallStructure =
-    structureId === "wall" || structureId === "fracturedWall";
+    structureId === "wall" ||
+    structureId === "fracturedWall" ||
+    structureId === "brickWall";
   return (
     <div
       style={{

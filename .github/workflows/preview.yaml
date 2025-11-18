@@ -13,16 +13,30 @@ jobs:
     permissions:
       contents: read
       deployments: write
-    # Create a GitHub Deployment with a "View deployment" button
-    environment:
-      name: preview
-      url: ${{ steps.deploy.outputs.preview_url }}
     env:
       VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Create GitHub deployment
+        id: create_deployment
+        uses: chrnorm/deployment-action@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          environment: preview
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          description: Vercel preview deployment
+
+      - name: Mark deployment in progress
+        if: ${{ steps.create_deployment.outputs.deployment_id }}
+        uses: chrnorm/deployment-status@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          deployment-id: ${{ steps.create_deployment.outputs.deployment_id }}
+          state: in_progress
+          log-url: 'https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}'
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -54,6 +68,34 @@ jobs:
 
       - name: Wait for deployment to be READY
         run: vercel inspect "${{ steps.deploy.outputs.preview_url }}" --wait --token=${{ secrets.VERCEL_TOKEN }}
+
+      - name: Mark deployment successful
+        if: ${{ success() && steps.create_deployment.outputs.deployment_id }}
+        uses: chrnorm/deployment-status@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          deployment-id: ${{ steps.create_deployment.outputs.deployment_id }}
+          state: success
+          environment-url: ${{ steps.deploy.outputs.preview_url }}
+          log-url: 'https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}'
+
+      - name: Mark deployment failed
+        if: ${{ failure() && steps.create_deployment.outputs.deployment_id }}
+        uses: chrnorm/deployment-status@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          deployment-id: ${{ steps.create_deployment.outputs.deployment_id }}
+          state: failure
+          log-url: 'https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}'
+
+      - name: Mark deployment cancelled
+        if: ${{ cancelled() && steps.create_deployment.outputs.deployment_id }}
+        uses: chrnorm/deployment-status@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          deployment-id: ${{ steps.create_deployment.outputs.deployment_id }}
+          state: inactive
+          log-url: 'https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}'
 
 
       # - name: Run tests
