@@ -103,6 +103,21 @@ export type CoreProfilerSample = {
   damagePreviewMs: number;
   damageTickMs: number;
   fractureMs: number;
+  fractureGenerateMs: number;
+  fractureApplyMs: number;
+  splitQueueMs: number;
+  bodyCreateMs: number;
+  colliderRebuildMs: number;
+  cleanupDisabledMs: number;
+  spawnMs: number;
+  externalForceMs: number;
+  damageSnapshotMs: number;
+  damageRestoreMs: number;
+  damagePreDestroyMs: number;
+  damageFlushMs: number;
+  preStepSweepMs: number;
+  rebuildColliderMapMs: number;
+  projectileCleanupMs: number;
   initialPassMs: number;
   resimMs: number;
   totalMs: number;
@@ -164,6 +179,7 @@ export type DestructibleCore = {
   damageEnabled?: boolean;
   dispose: () => void;
   setProfiler: (config: CoreProfilerConfig | null) => void;
+  recordProjectileCleanupDuration?: (durationMs: number) => void;
 };
 
 

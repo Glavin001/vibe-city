@@ -86,6 +86,21 @@ export async function buildDestructibleCore({
     damagePreviewMs: 0,
     damageTickMs: 0,
     fractureMs: 0,
+    fractureGenerateMs: 0,
+    fractureApplyMs: 0,
+    splitQueueMs: 0,
+    bodyCreateMs: 0,
+    colliderRebuildMs: 0,
+    cleanupDisabledMs: 0,
+    spawnMs: 0,
+    externalForceMs: 0,
+    damageSnapshotMs: 0,
+    damageRestoreMs: 0,
+    damagePreDestroyMs: 0,
+    damageFlushMs: 0,
+    preStepSweepMs: 0,
+    rebuildColliderMapMs: 0,
+    projectileCleanupMs: 0,
     initialPassMs: 0,
     resimMs: 0,
     totalMs: 0,
@@ -109,6 +124,32 @@ export async function buildDestructibleCore({
   };
 
   let activeProfilerSample: MutableCoreProfilerSample | null = null;
+  const startTiming = () => (activeProfilerSample ? perfNow() : null);
+  const stopTiming = (start: number | null, field: keyof MutableCoreProfilerSample) => {
+    if (!activeProfilerSample || start == null) return;
+    activeProfilerSample[field] += Math.max(0, perfNow() - start);
+  };
+  const addDuration = (field: keyof MutableCoreProfilerSample, durationMs: number) => {
+    if (!activeProfilerSample || !(durationMs > 0)) return;
+    activeProfilerSample[field] += durationMs;
+  };
+  const profiledGenerateFractureCommands = (): ReturnType<typeof solver.generateFractureCommandsPerActor> => {
+    const timerStart = startTiming();
+    const perActor = solver.generateFractureCommandsPerActor();
+    stopTiming(timerStart, 'fractureGenerateMs');
+    return perActor;
+  };
+  const profiledApplyFractureCommands = <T,>(
+    commands: T,
+  ): ReturnType<typeof solver.applyFractureCommands> => {
+    const timerStart = startTiming();
+    const result = solver.applyFractureCommands(commands as unknown);
+    stopTiming(timerStart, 'fractureApplyMs');
+    return result as ReturnType<typeof solver.applyFractureCommands>;
+  };
+  const recordProjectileCleanupDurationInternal = (durationMs: number) => {
+    addDuration('projectileCleanupMs', durationMs);
+  };
 
   const settings = runtime.defaultExtSettings();
   const scaledSettings = { ...settings };
@@ -503,6 +544,7 @@ export async function buildDestructibleCore({
   function injectPendingExternalForces(): number {
     const count = pendingExternalForces.length;
     if (count === 0) return 0;
+    const timerStart = startTiming();
     const profilerSample = activeProfilerSample;
     try {
       const dt = getDt();
@@ -542,6 +584,7 @@ export async function buildDestructibleCore({
     if (profilerSample) {
       profilerSample.pendingExternalForces = Math.max(profilerSample.pendingExternalForces, count);
     }
+    stopTiming(timerStart, 'externalForceMs');
     return count;
   }
 
@@ -577,6 +620,7 @@ export async function buildDestructibleCore({
 
   // Rebuild the collider → node mapping from current chunk state
   function rebuildColliderToNodeFromChunks() {
+    const timerStart = startTiming();
     let restored = 0;
     for (const seg of chunks) {
       if (seg && seg.colliderHandle != null) {
@@ -587,6 +631,7 @@ export async function buildDestructibleCore({
     if (process.env.NODE_ENV !== 'production') {
       console.warn('[Core] Rebuilt colliderToNode from chunks', { restored, totalChunks: chunks.length });
     }
+    stopTiming(timerStart, 'rebuildColliderMapMs');
   }
 
   function enqueueProjectile(s: ProjectileSpawn) {
@@ -945,9 +990,11 @@ export async function buildDestructibleCore({
             ((fractureResimEnabled || damageResimEnabled) && hasFracture));
         let damageSnapshot: DamageStateSnapshot | null = null;
         if (shouldSnapshotDamage) {
+          const damageSnapshotTimer = startTiming();
           try {
             damageSnapshot = damageSystem.captureImpactState();
           } catch {}
+          stopTiming(damageSnapshotTimer, 'damageSnapshotMs');
         }
         let damagePreviewDestroyed: number[] = [];
         if (damageSystem.isEnabled()) {
@@ -989,8 +1036,8 @@ export async function buildDestructibleCore({
           if (hasFracture) {
             try {
               const fractureStart = profilerSample ? perfNow() : 0;
-              const perActor = solver.generateFractureCommandsPerActor();
-              const splitEvents = solver.applyFractureCommands(
+              const perActor = profiledGenerateFractureCommands();
+              const splitEvents = profiledApplyFractureCommands(
                 perActor,
               );
               if (Array.isArray(splitEvents) && splitEvents.length > 0) {
@@ -1034,8 +1081,8 @@ export async function buildDestructibleCore({
           if (hasFracture) {
             try {
               const fractureStart = profilerSample ? perfNow() : 0;
-              const perActor = solver.generateFractureCommandsPerActor();
-              const splitEvents = solver.applyFractureCommands(
+              const perActor = profiledGenerateFractureCommands();
+              const splitEvents = profiledApplyFractureCommands(
                 perActor,
               ) as Array<{
                 parentActorIndex: number;
@@ -1095,9 +1142,11 @@ export async function buildDestructibleCore({
             }
           }
           if (damageSnapshot) {
+            const damageRestoreTimer = startTiming();
             try {
               damageSystem.restoreImpactState(damageSnapshot);
             } catch {}
+            stopTiming(damageRestoreTimer, 'damageRestoreMs');
           }
         } catch (e) {
           console.error('[Core] rollback failed; proceeding without resim', e);
@@ -1115,14 +1164,14 @@ export async function buildDestructibleCore({
           flushPendingDamageFractures();
           removeDisabledHandles();
           if (hasFracture) {
-            try {
-              const perActor = solver.generateFractureCommandsPerActor();
-              const splitEvents = solver.applyFractureCommands(
-                perActor,
-              ) as Array<{
-                parentActorIndex: number;
-                children: Array<{ actorIndex: number; nodes: number[] }>;
-              }> | undefined;
+        try {
+          const perActor = profiledGenerateFractureCommands();
+          const splitEvents = profiledApplyFractureCommands(
+            perActor,
+          ) as Array<{
+            parentActorIndex: number;
+            children: Array<{ actorIndex: number; nodes: number[] }>;
+          }> | undefined;
               if (Array.isArray(splitEvents) && splitEvents.length > 0) {
                 queueSplitResults(splitEvents);
                 applyPendingMigrations();
@@ -1137,8 +1186,8 @@ export async function buildDestructibleCore({
 
         try {
           const fractureStart = profilerSample ? perfNow() : 0;
-          const perActor = solver.generateFractureCommandsPerActor();
-          const splitEvents = solver.applyFractureCommands(
+          const perActor = profiledGenerateFractureCommands();
+          const splitEvents = profiledApplyFractureCommands(
             perActor,
           ) as Array<{
             parentActorIndex: number;
@@ -1157,7 +1206,9 @@ export async function buildDestructibleCore({
         }
 
         if (preDestroyedNodes.length > 0) {
+          const preDestroyTimer = startTiming();
           damageSystem.applyPreDestruction(preDestroyedNodes);
+          stopTiming(preDestroyTimer, 'damagePreDestroyMs');
           for (const nodeIndex of preDestroyedNodes) {
             const seg = chunks[nodeIndex];
             if (!seg || seg.destroyed) continue;
@@ -1188,6 +1239,7 @@ export async function buildDestructibleCore({
   const stepSafe = step;
 
   function queueSplitResults(splitEvents: Array<{ parentActorIndex:number; children:Array<{ actorIndex:number; nodes:number[] }> }>) {
+    const timerStart = startTiming();
     if (isDev) console.debug('[Core] queueSplitResults', splitEvents?.[0]?.children);
     for (const evt of splitEvents) {
       const parentActorIndex = evt?.parentActorIndex;
@@ -1227,13 +1279,16 @@ export async function buildDestructibleCore({
         actorMap.set(child.actorIndex, { bodyHandle: parentBodyHandle });
       }
     }
+    stopTiming(timerStart, 'splitQueueMs');
   }
 
   function applyPendingSpawns() {
     if (pendingBallSpawns.length === 0) return;
+    const timerStart = startTiming();
     const list = pendingBallSpawns.splice(0, pendingBallSpawns.length);
     // if (process.env.NODE_ENV !== 'production') console.debug('[Core] applyPendingSpawns', { count: list.length });
     for (const s of list) spawnProjectile(s);
+    stopTiming(timerStart, 'spawnMs');
   }
 
   function spawnProjectile(params: ProjectileSpawn) {
@@ -1284,6 +1339,7 @@ export async function buildDestructibleCore({
 
     // Create child bodies
     if (pendingBodiesToCreate.length > 0) {
+      const bodyCreateTimer = startTiming();
       const list = pendingBodiesToCreate.splice(0, pendingBodiesToCreate.length);
       for (const pb of list) {
         const inherit = world.getRigidBody(pb.inheritFromBodyHandle);
@@ -1312,10 +1368,12 @@ export async function buildDestructibleCore({
         actorMap.set(pb.actorIndex, { bodyHandle: body.handle });
         for (const nodeIndex of pb.nodes) pendingColliderMigrations.push({ nodeIndex, targetBodyHandle: body.handle });
       }
+      stopTiming(bodyCreateTimer, 'bodyCreateMs');
     }
 
     // Migrate colliders to new bodies
     if (pendingColliderMigrations.length > 0) {
+      const colliderMigrationTimer = startTiming();
       const jobs = pendingColliderMigrations.splice(0, pendingColliderMigrations.length);
       const createdCountByBody = new Map<number, number>();
       for (const mig of jobs) {
@@ -1368,10 +1426,12 @@ export async function buildDestructibleCore({
         } catch {}
       }
       // Do not proactively remove bodies here; allow existing sweeps to handle
+      stopTiming(colliderMigrationTimer, 'colliderRebuildMs');
     }
   }
 
   function removeDisabledHandles() {
+    const timerStart = startTiming();
     for (const h of Array.from(disabledCollidersToRemove)) {
       const c = world.getCollider(h);
       if (c) world.removeCollider(c, false);
@@ -1385,9 +1445,11 @@ export async function buildDestructibleCore({
       }
       bodiesToRemove.delete(bh);
     }
+    stopTiming(timerStart, 'cleanupDisabledMs');
   }
 
   function preStepSweep() {
+    const timerStart = startTiming();
     // Cull invalid collider → node mappings only when collider truly no longer exists
     for (const [h] of Array.from(colliderToNode.entries())) {
       const c = world.getCollider(h);
@@ -1407,6 +1469,7 @@ export async function buildDestructibleCore({
         }
       } catch {}
     });
+    stopTiming(timerStart, 'preStepSweepMs');
   }
 
   function getSolverDebugLines() {
@@ -1455,7 +1518,7 @@ export async function buildDestructibleCore({
     const fractureSets = [{ actorIndex: actorIndexA, fractures: [{ userdata: bondIndex, nodeIndex0: b.node0, nodeIndex1: b.node1, health: 1e9 }] }];
     let applied = false;
     try {
-      const splitEvents = solver.applyFractureCommands(fractureSets as unknown as Array<{ actorIndex:number; fractures:Array<{ userdata:number; nodeIndex0:number; nodeIndex1:number; health:number }> }>);
+      const splitEvents = profiledApplyFractureCommands(fractureSets as unknown as Array<{ actorIndex:number; fractures:Array<{ userdata:number; nodeIndex0:number; nodeIndex1:number; health:number }> }>);
       removedBondIndices.add(bondIndex);
       if (Array.isArray(splitEvents) && splitEvents.length > 0) {
         queueSplitResults(splitEvents as Array<{ parentActorIndex:number; children:Array<{ actorIndex:number; nodes:number[] }> }>);
@@ -1497,6 +1560,7 @@ export async function buildDestructibleCore({
 
   function flushPendingDamageFractures() {
     if (pendingDamageFractures.size === 0) return;
+    const timerStart = startTiming();
     const fractureSets: Array<{ actorIndex:number; fractures:Array<{ userdata:number; nodeIndex0:number; nodeIndex1:number; health:number }> }> = [];
     for (const [actorIndex, bondSet] of Array.from(pendingDamageFractures.entries())) {
       const fractures: Array<{ userdata:number; nodeIndex0:number; nodeIndex1:number; health:number }> = [];
@@ -1509,9 +1573,12 @@ export async function buildDestructibleCore({
       if (fractures.length > 0) fractureSets.push({ actorIndex, fractures });
     }
     pendingDamageFractures.clear();
-    if (fractureSets.length === 0) return;
+    if (fractureSets.length === 0) {
+      stopTiming(timerStart, 'damageFlushMs');
+      return;
+    }
     try {
-      const splitEvents = solver.applyFractureCommands(fractureSets as Array<{ actorIndex:number; fractures:Array<{ userdata:number; nodeIndex0:number; nodeIndex1:number; health:number }> }>);
+      const splitEvents = profiledApplyFractureCommands(fractureSets as Array<{ actorIndex:number; fractures:Array<{ userdata:number; nodeIndex0:number; nodeIndex1:number; health:number }> }>);
       if (Array.isArray(splitEvents) && splitEvents.length > 0) {
         queueSplitResults(splitEvents as Array<{ parentActorIndex:number; children:Array<{ actorIndex:number; nodes:number[] }> }>);
         applyPendingMigrations();
@@ -1520,6 +1587,7 @@ export async function buildDestructibleCore({
     } catch (e) {
       if (isDev) console.error('[Core] flushPendingDamageFractures failed', e);
     }
+    stopTiming(timerStart, 'damageFlushMs');
   }
 
   function dispose() {
@@ -1637,6 +1705,9 @@ export async function buildDestructibleCore({
     damageEnabled: damageSystem.isEnabled(),
     dispose,
     setProfiler: (config: CoreProfilerConfig | null) => setProfiler(config),
+    recordProjectileCleanupDuration: (durationMs: number) => {
+      recordProjectileCleanupDurationInternal(durationMs);
+    },
   };
   corePublic = api;
   return api;

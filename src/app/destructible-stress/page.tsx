@@ -1225,8 +1225,61 @@ function HtmlOverlay({
   profilingEnabled: boolean;
   startProfiling: () => void;
   stopProfiling: () => void;
-  profilerStats: { sampleCount: number; lastFrameMs: number | null };
+  profilerStats: {
+    sampleCount: number;
+    lastFrameMs: number | null;
+    lastSample: CoreProfilerSample | null;
+  };
 }) {
+  const lastSample = profilerStats.lastSample;
+  const formatMs = (value?: number | null) =>
+    typeof value === "number" ? `${value.toFixed(2)} ms` : "-";
+  const renderMetricRow = (label: string, value?: number) => (
+    <div
+      key={label}
+      style={{
+        display: "flex",
+        justifyContent: "space-between",
+        fontSize: 12,
+        color: "#d1d5db",
+        fontVariantNumeric: "tabular-nums",
+      }}
+    >
+      <span>{label}</span>
+      <span>{formatMs(value)}</span>
+    </div>
+  );
+  const fractureRows = lastSample
+    ? [
+        { label: "Fracture total", value: lastSample.fractureMs },
+        { label: "Generate", value: lastSample.fractureGenerateMs },
+        { label: "Apply", value: lastSample.fractureApplyMs },
+        { label: "Split queue", value: lastSample.splitQueueMs },
+        { label: "Body create", value: lastSample.bodyCreateMs },
+        { label: "Collider rebuild", value: lastSample.colliderRebuildMs },
+        { label: "Cleanup", value: lastSample.cleanupDisabledMs },
+      ]
+    : [];
+  const damageRows = lastSample
+    ? [
+        { label: "Damage replay", value: lastSample.damageReplayMs },
+        { label: "Damage preview", value: lastSample.damagePreviewMs },
+        { label: "Damage tick", value: lastSample.damageTickMs },
+        { label: "Snapshot capture", value: lastSample.damageSnapshotMs },
+        { label: "Snapshot restore", value: lastSample.damageRestoreMs },
+        { label: "Pre-destroy", value: lastSample.damagePreDestroyMs },
+        { label: "Flush fractures", value: lastSample.damageFlushMs },
+      ]
+    : [];
+  const maintenanceRows = lastSample
+    ? [
+        { label: "Spawn queue", value: lastSample.spawnMs },
+        { label: "External forces", value: lastSample.externalForceMs },
+        { label: "Pre-step sweep", value: lastSample.preStepSweepMs },
+        { label: "Collider rebuild map", value: lastSample.rebuildColliderMapMs },
+        { label: "Projectile cleanup", value: lastSample.projectileCleanupMs },
+      ]
+    : [];
   const isWallStructure =
     structureId === "wall" || structureId === "fracturedWall";
   return (
@@ -1296,6 +1349,70 @@ function HtmlOverlay({
               : ""}
           </div>
         ) : null}
+      {profilingEnabled && lastSample ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {fractureRows.length > 0 ? (
+            <div>
+              <div style={{ fontSize: 12, color: "#9ca3af", marginBottom: 2 }}>
+                Fracture breakdown
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 2,
+                  background: "#111827",
+                  padding: "4px 6px",
+                  borderRadius: 4,
+                  border: "1px solid #1f2937",
+                }}
+              >
+                {fractureRows.map((row) => renderMetricRow(row.label, row.value))}
+              </div>
+            </div>
+          ) : null}
+          {damageRows.length > 0 ? (
+            <div>
+              <div style={{ fontSize: 12, color: "#9ca3af", marginBottom: 2 }}>
+                Damage breakdown
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 2,
+                  background: "#111827",
+                  padding: "4px 6px",
+                  borderRadius: 4,
+                  border: "1px solid #1f2937",
+                }}
+              >
+                {damageRows.map((row) => renderMetricRow(row.label, row.value))}
+              </div>
+            </div>
+          ) : null}
+          {maintenanceRows.length > 0 ? (
+            <div>
+              <div style={{ fontSize: 12, color: "#9ca3af", marginBottom: 2 }}>
+                Maintenance
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 2,
+                  background: "#111827",
+                  padding: "4px 6px",
+                  borderRadius: 4,
+                  border: "1px solid #1f2937",
+                }}
+              >
+                {maintenanceRows.map((row) => renderMetricRow(row.label, row.value))}
+              </div>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       </div>
       <div style={{ display: "flex", gap: 8 }}>
         <button
@@ -2308,7 +2425,8 @@ export default function Page() {
   const [profilerStats, setProfilerStats] = useState<{
     sampleCount: number;
     lastFrameMs: number | null;
-  }>({ sampleCount: 0, lastFrameMs: null });
+    lastSample: CoreProfilerSample | null;
+  }>({ sampleCount: 0, lastFrameMs: null, lastSample: null });
   const captureProfilerConfig = useCallback(
     () => ({
       structureId,
@@ -2403,6 +2521,7 @@ export default function Page() {
     setProfilerStats({
       sampleCount: profilerSamplesRef.current.length,
       lastFrameMs: sample.totalMs,
+      lastSample: sample,
     });
   }, []);
   const startProfiling = useCallback(() => {
@@ -2411,7 +2530,7 @@ export default function Page() {
       startedAt: Date.now(),
       config: captureProfilerConfig(),
     };
-    setProfilerStats({ sampleCount: 0, lastFrameMs: null });
+    setProfilerStats({ sampleCount: 0, lastFrameMs: null, lastSample: null });
     setProfilingEnabled(true);
   }, [captureProfilerConfig]);
   const stopProfiling = useCallback(() => {
@@ -2436,7 +2555,7 @@ export default function Page() {
     URL.revokeObjectURL(url);
     profilerSessionRef.current = null;
     profilerSamplesRef.current = [];
-    setProfilerStats({ sampleCount: 0, lastFrameMs: null });
+    setProfilerStats({ sampleCount: 0, lastFrameMs: null, lastSample: null });
   }, [captureProfilerConfig]);
   const profilingControls = useMemo(
     () => ({

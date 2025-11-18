@@ -135,6 +135,17 @@ export function updateProjectileMeshes(
   core: DestructibleCore,
   root: THREE.Group,
 ) {
+  const profilerRecorder = (
+    core as unknown as {
+      recordProjectileCleanupDuration?: (durationMs: number) => void;
+    }
+  ).recordProjectileCleanupDuration;
+  const hasPerf =
+    typeof performance !== 'undefined' && typeof performance.now === 'function';
+  const timeNow = hasPerf
+    ? () => performance.now()
+    : () => Date.now();
+  const timerStart = profilerRecorder ? timeNow() : null;
   const projectiles = core.projectiles as Array<{
     bodyHandle: number;
     radius: number;
@@ -197,6 +208,9 @@ export function updateProjectileMeshes(
     const rotation = body.rotation();
     mesh.position.set(bodyTranslation.x, bodyTranslation.y, bodyTranslation.z);
     mesh.quaternion.set(rotation.x, rotation.y, rotation.z, rotation.w);
+  }
+  if (profilerRecorder && timerStart != null) {
+    profilerRecorder(Math.max(0, timeNow() - timerStart));
   }
 }
 
