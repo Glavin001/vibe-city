@@ -53,6 +53,22 @@ type NumericProfilerField = Exclude<
   undefined
 >;
 
+type WorldWithOptionalTimestep = RAPIER.World & { timestep?: number };
+type WorldWithBodyCount = RAPIER.World & { numRigidBodies?: () => number };
+type RigidBodyWithColliderCount = RAPIER.RigidBody & { numColliders?: () => number };
+type BodyWithUserData = RAPIER.RigidBody & { userData?: { projectile?: boolean } };
+type MassReadableBody = RAPIER.RigidBody & { mass?: () => number };
+type ColliderWithState = RAPIER.Collider & { isEnabled?: () => boolean };
+type MaybeCcdBodyDesc = RAPIER.RigidBodyDesc & { setCcdEnabled?: (v: boolean) => unknown };
+type InteractionGroupsValue = Parameters<RAPIER.Collider['setCollisionGroups']>[0];
+type SolverActorsApi = {
+  actors?: () => Array<{ actorIndex: number; nodes: number[] }>;
+};
+type DebugWindow = Window & {
+  debugStressSolver?: { printSolver?: () => unknown };
+};
+
+
 const clonePasses = (passes: CoreProfilerPass[]) =>
   passes.map((pass) => ({
     ...pass,
@@ -443,7 +459,7 @@ export async function buildDestructibleCore({
       if (typeof dt === 'number' && dt > 0) return dt;
     } catch {}
     try {
-      const raw = (world as unknown as { timestep?: number | undefined }).timestep;
+      const raw = (world as WorldWithOptionalTimestep).timestep;
       if (typeof raw === 'number' && raw > 0) return raw;
     } catch {}
     return 1 / 60;
@@ -451,7 +467,7 @@ export async function buildDestructibleCore({
   const setWorldDtValue = (value: number) => {
     const clamped = clampStepDt(value);
     try {
-      (world as unknown as { timestep?: number | undefined }).timestep = clamped;
+      (world as WorldWithOptionalTimestep).timestep = clamped;
     } catch {}
     try {
       if (world.integrationParameters) {
@@ -535,12 +551,17 @@ export async function buildDestructibleCore({
       try {
         const b1 = getBodyForColliderHandle(h1);
         const b2 = getBodyForColliderHandle(h2);
-        const ud1 = (b1 as unknown as { userData?: { projectile?: boolean } } | null)?.userData;
-        const ud2 = (b2 as unknown as { userData?: { projectile?: boolean } } | null)?.userData;
+        const ud1 = (b1 as BodyWithUserData | null)?.userData;
+        const ud2 = (b2 as BodyWithUserData | null)?.userData;
         const projBody = (ud1?.projectile ? b1 : (ud2?.projectile ? b2 : null));
         if (projBody && (node1 != null || node2 != null)) {
           let m = 1;
-          try { m = typeof (projBody as unknown as { mass: () => number }).mass === 'function' ? (projBody as unknown as { mass: () => number }).mass() : m; } catch {}
+          try {
+            const reader = projBody as MassReadableBody;
+            if (typeof reader.mass === 'function') {
+              m = reader.mass();
+            }
+          } catch {}
           const impulseEstimate = Math.max(0, m) * Math.max(0, relSpeed);
           const forceFromMomentum = impulseEstimate / Math.max(1e-6, dt);
           if (Number.isFinite(forceFromMomentum) && forceFromMomentum > 0) {
@@ -711,19 +732,58 @@ export async function buildDestructibleCore({
   } catch {}
 
   function setGravity(g: number) {
+    const newGravity: RAPIER.Vector = { x: 0, y: g, z: 0 };
     try {
-      const grav = world.gravity as unknown as { x:number; y:number; z:number };
-      grav.x = 0; grav.y = g; grav.z = 0;
-      world.gravity = grav as unknown as RAPIER.Vector;
+      world.gravity = newGravity;
     } catch {
-      world.gravity = { x: 0, y: g, z: 0 } as unknown as RAPIER.Vector;
+      world.gravity = newGravity;
     }
   }
   function setSolverGravityEnabled(v: boolean) { solverGravityEnabled = !!v; }
 
+  type ActorGravityExtension = {
+    addActorGravity(actorIndex: number, localGravity?: Vec3): boolean;
+  };
+
+  const readWorldGravityVector = (): Vec3 => {
+    const g = world.gravity;
+    return { x: g?.x ?? 0, y: g?.y ?? 0, z: g?.z ?? 0 };
+  };
+
+  const gravityHasMagnitude = (value: Vec3) => value.x !== 0 || value.y !== 0 || value.z !== 0;
+
+  const toLocalGravityVector = (body: RAPIER.RigidBody, worldGravity: Vec3): Vec3 => {
+    const rotation = body.rotation();
+    const inverse = { x: -rotation.x, y: -rotation.y, z: -rotation.z, w: rotation.w };
+    return applyQuatToVec3(worldGravity, inverse);
+  };
+
+  function applyGravityToAllActors(worldGravity: Vec3): boolean {
+    const solverWithExtension = solver as typeof solver & ActorGravityExtension;
+    if (typeof solverWithExtension.addActorGravity !== 'function') {
+      return false;
+    }
+    for (const [actorIndex, { bodyHandle }] of actorMap.entries()) {
+      const body = world.getRigidBody(bodyHandle);
+      const localGravity = body ? toLocalGravityVector(body, worldGravity) : worldGravity;
+      solverWithExtension.addActorGravity(actorIndex, localGravity);
+    }
+    return true;
+  }
+
+  const applySolverGravityForFrame = () => {
+    if (!solverGravityEnabled) return;
+    const worldGravity = readWorldGravityVector();
+    if (!gravityHasMagnitude(worldGravity)) return;
+    const applied = applyGravityToAllActors(worldGravity);
+    if (!applied) {
+      solver.addGravity(worldGravity);
+    }
+  };
+
   function getRigidBodyCount(): number {
     try {
-      const getCount = (world as unknown as { numRigidBodies?: () => number }).numRigidBodies;
+      const getCount = (world as WorldWithBodyCount).numRigidBodies;
       if (typeof getCount === 'function') return getCount.call(world);
     } catch {}
     let count = 0;
@@ -834,7 +894,8 @@ export async function buildDestructibleCore({
       if (!rb) return null;
       const t = rb.translation();
       const r = rb.rotation();
-      const local = applyQuatToVec3(seg.baseLocalOffset, r as unknown as { x:number; y:number; z:number; w:number });
+      const rotation = { x: r.x, y: r.y, z: r.z, w: r.w };
+      const local = applyQuatToVec3(seg.baseLocalOffset, rotation);
       return { x: (t.x ?? 0) + local.x, y: (t.y ?? 0) + local.y, z: (t.z ?? 0) + local.z };
     } catch { return null; }
   }
@@ -1033,12 +1094,7 @@ export async function buildDestructibleCore({
           recordForReplay: true,
         });
 
-        if (solverGravityEnabled) {
-          try {
-            const g = world.gravity as unknown as { x: number; y: number; z: number };
-            solver.addGravity({ x: g.x ?? 0, y: g.y ?? 0, z: g.z ?? 0 });
-          } catch {}
-        }
+        applySolverGravityForFrame();
         const solverStart = profilerSample ? perfNow() : 0;
         solver.update();
         if (profilerSample) {
@@ -1087,11 +1143,7 @@ export async function buildDestructibleCore({
           const externalForceCount = injectPendingExternalForces();
           if (externalForceCount > 0 && process.env.NODE_ENV !== 'production') {
             try {
-              (
-                (window as unknown as {
-                  debugStressSolver?: { printSolver?: () => unknown };
-                }).debugStressSolver
-              )?.printSolver?.();
+              (window as DebugWindow).debugStressSolver?.printSolver?.();
             } catch {}
           }
           applyDamageTick();
@@ -1133,11 +1185,7 @@ export async function buildDestructibleCore({
           const externalForceCount = injectPendingExternalForces();
           if (externalForceCount > 0 && process.env.NODE_ENV !== 'production') {
             try {
-              (
-                (window as unknown as {
-                  debugStressSolver?: { printSolver?: () => unknown };
-                }).debugStressSolver
-              )?.printSolver?.();
+              (window as DebugWindow).debugStressSolver?.printSolver?.();
             } catch {}
           }
           applyDamageTick();
@@ -1186,11 +1234,11 @@ export async function buildDestructibleCore({
             const restoreStart = profilerSample ? perfNow() : 0;
             const newWorld = RAPIER.World.restoreSnapshot(worldSnap);
             if (newWorld) {
-              world = newWorld as unknown as RAPIER.World;
+              world = newWorld;
               try {
-                if (corePublic)
-                  (corePublic as unknown as { world: RAPIER.World }).world =
-                    world;
+                if (corePublic) {
+                  corePublic.world = world;
+                }
               } catch {}
               try {
                 onWorldReplaced?.(world);
@@ -1218,11 +1266,7 @@ export async function buildDestructibleCore({
           const externalForceCount = injectPendingExternalForces();
           if (externalForceCount > 0 && process.env.NODE_ENV !== 'production') {
             try {
-              (
-                (window as unknown as {
-                  debugStressSolver?: { printSolver?: () => unknown };
-                }).debugStressSolver
-              )?.printSolver?.();
+              (window as DebugWindow).debugStressSolver?.printSolver?.();
             } catch {}
           }
           applyDamageTick();
@@ -1411,7 +1455,9 @@ export async function buildDestructibleCore({
       .setLinearDamping(0.0)
       .setAngularDamping(0.0)
       .setUserData({ projectile: true });
-    try { (bodyDesc as unknown as { setCcdEnabled?: (v:boolean)=>unknown }).setCcdEnabled?.(true); } catch {}
+    try {
+      (bodyDesc as MaybeCcdBodyDesc).setCcdEnabled?.(true);
+    } catch {}
     if (params.linvel) {
       bodyDesc.setLinvel(params.linvel.x, params.linvel.y, params.linvel.z);
     } else if (typeof params.linvelY === 'number') {
@@ -1475,7 +1521,9 @@ export async function buildDestructibleCore({
             recreated: true,
           });
         }
-        try { if (!pb.isSupport) (desc as unknown as { setCcdEnabled?: (v:boolean)=>unknown }).setCcdEnabled?.(true); } catch {}
+        try {
+          if (!pb.isSupport) (desc as MaybeCcdBodyDesc).setCcdEnabled?.(true);
+        } catch {}
         const body = world.createRigidBody(desc);
         actorMap.set(pb.actorIndex, { bodyHandle: body.handle });
         for (const nodeIndex of pb.nodes) pendingColliderMigrations.push({ nodeIndex, targetBodyHandle: body.handle });
@@ -1574,7 +1622,7 @@ export async function buildDestructibleCore({
       const handle = b.handle;
       if (handle === rootBody.handle || handle === groundBody.handle) return;
       try {
-        const rb = b as unknown as { numColliders?: () => number };
+        const rb = b as RigidBodyWithColliderCount;
         const count = typeof rb.numColliders === 'function' ? rb.numColliders() : 0;
         if (count === 0) {
           bodiesToRemove.add(handle);
@@ -1614,7 +1662,8 @@ export async function buildDestructibleCore({
     let actorIndexA: number | undefined;
     let actorIndexB: number | undefined;
     try {
-      const actors = (solver as unknown as { actors: () => Array<{ actorIndex:number; nodes:number[] }> }).actors?.() ?? [];
+      const solverWithActors = solver as typeof solver & SolverActorsApi;
+      const actors = solverWithActors.actors?.() ?? [];
       const nodeToActor = new Map<number, number>();
       for (const a of actors) {
         for (const n of a.nodes ?? []) nodeToActor.set(n, a.actorIndex);
@@ -1627,10 +1676,12 @@ export async function buildDestructibleCore({
       removedBondIndices.add(bondIndex);
       return false;
     }
-    const fractureSets = [{ actorIndex: actorIndexA, fractures: [{ userdata: bondIndex, nodeIndex0: b.node0, nodeIndex1: b.node1, health: 1e9 }] }];
+    const fractureSets = [
+      { actorIndex: actorIndexA, fractures: [{ userdata: bondIndex, nodeIndex0: b.node0, nodeIndex1: b.node1, health: 1e9 }] },
+    ];
     let applied = false;
     try {
-      const splitEvents = profiledApplyFractureCommands(fractureSets as unknown as Array<{ actorIndex:number; fractures:Array<{ userdata:number; nodeIndex0:number; nodeIndex1:number; health:number }> }>);
+      const splitEvents = profiledApplyFractureCommands(fractureSets);
       removedBondIndices.add(bondIndex);
       if (Array.isArray(splitEvents) && splitEvents.length > 0) {
         queueSplitResults(splitEvents as Array<{ parentActorIndex:number; children:Array<{ actorIndex:number; nodes:number[] }> }>);
@@ -1863,8 +1914,9 @@ const mkGroups = (memberships: number, filter: number) => (((memberships & 0xfff
 
 function applyGroupsForCollider(c: RAPIER.Collider, groups: number) {
   try {
-    c.setCollisionGroups(groups as unknown as number);
-    c.setSolverGroups(groups as unknown as number);
+    const interactionGroups = groups as InteractionGroupsValue;
+    c.setCollisionGroups(interactionGroups);
+    c.setSolverGroups(interactionGroups);
   } catch {}
 }
 
@@ -1874,7 +1926,7 @@ function applyCollisionGroupsForBody(
 ) {
   if (!body) return;
   const n = body?.numColliders?.() ?? 0;
-  const ud = (body as unknown as { userData?: unknown }).userData as { projectile?: boolean } | undefined;
+  const ud = (body as BodyWithUserData | undefined)?.userData;
   let memberships = 0xffff;
   let filters = 0xffff;
 
