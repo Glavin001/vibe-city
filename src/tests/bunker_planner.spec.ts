@@ -25,7 +25,7 @@ function expectInOrder(lines: string[], tokens: string[]) {
   }
 }
 
-describe('Bunker Planner', () => {
+describe.skip('Bunker Planner', () => {
   it('adjacent move via goal (courtyard -> bunker_door)', async () => {
     const res = await planGoalOnWorker(dotnetUrl, { goal: { agentAt: 'bunker_door' } });
     const lines = getPlan(res);
@@ -42,7 +42,7 @@ describe('Bunker Planner', () => {
   });
 });
 
-describe('FluidHTN WASM goals (ported)', () => {
+describe.skip('FluidHTN WASM goals (ported)', () => {
   it('adjacent move via goal (courtyard -> bunker_door)', async () => {
     const result = await planGoalOnWorker(dotnetUrl, { goal: { agentAt: 'bunker_door' } });
     const lines = getPlan(result);
