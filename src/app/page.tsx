@@ -186,6 +186,12 @@ const demoCategories: DemoCategory[] = [
         icon: "🧩",
         title: "Fluid HTN Demo",
         description: "Pure demonstration of Fluid HTN planning system. See how AI agents decompose complex tasks."
+      },
+      {
+        href: "/navcat-block-stacker",
+        icon: "🪜",
+        title: "Navcat Block Stacker",
+        description: "Watch an HTN planner reorganize blocks, rebuilding Navcat tiles each placement to carve a staircase."
       }
     ]
   },
