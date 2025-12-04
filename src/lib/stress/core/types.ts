@@ -188,6 +188,7 @@ export type DestructibleCore = {
   cutNodeBonds: (nodeIndex: number) => boolean;
   // External force application (non-contact force injection)
   applyExternalForce: (nodeIndex: number, worldPoint: Vec3, worldForce: Vec3) => void;
+  setSleepThresholds?: (linear: number, angular: number) => void;
   // Damageable chunks API (present when damage is enabled)
   applyNodeDamage?: (nodeIndex: number, amount: number, reason?: string) => void;
   getNodeHealth?: (nodeIndex: number) => { health: number; maxHealth: number; destroyed: boolean } | null;

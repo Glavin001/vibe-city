@@ -34,6 +34,8 @@ type BuildCoreOptions = {
   onWorldReplaced?: (newWorld: RAPIER.World) => void; // only used when snapshotMode==='world'
   resimulateOnDamageDestroy?: boolean;
   skipSingleBodies?: boolean;
+  sleepLinearThreshold?: number;
+  sleepAngularThreshold?: number;
 };
 
 const isDev = true; //process.env.NODE_ENV !== 'production';
@@ -58,7 +60,6 @@ type WorldWithBodyCount = RAPIER.World & { numRigidBodies?: () => number };
 type RigidBodyWithColliderCount = RAPIER.RigidBody & { numColliders?: () => number };
 type BodyWithUserData = RAPIER.RigidBody & { userData?: { projectile?: boolean } };
 type MassReadableBody = RAPIER.RigidBody & { mass?: () => number };
-type ColliderWithState = RAPIER.Collider & { isEnabled?: () => boolean };
 type MaybeCcdBodyDesc = RAPIER.RigidBodyDesc & { setCcdEnabled?: (v: boolean) => unknown };
 type InteractionGroupsValue = Parameters<RAPIER.Collider['setCollisionGroups']>[0];
 type SolverActorsApi = {
@@ -91,6 +92,8 @@ export async function buildDestructibleCore({
   onWorldReplaced,
   resimulateOnDamageDestroy = !!damage?.enabled,
   skipSingleBodies = false,
+  sleepLinearThreshold = 0.1,
+  sleepAngularThreshold = 0.1,
 }: BuildCoreOptions): Promise<DestructibleCore> {
   await RAPIER.init();
   const runtime = await loadStressSolver();
@@ -185,6 +188,18 @@ export async function buildDestructibleCore({
   const scaledSettings = { ...settings };
   const skipSingleBodiesEnabled = !!skipSingleBodies;
   let singleCollisionModeSetting: SingleCollisionMode = singleCollisionMode;
+  const sleepThresholds = {
+    linear: Math.max(0, sleepLinearThreshold),
+    angular: Math.max(0, sleepAngularThreshold),
+  };
+  function updateSleepThresholds(linear?: number, angular?: number) {
+    if (typeof linear === 'number' && Number.isFinite(linear)) {
+      sleepThresholds.linear = Math.max(0, linear);
+    }
+    if (typeof angular === 'number' && Number.isFinite(angular)) {
+      sleepThresholds.angular = Math.max(0, angular);
+    }
+  }
 
   // Reasonable defaults; caller can adjust later if needed
   // settings.maxSolverIterationsPerFrame = 64;
@@ -900,6 +915,35 @@ export async function buildDestructibleCore({
     } catch { return null; }
   }
 
+  function applySleepThresholdsToBodies() {
+    const linearThreshold = Math.max(0, sleepThresholds.linear);
+    const angularThreshold = Math.max(0, sleepThresholds.angular);
+    for (const [bodyHandle, nodes] of nodesByBodyHandle.entries()) {
+      if (!nodes || nodes.size === 0) continue;
+      if (bodyHandle === rootBody.handle || bodyHandle === groundBody.handle) continue;
+      const body = world.getRigidBody(bodyHandle);
+      if (!body) continue;
+      if (!body.isDynamic?.()) continue;
+      if (body.isSleeping?.()) continue;
+      const linvel = body.linvel?.();
+      const angvel = body.angvel?.();
+      const linSpeed = Math.hypot(linvel?.x ?? 0, linvel?.y ?? 0, linvel?.z ?? 0);
+      const angSpeed = Math.hypot(angvel?.x ?? 0, angvel?.y ?? 0, angvel?.z ?? 0);
+      const linearWithin = linSpeed <= linearThreshold;
+      const angularWithin = angSpeed <= angularThreshold;
+      if (!linearWithin || !angularWithin) continue;
+      try {
+        body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+      } catch {}
+      try {
+        body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+      } catch {}
+      try {
+        body.sleep();
+      } catch {}
+    }
+  }
+
   // --- Per-body snapshot helpers (Plan A default) ---
   type BodySnapshot = Map<number, {
     t: {x:number;y:number;z:number};
@@ -1006,6 +1050,9 @@ export async function buildDestructibleCore({
       });
     };
     const finalizeAndReturn = () => {
+      try {
+        applySleepThresholdsToBodies();
+      } catch {}
       finalizeProfilerSample();
       return;
     };
@@ -1568,8 +1615,10 @@ export async function buildDestructibleCore({
           .setTranslation(tx, ty, tz)
           .setActiveEvents(RAPIER.ActiveEvents.CONTACT_FORCE_EVENTS)
           .setContactForceEventThreshold(0.0)
-          .setFriction(0.25)
-          .setRestitution(0.0);
+          .setFriction(0.85)
+          .setRestitution(0.8);
+          // .setFriction(0.25)
+          // .setRestitution(0.0);
         const col = world.createCollider(desc, body);
         seg.bodyHandle = body.handle;
         seg.colliderHandle = col.handle;
@@ -1860,6 +1909,8 @@ export async function buildDestructibleCore({
     cutBond,
     cutNodeBonds,
     applyExternalForce,
+    setSleepThresholds: (linear: number, angular: number) =>
+      updateSleepThresholds(linear, angular),
     // Damage API
     applyNodeDamage: damageSystem.isEnabled() ? (nodeIndex: number, amount: number) => { try { damageSystem.applyDirect(nodeIndex, amount); } catch {} } : undefined,
     getNodeHealth: damageSystem.isEnabled() ? (nodeIndex: number) => {

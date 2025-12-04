@@ -100,9 +100,12 @@ type SceneProps = {
   bondsZEnabled: boolean;
   autoBondingEnabled: boolean;
   adaptiveDt: boolean;
+  sleepLinearThreshold: number;
+  sleepAngularThreshold: number;
   onReset: () => void;
   bodyCountRef?: MutableRefObject<HTMLSpanElement | null>;
   activeBodyCountRef?: MutableRefObject<HTMLSpanElement | null>;
+  colliderCountRef?: MutableRefObject<HTMLSpanElement | null>;
   profiling?: {
     enabled: boolean;
     onSample?: (sample: CoreProfilerSample) => void;
@@ -276,9 +279,12 @@ function Scene({
   bondsZEnabled,
   autoBondingEnabled,
   adaptiveDt,
+  sleepLinearThreshold,
+  sleepAngularThreshold,
   onReset: _onReset,
   bodyCountRef,
   activeBodyCountRef,
+  colliderCountRef,
   profiling,
 }: SceneProps) {
   const coreRef = useRef<DestructibleCore | null>(null);
@@ -309,6 +315,14 @@ function Scene({
   useEffect(() => {
     singleCollisionModeRef.current = singleCollisionMode;
   }, [singleCollisionMode]);
+  const sleepLinearThresholdRef = useRef(sleepLinearThreshold);
+  useEffect(() => {
+    sleepLinearThresholdRef.current = sleepLinearThreshold;
+  }, [sleepLinearThreshold]);
+  const sleepAngularThresholdRef = useRef(sleepAngularThreshold);
+  useEffect(() => {
+    sleepAngularThresholdRef.current = sleepAngularThreshold;
+  }, [sleepAngularThreshold]);
   const isDev = true; //process.env.NODE_ENV !== 'production';
   useEffect(() => {
     physicsWireframeStateRef.current = physicsWireframe;
@@ -449,12 +463,20 @@ function Scene({
         snapshotMode,
         resimulateOnDamageDestroy,
         singleCollisionMode: singleCollisionModeRef.current,
+        sleepLinearThreshold: sleepLinearThresholdRef.current,
+        sleepAngularThreshold: sleepAngularThresholdRef.current,
       });
       if (!mounted) {
         core.dispose();
         return;
       }
       coreRef.current = core;
+      try {
+        core.setSleepThresholds?.(
+          sleepLinearThresholdRef.current,
+          sleepAngularThresholdRef.current,
+        );
+      } catch {}
       const latestProfiling = profilingRef.current;
       if (
         latestProfiling?.enabled &&
@@ -692,6 +714,12 @@ function Scene({
     const core = coreRef.current;
     if (core) core.setGravity(gravity);
   }, [gravity]);
+
+  useEffect(() => {
+    const core = coreRef.current;
+    if (!core || typeof core.setSleepThresholds !== "function") return;
+    core.setSleepThresholds(sleepLinearThreshold, sleepAngularThreshold);
+  }, [sleepLinearThreshold, sleepAngularThreshold]);
 
   useEffect(() => {
     const core = coreRef.current;
@@ -953,6 +981,7 @@ function Scene({
   const hasCrashed = useRef(false);
   const lastBodyCountRef = useRef<number | null>(null);
   const lastActiveBodyCountRef = useRef<number | null>(null);
+  const lastColliderCountRef = useRef<number | null>(null);
   const accumulatorRef = useRef(0);
   const FIXED_STEP_DT = 1 / 60;
   const MIN_STEP_DT = 1 / 240;
@@ -1016,9 +1045,10 @@ function Scene({
       debugHelperRef.current.update([], false);
     }
 
-    if (bodyCountRef?.current || activeBodyCountRef?.current) {
+    if (bodyCountRef?.current || activeBodyCountRef?.current || colliderCountRef?.current) {
       let liveCount = 0;
       let activeCount = 0;
+      let colliderCount = 0;
       try {
         core.world.forEachRigidBody(() => {
           liveCount += 1;
@@ -1033,6 +1063,11 @@ function Scene({
       } catch {
         activeCount = 0;
       }
+      try {
+        colliderCount = core.colliderToNode ? core.colliderToNode.size : 0;
+      } catch {
+        colliderCount = 0;
+      }
       if (bodyCountRef?.current && lastBodyCountRef.current !== liveCount) {
         bodyCountRef.current.textContent = liveCount.toString();
         lastBodyCountRef.current = liveCount;
@@ -1043,6 +1078,13 @@ function Scene({
       ) {
         activeBodyCountRef.current.textContent = activeCount.toString();
         lastActiveBodyCountRef.current = activeCount;
+      }
+      if (
+        colliderCountRef?.current &&
+        lastColliderCountRef.current !== colliderCount
+      ) {
+        colliderCountRef.current.textContent = colliderCount.toString();
+        lastColliderCountRef.current = colliderCount;
       }
     }
   });
@@ -1152,8 +1194,13 @@ function HtmlOverlay({
   setResimulateOnDamageDestroy,
   bodyCountRef,
   activeBodyCountRef,
+  colliderCountRef,
   adaptiveDt,
   setAdaptiveDt,
+  sleepLinearThreshold,
+  setSleepLinearThreshold,
+  sleepAngularThreshold,
+  setSleepAngularThreshold,
   profilingEnabled,
   startProfiling,
   stopProfiling,
@@ -1246,8 +1293,13 @@ function HtmlOverlay({
   setResimulateOnDamageDestroy: (v: boolean) => void;
   bodyCountRef: MutableRefObject<HTMLSpanElement | null>;
   activeBodyCountRef: MutableRefObject<HTMLSpanElement | null>;
+  colliderCountRef: MutableRefObject<HTMLSpanElement | null>;
   adaptiveDt: boolean;
   setAdaptiveDt: (v: boolean) => void;
+  sleepLinearThreshold: number;
+  setSleepLinearThreshold: (v: number) => void;
+  sleepAngularThreshold: number;
+  setSleepAngularThreshold: (v: number) => void;
   profilingEnabled: boolean;
   startProfiling: () => void;
   stopProfiling: () => void;
@@ -1528,6 +1580,19 @@ function HtmlOverlay({
         <span>Active rigid bodies</span>
         <span ref={activeBodyCountRef}>-</span>
       </div>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          color: "#e5e7eb",
+          fontSize: 14,
+          fontVariantNumeric: "tabular-nums",
+        }}
+      >
+        <span>Colliders</span>
+        <span ref={colliderCountRef}>-</span>
+      </div>
       <label
         style={{
           display: "flex",
@@ -1652,6 +1717,70 @@ function HtmlOverlay({
           style={{ accentColor: "#4da2ff", width: 16, height: 16 }}
         />
         Adaptive dt (render delta)
+      </label>
+      <label
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          color: "#d1d5db",
+          fontSize: 14,
+        }}
+      >
+        Sleep linear threshold (m/s)
+        <input
+          type="number"
+          min={0}
+          step={0.01}
+          value={sleepLinearThreshold}
+          onChange={(e) => {
+            const next = e.target.valueAsNumber;
+            setSleepLinearThreshold(Number.isFinite(next) ? Math.max(0, next) : 0);
+          }}
+          style={{
+            flex: 1,
+            background: "#111",
+            color: "#eee",
+            border: "1px solid #333",
+            borderRadius: 6,
+            padding: "6px 8px",
+          }}
+        />
+        <span style={{ color: "#9ca3af", width: 90, textAlign: "right" }}>
+          {sleepLinearThreshold.toFixed(2)} m/s
+        </span>
+      </label>
+      <label
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          color: "#d1d5db",
+          fontSize: 14,
+        }}
+      >
+        Sleep angular threshold (rad/s)
+        <input
+          type="number"
+          min={0}
+          step={0.01}
+          value={sleepAngularThreshold}
+          onChange={(e) => {
+            const next = e.target.valueAsNumber;
+            setSleepAngularThreshold(Number.isFinite(next) ? Math.max(0, next) : 0);
+          }}
+          style={{
+            flex: 1,
+            background: "#111",
+            color: "#eee",
+            border: "1px solid #333",
+            borderRadius: 6,
+            padding: "6px 8px",
+          }}
+        />
+        <span style={{ color: "#9ca3af", width: 90, textAlign: "right" }}>
+          {sleepAngularThreshold.toFixed(2)} rad/s
+        </span>
       </label>
       <label
         style={{
@@ -2402,6 +2531,8 @@ export default function Page() {
   const [gravity, setGravity] = useState(-9.81);
   const [solverGravityEnabled, setSolverGravityEnabled] = useState(true);
   const [adaptiveDt, setAdaptiveDt] = useState(true);
+  const [sleepLinearThreshold, setSleepLinearThreshold] = useState(0.1);
+  const [sleepAngularThreshold, setSleepAngularThreshold] = useState(0.1);
   const [singleCollisionMode, setSingleCollisionMode] =
     useState<SingleCollisionMode>("all");
   const [skipSingleBodies, setSkipSingleBodies] = useState(false);
@@ -2462,6 +2593,8 @@ export default function Page() {
       gravity,
       solverGravityEnabled,
       adaptiveDt,
+      sleepLinearThreshold,
+      sleepAngularThreshold,
       singleCollisionMode,
       skipSingleBodies,
       damageEnabled,
@@ -2503,6 +2636,8 @@ export default function Page() {
       gravity,
       solverGravityEnabled,
       adaptiveDt,
+      sleepLinearThreshold,
+      sleepAngularThreshold,
       singleCollisionMode,
       skipSingleBodies,
       damageEnabled,
@@ -2541,6 +2676,7 @@ export default function Page() {
   );
   const rigidBodyCountRef = useRef<HTMLSpanElement | null>(null);
   const activeRigidBodyCountRef = useRef<HTMLSpanElement | null>(null);
+  const colliderCountRef = useRef<HTMLSpanElement | null>(null);
   const structures = STRESS_PRESET_METADATA;
   const currentStructure =
     structures.find((item) => item.id === structureId) ?? structures[0];
@@ -2683,8 +2819,13 @@ export default function Page() {
         setResimulateOnDamageDestroy={setResimulateOnDamageDestroy}
         bodyCountRef={rigidBodyCountRef}
         activeBodyCountRef={activeRigidBodyCountRef}
+        colliderCountRef={colliderCountRef}
         adaptiveDt={adaptiveDt}
         setAdaptiveDt={setAdaptiveDt}
+        sleepLinearThreshold={sleepLinearThreshold}
+        setSleepLinearThreshold={setSleepLinearThreshold}
+        sleepAngularThreshold={sleepAngularThreshold}
+        setSleepAngularThreshold={setSleepAngularThreshold}
         profilingEnabled={profilingEnabled}
         startProfiling={startProfiling}
         stopProfiling={stopProfiling}
@@ -2738,7 +2879,10 @@ export default function Page() {
           onReset={() => setIteration((v) => v + 1)}
           bodyCountRef={rigidBodyCountRef}
           activeBodyCountRef={activeRigidBodyCountRef}
+        colliderCountRef={colliderCountRef}
           adaptiveDt={adaptiveDt}
+          sleepLinearThreshold={sleepLinearThreshold}
+          sleepAngularThreshold={sleepAngularThreshold}
           profiling={profilingControls}
         />
         <R3FPerf
