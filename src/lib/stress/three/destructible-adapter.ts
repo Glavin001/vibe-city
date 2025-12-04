@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import type { DestructibleCore } from '@/lib/stress/core/types';
 
+const shadowsEnabled = false;
+
 const HEALTHY_COLOR = new THREE.Color(0x2fbf71);
 const CRITICAL_COLOR = new THREE.Color(0xd72638);
 const DAMAGE_TINT = new THREE.Color();
@@ -17,7 +19,8 @@ export function buildChunkMeshes(core: DestructibleCore, materials?: { deck?: TH
     const mat = chunk.isSupport ? supportMat.clone() : deckMat.clone();
     const mesh = new THREE.Mesh(new THREE.BoxGeometry(chunk.size.x, chunk.size.y, chunk.size.z), mat);
     mesh.userData.nodeIndex = chunk.nodeIndex;
-    mesh.castShadow = true; mesh.receiveShadow = true;
+    mesh.castShadow = shadowsEnabled;
+    mesh.receiveShadow = shadowsEnabled;
     meshes.push(mesh);
   }
   return { objects: meshes };
@@ -36,7 +39,8 @@ export function buildChunkMeshesFromGeometries(core: DestructibleCore, geometrie
     const mat = chunk.isSupport ? supportMat.clone() : deckMat.clone();
     const mesh = new THREE.Mesh(geom, mat);
     mesh.userData.nodeIndex = chunk.nodeIndex;
-    mesh.castShadow = true; mesh.receiveShadow = true;
+    mesh.castShadow = shadowsEnabled;
+    mesh.receiveShadow = shadowsEnabled;
     meshes.push(mesh);
   }
   return { objects: meshes };
@@ -196,8 +200,8 @@ export function updateProjectileMeshes(
         metalness: 0.2,
       });
       const mesh = new THREE.Mesh(geom, mat);
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
+      mesh.castShadow = shadowsEnabled;
+      mesh.receiveShadow = shadowsEnabled;
       p.mesh = mesh;
       root.add(mesh);
     }

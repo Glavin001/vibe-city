@@ -1,9 +1,11 @@
 "use client";
 
-import { OrbitControls, StatsGl } from "@react-three/drei";
+import { OrbitControls } from "@react-three/drei";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Perf as R3FPerf } from "r3f-perf";
 import {
+  memo,
+  startTransition,
   useCallback,
   useEffect,
   useMemo,
@@ -45,10 +47,31 @@ import {
   updateProjectileMeshes,
 } from "@/lib/stress/three/destructible-adapter";
 
+const shadowsEnabled = false;
+
+type StressDebugWindow = Window & {
+  __stressFrameStats?: {
+    frames: number;
+    lastUseFrameMs: number;
+    maxUseFrameMs: number;
+    avgUseFrameMs: number;
+    updatedAt: number;
+  };
+  __stressOverlayStats?: {
+    renders: number;
+    lastDuration: number;
+    maxDuration: number;
+    updatedAt: number;
+  };
+};
+
+const perfNow = () =>
+  typeof performance !== "undefined" ? performance.now() : Date.now();
+
 function Ground() {
   return (
     <group>
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} receiveShadow>
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} receiveShadow={shadowsEnabled}>
         <planeGeometry args={[200, 200]} />
         <meshStandardMaterial color="#3d3d3d" />
       </mesh>
@@ -287,10 +310,15 @@ function Scene({
   colliderCountRef,
   profiling,
 }: SceneProps) {
+  console.log("Scene render");
+
   const coreRef = useRef<DestructibleCore | null>(null);
   const debugHelperRef = useRef<ReturnType<
     typeof buildSolverDebugHelper
   > | null>(null);
+  const debugLinesActiveRef = useRef(false);
+  const frameStatsRef = useRef({ samples: 0, total: 0, max: 0 });
+  const frameLogRef = useRef(0);
   const chunkMeshesRef = useRef<THREE.Mesh[] | null>(null);
   const groupRef = useRef<THREE.Group>(null);
   const camera = useThree((s) => s.camera as THREE.Camera);
@@ -453,9 +481,12 @@ function Scene({
               rapierDebugRef.current.dispose({});
               rapierDebugRef.current = null;
             }
+            if (physicsWireframeStateRef.current) {
             rapierDebugRef.current = new RapierDebugRenderer(scene, newWorld, {
-              enabled: physicsWireframeStateRef.current,
+                // enabled: true,
+                enabled: false,
             });
+            }
           } catch {}
         },
         resimulateOnFracture,
@@ -515,10 +546,12 @@ function Scene({
           rapierDebugRef.current.dispose({});
           rapierDebugRef.current = null;
         }
-        // Initialize with current wireframe state stored in ref; further changes handled by separate effect
-        rapierDebugRef.current = new RapierDebugRenderer(scene, core.world, {
-          enabled: physicsWireframeStateRef.current,
-        });
+        if (physicsWireframeStateRef.current) {
+          rapierDebugRef.current = new RapierDebugRenderer(scene, core.world, {
+            // enabled: true,
+            enabled: false,
+          });
+        }
       } catch {}
       if (isDev)
         console.debug("[Page] Initialized destructible core", {
@@ -643,12 +676,24 @@ function Scene({
 
   // Toggle Rapier wireframe on/off when checkbox changes
   useEffect(() => {
-    const dbg = rapierDebugRef.current;
-    if (!dbg) return;
+    const core = coreRef.current;
+    if (!physicsWireframe) {
+      if (rapierDebugRef.current) {
     try {
-      dbg.setEnabled(physicsWireframe);
+          rapierDebugRef.current.dispose({});
     } catch {}
-  }, [physicsWireframe]);
+        rapierDebugRef.current = null;
+      }
+      return;
+    }
+    if (!core || rapierDebugRef.current) return;
+    try {
+      rapierDebugRef.current = new RapierDebugRenderer(scene, core.world, {
+        // enabled: true,
+        enabled: false,
+      });
+    } catch {}
+  }, [physicsWireframe, scene]);
 
   // Apply single-collision policy when toggled
   useEffect(() => {
@@ -988,11 +1033,13 @@ function Scene({
   const MAX_STEP_DT = 1 / 30;
   const MAX_FRAME_DELTA = 0.1;
   const MAX_SUBSTEPS_PER_FRAME = 5;
+
   useFrame((_, delta) => {
     if (hasCrashed.current) return;
 
     const core = coreRef.current;
     if (!core) return;
+    const frameStart = perfNow();
     const clampedDelta =
       Number.isFinite(delta) && delta > 0
         ? Math.min(delta, MAX_FRAME_DELTA)
@@ -1037,12 +1084,15 @@ function Scene({
 
     // Update Rapier wireframe last
     if (rapierDebugRef.current) rapierDebugRef.current.update();
-    if (debug && debugHelperRef.current) {
+    const helper = debugHelperRef.current;
+    if (debug && helper) {
       const lines = core.getSolverDebugLines();
       const worldLines = computeWorldDebugLines(core, lines);
-      debugHelperRef.current.update(worldLines, showAllDebugLines);
-    } else if (debugHelperRef.current) {
-      debugHelperRef.current.update([], false);
+      helper.update(worldLines, showAllDebugLines);
+      debugLinesActiveRef.current = true;
+    } else if (debugLinesActiveRef.current && helper) {
+      helper.update([], false);
+      debugLinesActiveRef.current = false;
     }
 
     if (bodyCountRef?.current || activeBodyCountRef?.current || colliderCountRef?.current) {
@@ -1087,14 +1137,38 @@ function Scene({
         lastColliderCountRef.current = colliderCount;
       }
     }
+
+    const duration = perfNow() - frameStart;
+    const stats = frameStatsRef.current;
+    stats.samples += 1;
+    stats.total += duration;
+    stats.max = Math.max(stats.max, duration);
+    try {
+      const stressWindow = window as StressDebugWindow;
+      stressWindow.__stressFrameStats = {
+        frames: stats.samples,
+        lastUseFrameMs: duration,
+        maxUseFrameMs: stats.max,
+        avgUseFrameMs: stats.total / stats.samples,
+        updatedAt: Date.now(),
+      };
+      if (duration > 4 && perfNow() - frameLogRef.current > 1000) {
+        frameLogRef.current = perfNow();
+        console.info(
+          `[FrameStats] useFrame took ${duration.toFixed(
+            2,
+          )} ms (avg ${(stats.total / stats.samples).toFixed(2)} ms)`,
+        );
+      }
+    } catch {}
   });
 
   return (
     <>
       <group ref={groupRef} />
-      <ambientLight intensity={0.35} />
+      <ambientLight intensity={0.35} castShadow={shadowsEnabled} />
       <directionalLight
-        castShadow
+        castShadow={shadowsEnabled}
         position={[6, 8, 6]}
         intensity={1.2}
         shadow-mapSize-width={2048}
@@ -1106,106 +1180,20 @@ function Scene({
   );
 }
 
-function HtmlOverlay({
-  debug,
-  setDebug,
-  physicsWireframe,
-  setPhysicsWireframe,
-  gravity,
-  setGravity,
-  solverGravityEnabled,
-  setSolverGravityEnabled,
-  singleCollisionMode,
-  setSingleCollisionMode,
-  skipSingleBodies,
-  setSkipSingleBodies,
-  damageEnabled,
-  setDamageEnabled,
-  mode,
-  setMode,
-  projType,
-  setProjType,
-  reset,
-  projectileSpeed,
-  setProjectileSpeed,
-  projectileMass,
-  setProjectileMass,
-  projectileRadius,
-  setProjectileRadius,
-  materialScale,
-  setMaterialScale,
-  wallSpan,
-  setWallSpan,
-  wallHeight,
-  setWallHeight,
-  wallThickness,
-  setWallThickness,
-  wallSpanSeg,
-  setWallSpanSeg,
-  wallHeightSeg,
-  setWallHeightSeg,
-  wallLayers,
-  setWallLayers,
-  showAllDebugLines,
-  setShowAllDebugLines,
-  bondsXEnabled,
-  setBondsXEnabled,
-  bondsYEnabled,
-  setBondsYEnabled,
-  bondsZEnabled,
-  setBondsZEnabled,
-  autoBondingEnabled,
-  setAutoBondingEnabled,
-  structureId,
-  setStructureId,
-  structures,
-  structureDescription,
-  pushForce,
-  setPushForce,
-  damageClickRatio,
-  setDamageClickRatio,
-  contactDamageScale,
-  setContactDamageScale,
-  minImpulseThreshold,
-  setMinImpulseThreshold,
-  contactCooldownMs,
-  setContactCooldownMs,
-  internalContactScale,
-  setInternalContactScale,
-  speedMinExternal,
-  setSpeedMinExternal,
-  speedMinInternal,
-  setSpeedMinInternal,
-  speedMax,
-  setSpeedMax,
-  speedExponent,
-  setSpeedExponent,
-  slowSpeedFactor,
-  setSlowSpeedFactor,
-  fastSpeedFactor,
-  setFastSpeedFactor,
-  resimulateOnFracture,
-  setResimulateOnFracture,
-  maxResimulationPasses,
-  setMaxResimulationPasses,
-  snapshotMode,
-  setSnapshotMode,
-  resimulateOnDamageDestroy,
-  setResimulateOnDamageDestroy,
-  bodyCountRef,
-  activeBodyCountRef,
-  colliderCountRef,
-  adaptiveDt,
-  setAdaptiveDt,
-  sleepLinearThreshold,
-  setSleepLinearThreshold,
-  sleepAngularThreshold,
-  setSleepAngularThreshold,
-  profilingEnabled,
-  startProfiling,
-  stopProfiling,
-  profilerStats,
-}: {
+type ProfilerStatsState = {
+  sampleCount: number;
+  lastFrameMs: number | null;
+  lastSample: CoreProfilerSample | null;
+};
+
+type ProfilerControlsProps = {
+  profilingEnabled: boolean;
+  startProfiling: () => void;
+  stopProfiling: () => void;
+  profilerStats: ProfilerStatsState;
+};
+
+type HtmlOverlayProps = {
   debug: boolean;
   setDebug: (v: boolean) => void;
   physicsWireframe: boolean;
@@ -1300,15 +1288,23 @@ function HtmlOverlay({
   setSleepLinearThreshold: (v: number) => void;
   sleepAngularThreshold: number;
   setSleepAngularThreshold: (v: number) => void;
-  profilingEnabled: boolean;
-  startProfiling: () => void;
-  stopProfiling: () => void;
-  profilerStats: {
-    sampleCount: number;
-    lastFrameMs: number | null;
-    lastSample: CoreProfilerSample | null;
-  };
-}) {
+  showPerfOverlay: boolean;
+  setShowPerfOverlay: (v: boolean) => void;
+} & ProfilerControlsProps;
+
+const PROFILER_STATS_THROTTLE_MS = 200;
+const EMPTY_PROFILER_STATS: ProfilerStatsState = {
+  sampleCount: 0,
+  lastFrameMs: null,
+  lastSample: null,
+};
+
+const ProfilerControls = memo(function ProfilerControls({
+  profilingEnabled,
+  startProfiling,
+  stopProfiling,
+  profilerStats,
+}: ProfilerControlsProps) {
   const lastSample = profilerStats.lastSample;
   const formatMs = (value?: number | null) =>
     typeof value === "number" ? `${value.toFixed(2)} ms` : "-";
@@ -1358,26 +1354,7 @@ function HtmlOverlay({
         { label: "Projectile cleanup", value: lastSample.projectileCleanupMs },
       ]
     : [];
-  const isWallStructure =
-    structureId === "wall" ||
-    structureId === "fracturedWall" ||
-    structureId === "brickWall";
   return (
-    <div
-      style={{
-        position: "absolute",
-        top: 110,
-        left: 16,
-        bottom: 16,
-        zIndex: 10,
-        display: "flex",
-        flexDirection: "column",
-        gap: 8,
-        maxWidth: 360,
-        overflowY: "auto",
-        paddingRight: 8,
-      }}
-    >
       <div
         style={{
           display: "flex",
@@ -1494,6 +1471,176 @@ function HtmlOverlay({
         </div>
       ) : null}
       </div>
+  );
+});
+
+function HtmlOverlay(props: HtmlOverlayProps) {
+  const {
+    debug,
+    setDebug,
+    physicsWireframe,
+    setPhysicsWireframe,
+  gravity,
+  setGravity,
+  solverGravityEnabled,
+  setSolverGravityEnabled,
+  singleCollisionMode,
+  setSingleCollisionMode,
+  skipSingleBodies,
+  setSkipSingleBodies,
+  damageEnabled,
+  setDamageEnabled,
+  mode,
+  setMode,
+  projType,
+  setProjType,
+  reset,
+  projectileSpeed,
+  setProjectileSpeed,
+  projectileMass,
+  setProjectileMass,
+  projectileRadius,
+  setProjectileRadius,
+  materialScale,
+  setMaterialScale,
+  wallSpan,
+  setWallSpan,
+  wallHeight,
+  setWallHeight,
+  wallThickness,
+  setWallThickness,
+  wallSpanSeg,
+  setWallSpanSeg,
+  wallHeightSeg,
+  setWallHeightSeg,
+  wallLayers,
+  setWallLayers,
+  showAllDebugLines,
+  setShowAllDebugLines,
+  bondsXEnabled,
+  setBondsXEnabled,
+  bondsYEnabled,
+  setBondsYEnabled,
+  bondsZEnabled,
+  setBondsZEnabled,
+  autoBondingEnabled,
+  setAutoBondingEnabled,
+  structureId,
+  setStructureId,
+  structures,
+  structureDescription,
+  pushForce,
+  setPushForce,
+  damageClickRatio,
+  setDamageClickRatio,
+  contactDamageScale,
+  setContactDamageScale,
+  minImpulseThreshold,
+  setMinImpulseThreshold,
+  contactCooldownMs,
+  setContactCooldownMs,
+  internalContactScale,
+  setInternalContactScale,
+  speedMinExternal,
+  setSpeedMinExternal,
+  speedMinInternal,
+  setSpeedMinInternal,
+  speedMax,
+  setSpeedMax,
+  speedExponent,
+  setSpeedExponent,
+  slowSpeedFactor,
+  setSlowSpeedFactor,
+  fastSpeedFactor,
+  setFastSpeedFactor,
+  resimulateOnFracture,
+  setResimulateOnFracture,
+  maxResimulationPasses,
+  setMaxResimulationPasses,
+  snapshotMode,
+  setSnapshotMode,
+  resimulateOnDamageDestroy,
+  setResimulateOnDamageDestroy,
+  bodyCountRef,
+  activeBodyCountRef,
+  colliderCountRef,
+  adaptiveDt,
+  setAdaptiveDt,
+  sleepLinearThreshold,
+  setSleepLinearThreshold,
+  sleepAngularThreshold,
+  setSleepAngularThreshold,
+  showPerfOverlay,
+  setShowPerfOverlay,
+  profilingEnabled,
+  startProfiling,
+  stopProfiling,
+  profilerStats,
+  } = props;
+  const overlayRenderStart = perfNow();
+  useEffect(() => {
+    const duration = perfNow() - overlayRenderStart;
+    try {
+      const stressWindow = window as StressDebugWindow;
+      const stats = stressWindow.__stressOverlayStats ?? {
+        renders: 0,
+        maxDuration: 0,
+        lastDuration: 0,
+        updatedAt: Date.now(),
+      };
+      stats.renders += 1;
+      stats.lastDuration = duration;
+      stats.maxDuration = Math.max(stats.maxDuration, duration);
+      stats.updatedAt = Date.now();
+      stressWindow.__stressOverlayStats = stats;
+      if (duration > 4) {
+        console.info(`[Overlay] render ${duration.toFixed(2)} ms`);
+      }
+    } catch {}
+  });
+  const isWallStructure =
+    structureId === "wall" ||
+    structureId === "fracturedWall" ||
+    structureId === "brickWall";
+  return (
+    <div
+      style={{
+        position: "absolute",
+        top: 110,
+        left: 16,
+        bottom: 16,
+        zIndex: 10,
+        display: "flex",
+        flexDirection: "column",
+        gap: 8,
+        maxWidth: 360,
+        overflowY: "auto",
+        paddingRight: 8,
+      }}
+    >
+      <ProfilerControls
+        profilingEnabled={profilingEnabled}
+        startProfiling={startProfiling}
+        stopProfiling={stopProfiling}
+        profilerStats={profilerStats}
+      />
+      <label
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          color: "#d1d5db",
+          fontSize: 14,
+        }}
+      >
+        <input
+          type="checkbox"
+          checked={showPerfOverlay}
+          onChange={(e) => setShowPerfOverlay(e.target.checked)}
+          style={{ accentColor: "#4da2ff", width: 16, height: 16 }}
+        />
+        Show perf overlay
+      </label>
       <div style={{ display: "flex", gap: 8 }}>
         <button
           type="button"
@@ -2526,6 +2673,8 @@ function HtmlOverlay({
 }
 
 export default function Page() {
+  console.log("Page render");
+
   const [debug, setDebug] = useState(false);
   const [physicsWireframe, setPhysicsWireframe] = useState(false);
   const [gravity, setGravity] = useState(-9.81);
@@ -2553,7 +2702,8 @@ export default function Page() {
   const [speedExponent, setSpeedExponent] = useState(1.0);
   const [slowSpeedFactor, setSlowSpeedFactor] = useState(0.1);
   const [fastSpeedFactor, setFastSpeedFactor] = useState(10.0);
-  const [structureId, setStructureId] = useState<StressPresetId>("hut");
+  // const [structureId, setStructureId] = useState<StressPresetId>("hut");
+  const [structureId, setStructureId] = useState<StressPresetId>("tower");
   const [projType, setProjType] = useState<"ball" | "box">("ball");
   const [projectileSpeed, setProjectileSpeed] = useState(36);
   const [projectileMass, setProjectileMass] = useState(15000);
@@ -2578,14 +2728,44 @@ export default function Page() {
   const [bondsYEnabled, setBondsYEnabled] = useState(true);
   const [bondsZEnabled, setBondsZEnabled] = useState(true);
   const [autoBondingEnabled, setAutoBondingEnabled] = useState(false);
+  const [showPerfOverlay, setShowPerfOverlay] = useState(true);
   const [profilingEnabled, setProfilingEnabled] = useState(false);
   const profilerSamplesRef = useRef<CoreProfilerSample[]>([]);
   const profilerSessionRef = useRef<{ startedAt: number; config: Record<string, unknown> } | null>(null);
-  const [profilerStats, setProfilerStats] = useState<{
-    sampleCount: number;
-    lastFrameMs: number | null;
-    lastSample: CoreProfilerSample | null;
-  }>({ sampleCount: 0, lastFrameMs: null, lastSample: null });
+  const [profilerStats, setProfilerStats] =
+    useState<ProfilerStatsState>(EMPTY_PROFILER_STATS);
+  const profilerPendingStatsRef = useRef<ProfilerStatsState | null>(null);
+  const profilerStatsTimerRef = useRef<number | null>(null);
+  const scheduleProfilerStatsUpdate = useCallback(
+    (next: ProfilerStatsState, immediate = false) => {
+      profilerPendingStatsRef.current = next;
+      if (immediate) {
+        if (profilerStatsTimerRef.current != null) {
+          window.clearTimeout(profilerStatsTimerRef.current);
+          profilerStatsTimerRef.current = null;
+        }
+        startTransition(() => setProfilerStats(next));
+        profilerPendingStatsRef.current = null;
+        return;
+      }
+      if (profilerStatsTimerRef.current != null) return;
+      profilerStatsTimerRef.current = window.setTimeout(() => {
+        profilerStatsTimerRef.current = null;
+        const latest = profilerPendingStatsRef.current;
+        if (!latest) return;
+        startTransition(() => setProfilerStats(latest));
+        profilerPendingStatsRef.current = null;
+      }, PROFILER_STATS_THROTTLE_MS);
+    },
+    [],
+  );
+  useEffect(() => {
+    return () => {
+      if (profilerStatsTimerRef.current != null) {
+        window.clearTimeout(profilerStatsTimerRef.current);
+      }
+    };
+  }, []);
   const captureProfilerConfig = useCallback(
     () => ({
       structureId,
@@ -2680,23 +2860,30 @@ export default function Page() {
   const structures = STRESS_PRESET_METADATA;
   const currentStructure =
     structures.find((item) => item.id === structureId) ?? structures[0];
-  const handleProfilerSample = useCallback((sample: CoreProfilerSample) => {
+  const handleProfilerSample = useCallback(
+    (sample: CoreProfilerSample) => {
     profilerSamplesRef.current.push(sample);
-    setProfilerStats({
+      scheduleProfilerStatsUpdate(
+        {
       sampleCount: profilerSamplesRef.current.length,
-      lastFrameMs: sample.totalMs,
+          lastFrameMs:
+            typeof sample.totalMs === "number" ? sample.totalMs : null,
       lastSample: sample,
-    });
-  }, []);
+        },
+        false,
+      );
+    },
+    [scheduleProfilerStatsUpdate],
+  );
   const startProfiling = useCallback(() => {
     profilerSamplesRef.current = [];
     profilerSessionRef.current = {
       startedAt: Date.now(),
       config: captureProfilerConfig(),
     };
-    setProfilerStats({ sampleCount: 0, lastFrameMs: null, lastSample: null });
+    scheduleProfilerStatsUpdate(EMPTY_PROFILER_STATS, true);
     setProfilingEnabled(true);
-  }, [captureProfilerConfig]);
+  }, [captureProfilerConfig, scheduleProfilerStatsUpdate]);
   const stopProfiling = useCallback(() => {
     setProfilingEnabled(false);
     const payload = {
@@ -2719,8 +2906,8 @@ export default function Page() {
     URL.revokeObjectURL(url);
     profilerSessionRef.current = null;
     profilerSamplesRef.current = [];
-    setProfilerStats({ sampleCount: 0, lastFrameMs: null, lastSample: null });
-  }, [captureProfilerConfig]);
+    scheduleProfilerStatsUpdate(EMPTY_PROFILER_STATS, true);
+  }, [captureProfilerConfig, scheduleProfilerStatsUpdate]);
   const profilingControls = useMemo(
     () => ({
       enabled: profilingEnabled,
@@ -2826,12 +3013,15 @@ export default function Page() {
         setSleepLinearThreshold={setSleepLinearThreshold}
         sleepAngularThreshold={sleepAngularThreshold}
         setSleepAngularThreshold={setSleepAngularThreshold}
+        showPerfOverlay={showPerfOverlay}
+        setShowPerfOverlay={setShowPerfOverlay}
         profilingEnabled={profilingEnabled}
         startProfiling={startProfiling}
         stopProfiling={stopProfiling}
         profilerStats={profilerStats}
       />
-      <Canvas shadows camera={{ position: [7, 5, 9], fov: 45 }}>
+      
+      <Canvas shadows={shadowsEnabled} camera={{ position: [7, 5, 9], fov: 45 }}>
         <color attach="background" args={["#0e0e12"]} />
         <Scene
           debug={debug}
@@ -2885,10 +3075,12 @@ export default function Page() {
           sleepAngularThreshold={sleepAngularThreshold}
           profiling={profilingControls}
         />
-        <R3FPerf
-          // matrixUpdate deepAnalyze overClock
-          position="top-left"
-        />
+        {showPerfOverlay ? (
+          <R3FPerf
+            // matrixUpdate deepAnalyze overClock
+            position="top-left"
+          />
+        ) : null}
         {/* <StatsGl className="absolute top-2 left-2" trackGPU={true} horizontal={true} /> */}
       </Canvas>
     </div>

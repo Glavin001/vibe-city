@@ -1220,6 +1220,7 @@ export async function buildDestructibleCore({
         }
 
         if (!snapshotNeeded) {
+          /*
           if (process.env.NODE_ENV !== 'production') {
             console.warn(
               '[Core] Resimulation requested but no passes remaining',
@@ -1229,6 +1230,7 @@ export async function buildDestructibleCore({
               },
             );
           }
+          */
           const externalForceCount = injectPendingExternalForces();
           if (externalForceCount > 0 && process.env.NODE_ENV !== 'production') {
             try {
