@@ -34,6 +34,7 @@ type BuildCoreOptions = {
   onWorldReplaced?: (newWorld: RAPIER.World) => void; // only used when snapshotMode==='world'
   resimulateOnDamageDestroy?: boolean;
   skipSingleBodies?: boolean;
+  rootBodyMode?: 'fixed' | 'kinematic';
 };
 
 const isDev = true; //process.env.NODE_ENV !== 'production';
@@ -58,7 +59,6 @@ type WorldWithBodyCount = RAPIER.World & { numRigidBodies?: () => number };
 type RigidBodyWithColliderCount = RAPIER.RigidBody & { numColliders?: () => number };
 type BodyWithUserData = RAPIER.RigidBody & { userData?: { projectile?: boolean } };
 type MassReadableBody = RAPIER.RigidBody & { mass?: () => number };
-type ColliderWithState = RAPIER.Collider & { isEnabled?: () => boolean };
 type MaybeCcdBodyDesc = RAPIER.RigidBodyDesc & { setCcdEnabled?: (v: boolean) => unknown };
 type InteractionGroupsValue = Parameters<RAPIER.Collider['setCollisionGroups']>[0];
 type SolverActorsApi = {
@@ -91,6 +91,7 @@ export async function buildDestructibleCore({
   onWorldReplaced,
   resimulateOnDamageDestroy = !!damage?.enabled,
   skipSingleBodies = false,
+  rootBodyMode = 'fixed',
 }: BuildCoreOptions): Promise<DestructibleCore> {
   await RAPIER.init();
   const runtime = await loadStressSolver();
@@ -231,10 +232,13 @@ export async function buildDestructibleCore({
   let world = new RAPIER.World({ x: 0, y: gravity, z: 0 });
   const eventQueue = new RAPIER.EventQueue(true);
 
-  // Root fixed body
+  // Root kinematic body so we can drive tilting rigs from the page
+  const rootBodyDesc =
+    rootBodyMode === 'kinematic'
+      ? RAPIER.RigidBodyDesc.kinematicPositionBased()
+      : RAPIER.RigidBodyDesc.fixed();
   const rootBody = world.createRigidBody(
-    RAPIER.RigidBodyDesc.fixed().setTranslation(0, 0, 0)
-    .setUserData({ root: true })
+    rootBodyDesc.setTranslation(0, 0, 0).setUserData({ root: true })
   );
 
   // Ground collider (fixed body), wide plane with top aligned to y=0
@@ -476,6 +480,14 @@ export async function buildDestructibleCore({
     } catch {}
   };
   let lastStepDt = readWorldDt();
+
+type KinematicState = {
+  translation: Vec3;
+  rotation: Quat;
+  linvel: Vec3;
+  angvel: Vec3;
+};
+const kinematicStates = new Map<number, KinematicState>();
 
   // --- Shared helpers for speed scaling and contact draining ---
   function getDt(): number {
@@ -741,10 +753,6 @@ export async function buildDestructibleCore({
   }
   function setSolverGravityEnabled(v: boolean) { solverGravityEnabled = !!v; }
 
-  type ActorGravityExtension = {
-    addActorGravity(actorIndex: number, localGravity?: Vec3): boolean;
-  };
-
   const readWorldGravityVector = (): Vec3 => {
     const g = world.gravity;
     return { x: g?.x ?? 0, y: g?.y ?? 0, z: g?.z ?? 0 };
@@ -759,14 +767,13 @@ export async function buildDestructibleCore({
   };
 
   function applyGravityToAllActors(worldGravity: Vec3): boolean {
-    const solverWithExtension = solver as typeof solver & ActorGravityExtension;
-    if (typeof solverWithExtension.addActorGravity !== 'function') {
+    if (typeof solver.addActorGravity !== 'function') {
       return false;
     }
     for (const [actorIndex, { bodyHandle }] of actorMap.entries()) {
       const body = world.getRigidBody(bodyHandle);
       const localGravity = body ? toLocalGravityVector(body, worldGravity) : worldGravity;
-      solverWithExtension.addActorGravity(actorIndex, localGravity);
+      solver.addActorGravity(actorIndex, localGravity);
     }
     return true;
   }
@@ -1088,6 +1095,7 @@ export async function buildDestructibleCore({
           profilerSample.rapierStepMs += Math.max(0, perfNow() - rapierStart);
         }
         if (!stepped) return finalizeAndReturn();
+        updateKinematicStatesForBodies(getDt());
         drainContactForces({
           injectSolverForces: true,
           applyDamage: false,
@@ -1492,6 +1500,45 @@ export async function buildDestructibleCore({
     });
   }
 
+  function updateKinematicStatesForBodies(dt: number) {
+    if (!(dt > 0)) return;
+    world.forEachRigidBody((body: RAPIER.RigidBody) => {
+      if (!body?.isKinematic?.()) return;
+      const t = body.translation();
+      const r = body.rotation();
+      const currentTranslation = { x: t.x, y: t.y, z: t.z };
+      const currentRotation = { x: r.x, y: r.y, z: r.z, w: r.w };
+      const prev = kinematicStates.get(body.handle);
+      let linvel = { x: 0, y: 0, z: 0 };
+      let angvel = { x: 0, y: 0, z: 0 };
+      if (prev) {
+        linvel = {
+          x: (currentTranslation.x - prev.translation.x) / dt,
+          y: (currentTranslation.y - prev.translation.y) / dt,
+          z: (currentTranslation.z - prev.translation.z) / dt,
+        };
+        const delta = quatMultiply(currentRotation, quatConjugate(prev.rotation));
+        const clampedW = Math.min(1, Math.max(-1, delta.w));
+        let angle = 2 * Math.acos(clampedW);
+        if (angle > Math.PI) angle -= 2 * Math.PI;
+        if (Math.abs(angle) > 1e-6) {
+          const axis = normalizeVec3({ x: delta.x, y: delta.y, z: delta.z });
+          angvel = {
+            x: axis.x * (angle / dt),
+            y: axis.y * (angle / dt),
+            z: axis.z * (angle / dt),
+          };
+        }
+      }
+      kinematicStates.set(body.handle, {
+        translation: currentTranslation,
+        rotation: currentRotation,
+        linvel,
+        angvel,
+      });
+    });
+  }
+
   function applyPendingMigrations() {
     // console.log('applyPendingMigrations', pendingBodiesToCreate.length, pendingColliderMigrations.length);
 
@@ -1510,10 +1557,24 @@ export async function buildDestructibleCore({
           const linDamp = typeof inherit.linearDamping === 'function' ? inherit.linearDamping() : undefined;
           const angDamp = typeof inherit.angularDamping === 'function' ? inherit.angularDamping() : undefined;
           const angvelVec = { x: av?.x ?? 0, y: av?.y ?? 0, z: av?.z ?? 0 };
-          desc.setTranslation(pt.x, pt.y, pt.z)
-            .setRotation(pq)
-            .setLinvel(lv?.x ?? 0, lv?.y ?? 0, lv?.z ?? 0)
-            .setAngvel(angvelVec);
+          let inheritLinvel = lv ?? { x: 0, y: 0, z: 0 };
+          let inheritAngvel = angvelVec;
+          if (typeof inherit.isKinematic === 'function' && inherit.isKinematic()) {
+            const state = kinematicStates.get(inherit.handle);
+            if (state) {
+              inheritLinvel = state.linvel;
+              inheritAngvel = state.angvel;
+            } else {
+              inheritLinvel = { x: 0, y: 0, z: 0 };
+              inheritAngvel = { x: 0, y: 0, z: 0 };
+            }
+          }
+          desc.setTranslation(pt.x, pt.y, pt.z).setRotation(pq);
+          if (!pb.isSupport) {
+            desc
+              .setLinvel(inheritLinvel.x ?? 0, inheritLinvel.y ?? 0, inheritLinvel.z ?? 0)
+              .setAngvel(inheritAngvel);
+          }
           if (typeof linDamp === 'number') desc.setLinearDamping(linDamp);
           if (typeof angDamp === 'number') desc.setAngularDamping(angDamp);
           desc.setUserData({
@@ -1904,6 +1965,25 @@ function applyQuatToVec3(v: Vec3, q: Quat): Vec3 {
     y: iy * qw + iw * -qy + iz * -qx - ix * -qz,
     z: iz * qw + iw * -qz + ix * -qy - iy * -qx,
   };
+}
+
+function quatMultiply(a: Quat, b: Quat): Quat {
+  return {
+    w: a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z,
+    x: a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+    y: a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
+    z: a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
+  };
+}
+
+function quatConjugate(q: Quat): Quat {
+  return { x: -q.x, y: -q.y, z: -q.z, w: q.w };
+}
+
+function normalizeVec3(v: Vec3): Vec3 {
+  const len = Math.hypot(v.x, v.y, v.z);
+  if (len <= 1e-8) return { x: 0, y: 0, z: 0 };
+  return { x: v.x / len, y: v.y / len, z: v.z / len };
 }
 
 // --- Collision-group helpers (moved below for clarity) ---

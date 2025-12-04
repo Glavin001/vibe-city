@@ -1,6 +1,6 @@
 "use client";
 
-import { OrbitControls, StatsGl } from "@react-three/drei";
+import { OrbitControls } from "@react-three/drei";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Perf as R3FPerf } from "r3f-perf";
 import {
@@ -30,8 +30,13 @@ import {
   buildCourtyardHouseScenario,
   buildHutScenario,
   buildTowerScenario,
+  buildReinforcedTowerScenario,
   buildTownhouseScenario,
   buildVaultedLoftScenario,
+  buildTiltingGantryScenario,
+  buildKinematicDumbbellScenario,
+  TILTING_GANTRY_DEFAULTS,
+  KINEMATIC_DUMBBELL_DEFAULTS,
   STRESS_PRESET_METADATA,
   type StressPresetId,
 } from "@/lib/stress/scenarios/structurePresets";
@@ -52,6 +57,63 @@ function Ground() {
         <planeGeometry args={[200, 200]} />
         <meshStandardMaterial color="#3d3d3d" />
       </mesh>
+    </group>
+  );
+}
+
+const AXIS_Y = new THREE.Vector3(0, 1, 0);
+const AXIS_X = new THREE.Vector3(1, 0, 0);
+
+type TiltingGantryDecorationProps = {
+  visualRef: MutableRefObject<THREE.Group | null>;
+  platformRadius: number;
+  platformThickness: number;
+  ringRadius: number;
+  columnSpan: number;
+  platformTopHeight: number;
+  columnCount: number;
+  padSize: number;
+  padHeight: number;
+};
+
+function TiltingGantryDecoration({
+  visualRef,
+  platformRadius,
+  platformThickness,
+  ringRadius,
+  columnSpan,
+  platformTopHeight,
+  columnCount,
+  padSize,
+  padHeight,
+}: TiltingGantryDecorationProps) {
+  const platformColor = "#1a1f24";
+  const ringColor = "#6ee7b7";
+  const platformCenterY = platformTopHeight - platformThickness * 0.5;
+  const ringHeight = platformTopHeight + columnSpan;
+  const padY = platformTopHeight - padHeight * 0.5;
+  return (
+    <group ref={visualRef}>
+      <mesh position={[0, platformCenterY, 0]} receiveShadow castShadow>
+        <cylinderGeometry args={[platformRadius, platformRadius, platformThickness, 64]} />
+        <meshStandardMaterial color={platformColor} metalness={0.2} roughness={0.75} />
+      </mesh>
+      <mesh position={[0, ringHeight, 0]}>
+        <torusGeometry args={[ringRadius, 0.05, 12, 96]} />
+        <meshStandardMaterial color={ringColor} emissive="#064e3b" emissiveIntensity={0.3} />
+      </mesh>
+      {Array.from({ length: columnCount }).map((_, idx) => {
+        const angle = (idx / columnCount) * Math.PI * 2;
+        const x = Math.cos(angle) * TILTING_GANTRY_DEFAULTS.radius;
+        const z = Math.sin(angle) * TILTING_GANTRY_DEFAULTS.radius;
+        const padKey = `${x.toFixed(3)}:${z.toFixed(3)}`;
+        return (
+          <mesh key={padKey} position={[x, padY, z]} castShadow receiveShadow>
+            <boxGeometry args={[padSize, padHeight, padSize]} />
+            <meshStandardMaterial color="#d1d5db" roughness={0.8} metalness={0.1} />
+          </mesh>
+        );
+      })}
     </group>
   );
 }
@@ -199,6 +261,12 @@ const SCENARIO_BUILDERS: Record<StressPresetId, ScenarioBuilder> = {
       bondsY: bondsYEnabled,
       bondsZ: bondsZEnabled,
     }),
+  reinforcedTower: ({ bondsXEnabled, bondsYEnabled, bondsZEnabled }) =>
+    buildReinforcedTowerScenario({
+      bondsX: bondsXEnabled,
+      bondsY: bondsYEnabled,
+      bondsZ: bondsZEnabled,
+    }),
   townhouse: ({ bondsXEnabled, bondsYEnabled, bondsZEnabled }) =>
     buildTownhouseScenario({
       bondsX: bondsXEnabled,
@@ -217,6 +285,8 @@ const SCENARIO_BUILDERS: Record<StressPresetId, ScenarioBuilder> = {
       bondsY: bondsYEnabled,
       bondsZ: bondsZEnabled,
     }),
+  tiltingGantry: () => buildTiltingGantryScenario(),
+  kinematicDumbbell: () => buildKinematicDumbbellScenario(),
   fracturedWall: ({ wallSpan, wallHeight, wallThickness, autoBonding }) =>
     buildFracturedWallScenario({
       span: wallSpan,
@@ -287,6 +357,12 @@ function Scene({
   > | null>(null);
   const chunkMeshesRef = useRef<THREE.Mesh[] | null>(null);
   const groupRef = useRef<THREE.Group>(null);
+  const tiltingVizGroupRef = useRef<THREE.Group | null>(null);
+  const tiltingQuaternionRef = useRef(new THREE.Quaternion());
+  const tiltingSpinQuatRef = useRef(new THREE.Quaternion());
+  const tiltingTiltQuatRef = useRef(new THREE.Quaternion());
+  const tiltingIdentityQuatRef = useRef(new THREE.Quaternion());
+  const tiltingActiveRef = useRef(false);
   const camera = useThree((s) => s.camera as THREE.Camera);
   const scene = useThree((s) => s.scene as THREE.Scene);
   const rapierDebugRef = useRef<RapierDebugRenderer | null>(null);
@@ -310,6 +386,14 @@ function Scene({
     singleCollisionModeRef.current = singleCollisionMode;
   }, [singleCollisionMode]);
   const isDev = true; //process.env.NODE_ENV !== 'production';
+  const isTiltingGantry = structureId === "tiltingGantry";
+  const isKinematicDumbbell = structureId === "kinematicDumbbell";
+  const usesKinematicPlatform = isTiltingGantry || isKinematicDumbbell;
+  const tiltingColumnSpan = useMemo(
+    () => TILTING_GANTRY_DEFAULTS.layers * TILTING_GANTRY_DEFAULTS.blockSize.y,
+    [],
+  );
+  const tiltingPlatformTop = TILTING_GANTRY_DEFAULTS.baseLift;
   useEffect(() => {
     physicsWireframeStateRef.current = physicsWireframe;
   }, [physicsWireframe]);
@@ -429,6 +513,7 @@ function Scene({
           slowSpeedFactor,
           fastSpeedFactor,
         },
+        rootBodyMode: usesKinematicPlatform ? "kinematic" : "fixed",
         onNodeDestroyed: ({ nodeIndex, actorIndex }) => {
           console.log("[Damage] node destroyed", { nodeIndex, actorIndex });
         },
@@ -558,6 +643,7 @@ function Scene({
   }, [
     iteration,
     structureId,
+    usesKinematicPlatform,
     wallSpan,
     wallHeight,
     wallThickness,
@@ -959,11 +1045,60 @@ function Scene({
   const MAX_STEP_DT = 1 / 30;
   const MAX_FRAME_DELTA = 0.1;
   const MAX_SUBSTEPS_PER_FRAME = 5;
-  useFrame((_, delta) => {
+  useFrame((state, delta) => {
     if (hasCrashed.current) return;
 
     const core = coreRef.current;
     if (!core) return;
+    if (usesKinematicPlatform) {
+      const elapsed = state.clock.getElapsedTime();
+      const spinSpeed = isTiltingGantry
+        ? TILTING_GANTRY_DEFAULTS.spinSpeed
+        : KINEMATIC_DUMBBELL_DEFAULTS.spinSpeed;
+      const spin = elapsed * spinSpeed;
+      const tilt =
+        isTiltingGantry
+          ? Math.sin(
+              elapsed * TILTING_GANTRY_DEFAULTS.tiltFrequency * Math.PI * 2,
+            ) *
+            THREE.MathUtils.degToRad(TILTING_GANTRY_DEFAULTS.tiltAmplitudeDeg)
+          : 0;
+      const spinQuat = tiltingSpinQuatRef.current;
+      const tiltQuat = tiltingTiltQuatRef.current;
+      spinQuat.setFromAxisAngle(AXIS_Y, spin);
+      tiltQuat.setFromAxisAngle(AXIS_X, tilt);
+      tiltingQuaternionRef.current.copy(spinQuat).multiply(tiltQuat);
+      const rootBody = core.world.getRigidBody(core.rootBodyHandle);
+      if (rootBody?.isKinematic()) {
+        rootBody.setNextKinematicRotation({
+          x: tiltingQuaternionRef.current.x,
+          y: tiltingQuaternionRef.current.y,
+          z: tiltingQuaternionRef.current.z,
+          w: tiltingQuaternionRef.current.w,
+        });
+        rootBody.setNextKinematicTranslation({ x: 0, y: 0, z: 0 });
+      }
+      tiltingVizGroupRef.current?.quaternion.copy(
+        tiltingQuaternionRef.current,
+      );
+      tiltingActiveRef.current = true;
+    } else if (tiltingActiveRef.current) {
+      const rootBody = core.world.getRigidBody(core.rootBodyHandle);
+      if (rootBody?.isKinematic()) {
+        const resetQuat = tiltingIdentityQuatRef.current;
+        rootBody.setNextKinematicRotation({
+          x: resetQuat.x,
+          y: resetQuat.y,
+          z: resetQuat.z,
+          w: resetQuat.w,
+        });
+        rootBody.setNextKinematicTranslation({ x: 0, y: 0, z: 0 });
+      }
+      tiltingVizGroupRef.current?.quaternion.copy(
+        tiltingIdentityQuatRef.current,
+      );
+      tiltingActiveRef.current = false;
+    }
     const clampedDelta =
       Number.isFinite(delta) && delta > 0
         ? Math.min(delta, MAX_FRAME_DELTA)
@@ -1059,6 +1194,54 @@ function Scene({
         shadow-mapSize-height={2048}
       />
       <Ground />
+      {isTiltingGantry ? (
+        <TiltingGantryDecoration
+          visualRef={tiltingVizGroupRef}
+          platformRadius={TILTING_GANTRY_DEFAULTS.platformRadius}
+          platformThickness={TILTING_GANTRY_DEFAULTS.platformThickness}
+          ringRadius={TILTING_GANTRY_DEFAULTS.radius}
+          columnSpan={tiltingColumnSpan}
+          platformTopHeight={tiltingPlatformTop}
+          columnCount={TILTING_GANTRY_DEFAULTS.columnCount}
+          padSize={TILTING_GANTRY_DEFAULTS.blockSize.x}
+          padHeight={TILTING_GANTRY_DEFAULTS.blockSize.y}
+        />
+      ) : isKinematicDumbbell ? (
+        <group ref={tiltingVizGroupRef}>
+          <mesh position={[0, 0, 0]} receiveShadow castShadow>
+            <cylinderGeometry
+              args={[
+                KINEMATIC_DUMBBELL_DEFAULTS.platformRadius,
+                KINEMATIC_DUMBBELL_DEFAULTS.platformRadius,
+                KINEMATIC_DUMBBELL_DEFAULTS.platformThickness,
+                32,
+              ]}
+            />
+            <meshStandardMaterial color="#111827" />
+          </mesh>
+          {[-1, 1].map((dir) => (
+            <mesh
+              key={`dumbbell-${dir}`}
+              position={[
+                dir * KINEMATIC_DUMBBELL_DEFAULTS.radius,
+                KINEMATIC_DUMBBELL_DEFAULTS.blockSize.y * 0.5,
+                0,
+              ]}
+              castShadow
+              receiveShadow
+            >
+              <boxGeometry
+                args={[
+                  KINEMATIC_DUMBBELL_DEFAULTS.blockSize.x,
+                  KINEMATIC_DUMBBELL_DEFAULTS.blockSize.y,
+                  KINEMATIC_DUMBBELL_DEFAULTS.blockSize.z,
+                ]}
+              />
+              <meshStandardMaterial color={dir < 0 ? "#fb7185" : "#60a5fa"} />
+            </mesh>
+          ))}
+        </group>
+      ) : null}
       <OrbitControls makeDefault enableDamping dampingFactor={0.15} />
     </>
   );
@@ -1257,6 +1440,9 @@ function HtmlOverlay({
     lastSample: CoreProfilerSample | null;
   };
 }) {
+  const isTiltingGantry = structureId === "tiltingGantry";
+  const isKinematicDumbbell = structureId === "kinematicDumbbell";
+  const isKinematicDemo = isTiltingGantry || isKinematicDumbbell;
   const lastSample = profilerStats.lastSample;
   const formatMs = (value?: number | null) =>
     typeof value === "number" ? `${value.toFixed(2)} ms` : "-";
@@ -1502,6 +1688,20 @@ function HtmlOverlay({
           {structureDescription}
         </p>
       ) : null}
+      {isKinematicDemo ? (
+        <p
+          style={{
+            margin: "4px 0 0 0",
+            color: "#7dd3fc",
+            fontSize: 12,
+            lineHeight: 1.4,
+          }}
+        >
+          {isTiltingGantry
+            ? "Platform slowly spins and nods, so each column experiences a different gravity direction. Toggle local solver gravity below to compare behaviours."
+            : "Simple spinning dumbbell attached to a kinematic pad—great to inspect how fragments inherit linear/angular momentum."}
+        </p>
+      ) : null}
       <div
         style={{
           display: "flex",
@@ -1619,23 +1819,50 @@ function HtmlOverlay({
           {gravity.toFixed(2)}
         </span>
       </label>
-      <label
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          color: "#d1d5db",
-          fontSize: 14,
-        }}
-      >
-        <input
-          type="checkbox"
-          checked={solverGravityEnabled}
-          onChange={(e) => setSolverGravityEnabled(e.target.checked)}
-          style={{ accentColor: "#4da2ff", width: 16, height: 16 }}
-        />
-        Apply gravity to solver
-      </label>
+      {isKinematicDemo ? (
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 4,
+            color: "#d1d5db",
+            fontSize: 14,
+          }}
+        >
+          <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <input
+              type="checkbox"
+              checked={solverGravityEnabled}
+              onChange={(e) => setSolverGravityEnabled(e.target.checked)}
+              style={{ accentColor: "#34d399", width: 16, height: 16 }}
+            />
+            Local gravity per actor
+          </label>
+          <span style={{ fontSize: 12, color: "#9ca3af" }}>
+            {isTiltingGantry
+              ? "Disable to fall back to straight-down solver gravity (all columns fail the same way)."
+              : "Disable to compare against simple world-down solver gravity."}
+          </span>
+        </div>
+      ) : (
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            color: "#d1d5db",
+            fontSize: 14,
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={solverGravityEnabled}
+            onChange={(e) => setSolverGravityEnabled(e.target.checked)}
+            style={{ accentColor: "#4da2ff", width: 16, height: 16 }}
+          />
+          Apply gravity to solver
+        </label>
+      )}
       <label
         style={{
           display: "flex",
@@ -2745,7 +2972,7 @@ export default function Page() {
           // matrixUpdate deepAnalyze overClock
           position="top-left"
         />
-        {/* <StatsGl className="absolute top-2 left-2" trackGPU={true} horizontal={true} /> */}
+        {/* <StatsGl className="absolute top-4 left-4" trackGPU horizontal /> */}
       </Canvas>
     </div>
   );
