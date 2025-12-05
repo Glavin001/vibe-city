@@ -41,13 +41,17 @@ import { buildWallScenario } from "@/lib/stress/scenarios/wallScenario";
 import {
   buildChunkMeshes,
   buildChunkMeshesFromGeometries,
+  buildBatchedChunkMesh,
+  buildBatchedChunkMeshFromGeometries,
   buildSolverDebugHelper,
   computeWorldDebugLines,
   updateChunkMeshes,
+  updateBatchedChunkMesh,
   updateProjectileMeshes,
+  type BatchedChunkMeshResult,
 } from "@/lib/stress/three/destructible-adapter";
 
-const shadowsEnabled = false;
+const shadowsEnabled = true;
 
 type StressDebugWindow = Window & {
   __stressFrameStats?: {
@@ -320,6 +324,9 @@ function Scene({
   const frameStatsRef = useRef({ samples: 0, total: 0, max: 0 });
   const frameLogRef = useRef(0);
   const chunkMeshesRef = useRef<THREE.Mesh[] | null>(null);
+  // BatchedMesh for optimized rendering (replaces chunkMeshesRef when useBatchedMesh=true)
+  const batchedMeshResultRef = useRef<BatchedChunkMeshResult | null>(null);
+  const useBatchedMesh = true; // Toggle to use BatchedMesh optimization
   const groupRef = useRef<THREE.Group>(null);
   const camera = useThree((s) => s.camera as THREE.Camera);
   const scene = useThree((s) => s.scene as THREE.Scene);
@@ -483,8 +490,7 @@ function Scene({
             }
             if (physicsWireframeStateRef.current) {
             rapierDebugRef.current = new RapierDebugRenderer(scene, newWorld, {
-                // enabled: true,
-                enabled: false,
+              enabled: true,
             });
             }
           } catch {}
@@ -530,11 +536,32 @@ function Scene({
       const params = scenario.parameters as unknown as
         | { fragmentGeometries?: THREE.BufferGeometry[] }
         | undefined;
-      const { objects } = params?.fragmentGeometries?.length
-        ? buildChunkMeshesFromGeometries(core, params.fragmentGeometries)
-        : buildChunkMeshes(core);
-      chunkMeshesRef.current = objects;
-      for (const o of objects) groupRef.current?.add(o);
+
+      // Use BatchedMesh for optimized rendering (single draw call)
+      if (useBatchedMesh) {
+        const batchedResult = params?.fragmentGeometries?.length
+          ? buildBatchedChunkMeshFromGeometries(core, params.fragmentGeometries, {
+              enablePerInstanceUniforms: true,
+              enableBVH: false, // Disable BVH - it causes aggressive culling when camera is close
+              bvhMargin: 5.0,
+            })
+          : buildBatchedChunkMesh(core, {
+              enablePerInstanceUniforms: true,
+              enableBVH: false, // Disable BVH - it causes aggressive culling when camera is close
+              bvhMargin: 5.0,
+            });
+        batchedMeshResultRef.current = batchedResult;
+        groupRef.current?.add(batchedResult.batchedMesh);
+        chunkMeshesRef.current = null; // Not using individual meshes
+      } else {
+        // Fallback to individual meshes (legacy path)
+        const { objects } = params?.fragmentGeometries?.length
+          ? buildChunkMeshesFromGeometries(core, params.fragmentGeometries)
+          : buildChunkMeshes(core);
+        chunkMeshesRef.current = objects;
+        for (const o of objects) groupRef.current?.add(o);
+        batchedMeshResultRef.current = null;
+      }
 
       const helper = buildSolverDebugHelper();
       debugHelperRef.current = helper;
@@ -548,8 +575,7 @@ function Scene({
         }
         if (physicsWireframeStateRef.current) {
           rapierDebugRef.current = new RapierDebugRenderer(scene, core.world, {
-            // enabled: true,
-            enabled: false,
+            enabled: true,
           });
         }
       } catch {}
@@ -566,6 +592,16 @@ function Scene({
         if (rapierDebugRef.current) {
           rapierDebugRef.current.dispose({});
           rapierDebugRef.current = null;
+        }
+        // Dispose BatchedMesh if using it
+        if (batchedMeshResultRef.current) {
+          try {
+            if (groupRef.current && batchedMeshResultRef.current.batchedMesh) {
+              groupRef.current.remove(batchedMeshResultRef.current.batchedMesh);
+            }
+            batchedMeshResultRef.current.dispose();
+          } catch {}
+          batchedMeshResultRef.current = null;
         }
         if (groupRef.current) {
           const children = [...groupRef.current.children];
@@ -689,8 +725,7 @@ function Scene({
     if (!core || rapierDebugRef.current) return;
     try {
       rapierDebugRef.current = new RapierDebugRenderer(scene, core.world, {
-        // enabled: true,
-        enabled: false,
+        enabled: true,
       });
     } catch {}
   }, [physicsWireframe, scene]);
@@ -1073,8 +1108,18 @@ function Scene({
       }
       if (stepsRun === 0) return;
       // Update scene meshes first, then debug renderers to avoid Rapier aliasing issues
-      if (chunkMeshesRef.current)
+      if (batchedMeshResultRef.current) {
+        // Use optimized BatchedMesh update (single draw call)
+        updateBatchedChunkMesh(
+          core,
+          batchedMeshResultRef.current.batchedMesh,
+          batchedMeshResultRef.current.chunkToInstanceId,
+          { updateBVH: false } // BVH updates are expensive, use margin instead
+        );
+      } else if (chunkMeshesRef.current) {
+        // Fallback to individual mesh updates
         updateChunkMeshes(core, chunkMeshesRef.current);
+      }
       if (groupRef.current) updateProjectileMeshes(core, groupRef.current);
     } catch (e) {
       console.error(e);
@@ -1166,7 +1211,7 @@ function Scene({
   return (
     <>
       <group ref={groupRef} />
-      <ambientLight intensity={0.35} castShadow={shadowsEnabled} />
+      <ambientLight intensity={0.35} />
       <directionalLight
         castShadow={shadowsEnabled}
         position={[6, 8, 6]}
