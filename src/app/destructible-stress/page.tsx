@@ -43,8 +43,7 @@ import {
   buildChunkMeshesFromGeometries,
   buildBatchedChunkMesh,
   buildBatchedChunkMeshFromGeometries,
-  buildSolverDebugHelper,
-  computeWorldDebugLines,
+  SolverDebugLinesHelper,
   updateChunkMeshes,
   updateBatchedChunkMesh,
   updateProjectileMeshes,
@@ -317,9 +316,7 @@ function Scene({
   console.log("Scene render");
 
   const coreRef = useRef<DestructibleCore | null>(null);
-  const debugHelperRef = useRef<ReturnType<
-    typeof buildSolverDebugHelper
-  > | null>(null);
+  const debugHelperRef = useRef<SolverDebugLinesHelper | null>(null);
   const debugLinesActiveRef = useRef(false);
   const frameStatsRef = useRef({ samples: 0, total: 0, max: 0 });
   const frameLogRef = useRef(0);
@@ -563,7 +560,7 @@ function Scene({
         batchedMeshResultRef.current = null;
       }
 
-      const helper = buildSolverDebugHelper();
+      const helper = new SolverDebugLinesHelper();
       debugHelperRef.current = helper;
       groupRef.current?.add(helper.object);
 
@@ -645,6 +642,10 @@ function Scene({
       } catch {}
       if (coreRef.current) coreRef.current.dispose();
       coreRef.current = null;
+      // Clear debug lines caches when core is disposed
+      if (debugHelperRef.current) {
+        debugHelperRef.current.invalidate();
+      }
     };
   }, [
     iteration,
@@ -1130,14 +1131,15 @@ function Scene({
     // Update Rapier wireframe last
     if (rapierDebugRef.current) rapierDebugRef.current.update();
     const helper = debugHelperRef.current;
-    if (debug && helper) {
-      const lines = core.getSolverDebugLines();
-      const worldLines = computeWorldDebugLines(core, lines);
-      helper.update(worldLines, showAllDebugLines);
-      debugLinesActiveRef.current = true;
-    } else if (debugLinesActiveRef.current && helper) {
-      helper.update([], false);
-      debugLinesActiveRef.current = false;
+    if (helper) {
+      if (debug) {
+        const lines = core.getSolverDebugLines();
+        helper.update(core, lines, showAllDebugLines);
+        debugLinesActiveRef.current = true;
+      } else if (debugLinesActiveRef.current) {
+        helper.update(core, [], false);
+        debugLinesActiveRef.current = false;
+      }
     }
 
     if (bodyCountRef?.current || activeBodyCountRef?.current || colliderCountRef?.current) {
