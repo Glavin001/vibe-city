@@ -73,6 +73,12 @@ const demoCategories: DemoCategory[] = [
         icon: "🌧️",
         title: "GPU Compute Particles Rain",
         description: "WebGPU compute shader rain simulation with 50,000 particles. Features real-time collision detection via render-to-texture, GPU-driven particle physics, and dynamic ripple effects."
+      },
+      {
+        href: "/gpu-dust",
+        icon: "🌫️",
+        title: "GPGPU Dust Explosion",
+        description: "Volumetric dust plume with collider streaming into GPU computation textures. Control puff size, turbulence, and scene obstacles while the cyan truck stirs up the debris."
       }
     ]
   },
