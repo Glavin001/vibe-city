@@ -1,9 +1,11 @@
 "use client";
 
-import { OrbitControls, StatsGl } from "@react-three/drei";
+import { OrbitControls } from "@react-three/drei";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Perf as R3FPerf } from "r3f-perf";
 import {
+  memo,
+  startTransition,
   useCallback,
   useEffect,
   useMemo,
@@ -39,16 +41,40 @@ import { buildWallScenario } from "@/lib/stress/scenarios/wallScenario";
 import {
   buildChunkMeshes,
   buildChunkMeshesFromGeometries,
-  buildSolverDebugHelper,
-  computeWorldDebugLines,
+  buildBatchedChunkMesh,
+  buildBatchedChunkMeshFromGeometries,
+  SolverDebugLinesHelper,
   updateChunkMeshes,
+  updateBatchedChunkMesh,
   updateProjectileMeshes,
+  type BatchedChunkMeshResult,
 } from "@/lib/stress/three/destructible-adapter";
+
+const shadowsEnabled = true;
+
+type StressDebugWindow = Window & {
+  __stressFrameStats?: {
+    frames: number;
+    lastUseFrameMs: number;
+    maxUseFrameMs: number;
+    avgUseFrameMs: number;
+    updatedAt: number;
+  };
+  __stressOverlayStats?: {
+    renders: number;
+    lastDuration: number;
+    maxDuration: number;
+    updatedAt: number;
+  };
+};
+
+const perfNow = () =>
+  typeof performance !== "undefined" ? performance.now() : Date.now();
 
 function Ground() {
   return (
     <group>
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} receiveShadow>
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} receiveShadow={shadowsEnabled}>
         <planeGeometry args={[200, 200]} />
         <meshStandardMaterial color="#3d3d3d" />
       </mesh>
@@ -100,9 +126,12 @@ type SceneProps = {
   bondsZEnabled: boolean;
   autoBondingEnabled: boolean;
   adaptiveDt: boolean;
+  sleepLinearThreshold: number;
+  sleepAngularThreshold: number;
   onReset: () => void;
   bodyCountRef?: MutableRefObject<HTMLSpanElement | null>;
   activeBodyCountRef?: MutableRefObject<HTMLSpanElement | null>;
+  colliderCountRef?: MutableRefObject<HTMLSpanElement | null>;
   profiling?: {
     enabled: boolean;
     onSample?: (sample: CoreProfilerSample) => void;
@@ -276,16 +305,25 @@ function Scene({
   bondsZEnabled,
   autoBondingEnabled,
   adaptiveDt,
+  sleepLinearThreshold,
+  sleepAngularThreshold,
   onReset: _onReset,
   bodyCountRef,
   activeBodyCountRef,
+  colliderCountRef,
   profiling,
 }: SceneProps) {
+  console.log("Scene render");
+
   const coreRef = useRef<DestructibleCore | null>(null);
-  const debugHelperRef = useRef<ReturnType<
-    typeof buildSolverDebugHelper
-  > | null>(null);
+  const debugHelperRef = useRef<SolverDebugLinesHelper | null>(null);
+  const debugLinesActiveRef = useRef(false);
+  const frameStatsRef = useRef({ samples: 0, total: 0, max: 0 });
+  const frameLogRef = useRef(0);
   const chunkMeshesRef = useRef<THREE.Mesh[] | null>(null);
+  // BatchedMesh for optimized rendering (replaces chunkMeshesRef when useBatchedMesh=true)
+  const batchedMeshResultRef = useRef<BatchedChunkMeshResult | null>(null);
+  const useBatchedMesh = true; // Toggle to use BatchedMesh optimization
   const groupRef = useRef<THREE.Group>(null);
   const camera = useThree((s) => s.camera as THREE.Camera);
   const scene = useThree((s) => s.scene as THREE.Scene);
@@ -309,6 +347,14 @@ function Scene({
   useEffect(() => {
     singleCollisionModeRef.current = singleCollisionMode;
   }, [singleCollisionMode]);
+  const sleepLinearThresholdRef = useRef(sleepLinearThreshold);
+  useEffect(() => {
+    sleepLinearThresholdRef.current = sleepLinearThreshold;
+  }, [sleepLinearThreshold]);
+  const sleepAngularThresholdRef = useRef(sleepAngularThreshold);
+  useEffect(() => {
+    sleepAngularThresholdRef.current = sleepAngularThreshold;
+  }, [sleepAngularThreshold]);
   const isDev = true; //process.env.NODE_ENV !== 'production';
   useEffect(() => {
     physicsWireframeStateRef.current = physicsWireframe;
@@ -439,9 +485,11 @@ function Scene({
               rapierDebugRef.current.dispose({});
               rapierDebugRef.current = null;
             }
+            if (physicsWireframeStateRef.current) {
             rapierDebugRef.current = new RapierDebugRenderer(scene, newWorld, {
-              enabled: physicsWireframeStateRef.current,
+              enabled: true,
             });
+            }
           } catch {}
         },
         resimulateOnFracture,
@@ -449,12 +497,20 @@ function Scene({
         snapshotMode,
         resimulateOnDamageDestroy,
         singleCollisionMode: singleCollisionModeRef.current,
+        sleepLinearThreshold: sleepLinearThresholdRef.current,
+        sleepAngularThreshold: sleepAngularThresholdRef.current,
       });
       if (!mounted) {
         core.dispose();
         return;
       }
       coreRef.current = core;
+      try {
+        core.setSleepThresholds?.(
+          sleepLinearThresholdRef.current,
+          sleepAngularThresholdRef.current,
+        );
+      } catch {}
       const latestProfiling = profilingRef.current;
       if (
         latestProfiling?.enabled &&
@@ -477,13 +533,34 @@ function Scene({
       const params = scenario.parameters as unknown as
         | { fragmentGeometries?: THREE.BufferGeometry[] }
         | undefined;
-      const { objects } = params?.fragmentGeometries?.length
-        ? buildChunkMeshesFromGeometries(core, params.fragmentGeometries)
-        : buildChunkMeshes(core);
-      chunkMeshesRef.current = objects;
-      for (const o of objects) groupRef.current?.add(o);
 
-      const helper = buildSolverDebugHelper();
+      // Use BatchedMesh for optimized rendering (single draw call)
+      if (useBatchedMesh) {
+        const batchedResult = params?.fragmentGeometries?.length
+          ? buildBatchedChunkMeshFromGeometries(core, params.fragmentGeometries, {
+              enablePerInstanceUniforms: true,
+              enableBVH: false, // Disable BVH - it causes aggressive culling when camera is close
+              bvhMargin: 5.0,
+            })
+          : buildBatchedChunkMesh(core, {
+              enablePerInstanceUniforms: true,
+              enableBVH: false, // Disable BVH - it causes aggressive culling when camera is close
+              bvhMargin: 5.0,
+            });
+        batchedMeshResultRef.current = batchedResult;
+        groupRef.current?.add(batchedResult.batchedMesh);
+        chunkMeshesRef.current = null; // Not using individual meshes
+      } else {
+        // Fallback to individual meshes (legacy path)
+        const { objects } = params?.fragmentGeometries?.length
+          ? buildChunkMeshesFromGeometries(core, params.fragmentGeometries)
+          : buildChunkMeshes(core);
+        chunkMeshesRef.current = objects;
+        for (const o of objects) groupRef.current?.add(o);
+        batchedMeshResultRef.current = null;
+      }
+
+      const helper = new SolverDebugLinesHelper();
       debugHelperRef.current = helper;
       groupRef.current?.add(helper.object);
 
@@ -493,10 +570,11 @@ function Scene({
           rapierDebugRef.current.dispose({});
           rapierDebugRef.current = null;
         }
-        // Initialize with current wireframe state stored in ref; further changes handled by separate effect
-        rapierDebugRef.current = new RapierDebugRenderer(scene, core.world, {
-          enabled: physicsWireframeStateRef.current,
-        });
+        if (physicsWireframeStateRef.current) {
+          rapierDebugRef.current = new RapierDebugRenderer(scene, core.world, {
+            enabled: true,
+          });
+        }
       } catch {}
       if (isDev)
         console.debug("[Page] Initialized destructible core", {
@@ -511,6 +589,16 @@ function Scene({
         if (rapierDebugRef.current) {
           rapierDebugRef.current.dispose({});
           rapierDebugRef.current = null;
+        }
+        // Dispose BatchedMesh if using it
+        if (batchedMeshResultRef.current) {
+          try {
+            if (groupRef.current && batchedMeshResultRef.current.batchedMesh) {
+              groupRef.current.remove(batchedMeshResultRef.current.batchedMesh);
+            }
+            batchedMeshResultRef.current.dispose();
+          } catch {}
+          batchedMeshResultRef.current = null;
         }
         if (groupRef.current) {
           const children = [...groupRef.current.children];
@@ -554,6 +642,10 @@ function Scene({
       } catch {}
       if (coreRef.current) coreRef.current.dispose();
       coreRef.current = null;
+      // Clear debug lines caches when core is disposed
+      if (debugHelperRef.current) {
+        debugHelperRef.current.invalidate();
+      }
     };
   }, [
     iteration,
@@ -621,12 +713,23 @@ function Scene({
 
   // Toggle Rapier wireframe on/off when checkbox changes
   useEffect(() => {
-    const dbg = rapierDebugRef.current;
-    if (!dbg) return;
+    const core = coreRef.current;
+    if (!physicsWireframe) {
+      if (rapierDebugRef.current) {
     try {
-      dbg.setEnabled(physicsWireframe);
+          rapierDebugRef.current.dispose({});
     } catch {}
-  }, [physicsWireframe]);
+        rapierDebugRef.current = null;
+      }
+      return;
+    }
+    if (!core || rapierDebugRef.current) return;
+    try {
+      rapierDebugRef.current = new RapierDebugRenderer(scene, core.world, {
+        enabled: true,
+      });
+    } catch {}
+  }, [physicsWireframe, scene]);
 
   // Apply single-collision policy when toggled
   useEffect(() => {
@@ -692,6 +795,12 @@ function Scene({
     const core = coreRef.current;
     if (core) core.setGravity(gravity);
   }, [gravity]);
+
+  useEffect(() => {
+    const core = coreRef.current;
+    if (!core || typeof core.setSleepThresholds !== "function") return;
+    core.setSleepThresholds(sleepLinearThreshold, sleepAngularThreshold);
+  }, [sleepLinearThreshold, sleepAngularThreshold]);
 
   useEffect(() => {
     const core = coreRef.current;
@@ -953,17 +1062,20 @@ function Scene({
   const hasCrashed = useRef(false);
   const lastBodyCountRef = useRef<number | null>(null);
   const lastActiveBodyCountRef = useRef<number | null>(null);
+  const lastColliderCountRef = useRef<number | null>(null);
   const accumulatorRef = useRef(0);
   const FIXED_STEP_DT = 1 / 60;
   const MIN_STEP_DT = 1 / 240;
   const MAX_STEP_DT = 1 / 30;
   const MAX_FRAME_DELTA = 0.1;
   const MAX_SUBSTEPS_PER_FRAME = 5;
+
   useFrame((_, delta) => {
     if (hasCrashed.current) return;
 
     const core = coreRef.current;
     if (!core) return;
+    const frameStart = perfNow();
     const clampedDelta =
       Number.isFinite(delta) && delta > 0
         ? Math.min(delta, MAX_FRAME_DELTA)
@@ -997,8 +1109,18 @@ function Scene({
       }
       if (stepsRun === 0) return;
       // Update scene meshes first, then debug renderers to avoid Rapier aliasing issues
-      if (chunkMeshesRef.current)
+      if (batchedMeshResultRef.current) {
+        // Use optimized BatchedMesh update (single draw call)
+        updateBatchedChunkMesh(
+          core,
+          batchedMeshResultRef.current.batchedMesh,
+          batchedMeshResultRef.current.chunkToInstanceId,
+          { updateBVH: false } // BVH updates are expensive, use margin instead
+        );
+      } else if (chunkMeshesRef.current) {
+        // Fallback to individual mesh updates
         updateChunkMeshes(core, chunkMeshesRef.current);
+      }
       if (groupRef.current) updateProjectileMeshes(core, groupRef.current);
     } catch (e) {
       console.error(e);
@@ -1008,17 +1130,22 @@ function Scene({
 
     // Update Rapier wireframe last
     if (rapierDebugRef.current) rapierDebugRef.current.update();
-    if (debug && debugHelperRef.current) {
-      const lines = core.getSolverDebugLines();
-      const worldLines = computeWorldDebugLines(core, lines);
-      debugHelperRef.current.update(worldLines, showAllDebugLines);
-    } else if (debugHelperRef.current) {
-      debugHelperRef.current.update([], false);
+    const helper = debugHelperRef.current;
+    if (helper) {
+      if (debug) {
+        const lines = core.getSolverDebugLines();
+        helper.update(core, lines, showAllDebugLines);
+        debugLinesActiveRef.current = true;
+      } else if (debugLinesActiveRef.current) {
+        helper.update(core, [], false);
+        debugLinesActiveRef.current = false;
+      }
     }
 
-    if (bodyCountRef?.current || activeBodyCountRef?.current) {
+    if (bodyCountRef?.current || activeBodyCountRef?.current || colliderCountRef?.current) {
       let liveCount = 0;
       let activeCount = 0;
+      let colliderCount = 0;
       try {
         core.world.forEachRigidBody(() => {
           liveCount += 1;
@@ -1033,6 +1160,11 @@ function Scene({
       } catch {
         activeCount = 0;
       }
+      try {
+        colliderCount = core.colliderToNode ? core.colliderToNode.size : 0;
+      } catch {
+        colliderCount = 0;
+      }
       if (bodyCountRef?.current && lastBodyCountRef.current !== liveCount) {
         bodyCountRef.current.textContent = liveCount.toString();
         lastBodyCountRef.current = liveCount;
@@ -1044,7 +1176,38 @@ function Scene({
         activeBodyCountRef.current.textContent = activeCount.toString();
         lastActiveBodyCountRef.current = activeCount;
       }
+      if (
+        colliderCountRef?.current &&
+        lastColliderCountRef.current !== colliderCount
+      ) {
+        colliderCountRef.current.textContent = colliderCount.toString();
+        lastColliderCountRef.current = colliderCount;
+      }
     }
+
+    const duration = perfNow() - frameStart;
+    const stats = frameStatsRef.current;
+    stats.samples += 1;
+    stats.total += duration;
+    stats.max = Math.max(stats.max, duration);
+    try {
+      const stressWindow = window as StressDebugWindow;
+      stressWindow.__stressFrameStats = {
+        frames: stats.samples,
+        lastUseFrameMs: duration,
+        maxUseFrameMs: stats.max,
+        avgUseFrameMs: stats.total / stats.samples,
+        updatedAt: Date.now(),
+      };
+      if (duration > 4 && perfNow() - frameLogRef.current > 1000) {
+        frameLogRef.current = perfNow();
+        console.info(
+          `[FrameStats] useFrame took ${duration.toFixed(
+            2,
+          )} ms (avg ${(stats.total / stats.samples).toFixed(2)} ms)`,
+        );
+      }
+    } catch {}
   });
 
   return (
@@ -1052,7 +1215,7 @@ function Scene({
       <group ref={groupRef} />
       <ambientLight intensity={0.35} />
       <directionalLight
-        castShadow
+        castShadow={shadowsEnabled}
         position={[6, 8, 6]}
         intensity={1.2}
         shadow-mapSize-width={2048}
@@ -1064,101 +1227,20 @@ function Scene({
   );
 }
 
-function HtmlOverlay({
-  debug,
-  setDebug,
-  physicsWireframe,
-  setPhysicsWireframe,
-  gravity,
-  setGravity,
-  solverGravityEnabled,
-  setSolverGravityEnabled,
-  singleCollisionMode,
-  setSingleCollisionMode,
-  skipSingleBodies,
-  setSkipSingleBodies,
-  damageEnabled,
-  setDamageEnabled,
-  mode,
-  setMode,
-  projType,
-  setProjType,
-  reset,
-  projectileSpeed,
-  setProjectileSpeed,
-  projectileMass,
-  setProjectileMass,
-  projectileRadius,
-  setProjectileRadius,
-  materialScale,
-  setMaterialScale,
-  wallSpan,
-  setWallSpan,
-  wallHeight,
-  setWallHeight,
-  wallThickness,
-  setWallThickness,
-  wallSpanSeg,
-  setWallSpanSeg,
-  wallHeightSeg,
-  setWallHeightSeg,
-  wallLayers,
-  setWallLayers,
-  showAllDebugLines,
-  setShowAllDebugLines,
-  bondsXEnabled,
-  setBondsXEnabled,
-  bondsYEnabled,
-  setBondsYEnabled,
-  bondsZEnabled,
-  setBondsZEnabled,
-  autoBondingEnabled,
-  setAutoBondingEnabled,
-  structureId,
-  setStructureId,
-  structures,
-  structureDescription,
-  pushForce,
-  setPushForce,
-  damageClickRatio,
-  setDamageClickRatio,
-  contactDamageScale,
-  setContactDamageScale,
-  minImpulseThreshold,
-  setMinImpulseThreshold,
-  contactCooldownMs,
-  setContactCooldownMs,
-  internalContactScale,
-  setInternalContactScale,
-  speedMinExternal,
-  setSpeedMinExternal,
-  speedMinInternal,
-  setSpeedMinInternal,
-  speedMax,
-  setSpeedMax,
-  speedExponent,
-  setSpeedExponent,
-  slowSpeedFactor,
-  setSlowSpeedFactor,
-  fastSpeedFactor,
-  setFastSpeedFactor,
-  resimulateOnFracture,
-  setResimulateOnFracture,
-  maxResimulationPasses,
-  setMaxResimulationPasses,
-  snapshotMode,
-  setSnapshotMode,
-  resimulateOnDamageDestroy,
-  setResimulateOnDamageDestroy,
-  bodyCountRef,
-  activeBodyCountRef,
-  adaptiveDt,
-  setAdaptiveDt,
-  profilingEnabled,
-  startProfiling,
-  stopProfiling,
-  profilerStats,
-}: {
+type ProfilerStatsState = {
+  sampleCount: number;
+  lastFrameMs: number | null;
+  lastSample: CoreProfilerSample | null;
+};
+
+type ProfilerControlsProps = {
+  profilingEnabled: boolean;
+  startProfiling: () => void;
+  stopProfiling: () => void;
+  profilerStats: ProfilerStatsState;
+};
+
+type HtmlOverlayProps = {
   debug: boolean;
   setDebug: (v: boolean) => void;
   physicsWireframe: boolean;
@@ -1246,17 +1328,30 @@ function HtmlOverlay({
   setResimulateOnDamageDestroy: (v: boolean) => void;
   bodyCountRef: MutableRefObject<HTMLSpanElement | null>;
   activeBodyCountRef: MutableRefObject<HTMLSpanElement | null>;
+  colliderCountRef: MutableRefObject<HTMLSpanElement | null>;
   adaptiveDt: boolean;
   setAdaptiveDt: (v: boolean) => void;
-  profilingEnabled: boolean;
-  startProfiling: () => void;
-  stopProfiling: () => void;
-  profilerStats: {
-    sampleCount: number;
-    lastFrameMs: number | null;
-    lastSample: CoreProfilerSample | null;
-  };
-}) {
+  sleepLinearThreshold: number;
+  setSleepLinearThreshold: (v: number) => void;
+  sleepAngularThreshold: number;
+  setSleepAngularThreshold: (v: number) => void;
+  showPerfOverlay: boolean;
+  setShowPerfOverlay: (v: boolean) => void;
+} & ProfilerControlsProps;
+
+const PROFILER_STATS_THROTTLE_MS = 200;
+const EMPTY_PROFILER_STATS: ProfilerStatsState = {
+  sampleCount: 0,
+  lastFrameMs: null,
+  lastSample: null,
+};
+
+const ProfilerControls = memo(function ProfilerControls({
+  profilingEnabled,
+  startProfiling,
+  stopProfiling,
+  profilerStats,
+}: ProfilerControlsProps) {
   const lastSample = profilerStats.lastSample;
   const formatMs = (value?: number | null) =>
     typeof value === "number" ? `${value.toFixed(2)} ms` : "-";
@@ -1306,26 +1401,7 @@ function HtmlOverlay({
         { label: "Projectile cleanup", value: lastSample.projectileCleanupMs },
       ]
     : [];
-  const isWallStructure =
-    structureId === "wall" ||
-    structureId === "fracturedWall" ||
-    structureId === "brickWall";
   return (
-    <div
-      style={{
-        position: "absolute",
-        top: 110,
-        left: 16,
-        bottom: 16,
-        zIndex: 10,
-        display: "flex",
-        flexDirection: "column",
-        gap: 8,
-        maxWidth: 360,
-        overflowY: "auto",
-        paddingRight: 8,
-      }}
-    >
       <div
         style={{
           display: "flex",
@@ -1442,6 +1518,176 @@ function HtmlOverlay({
         </div>
       ) : null}
       </div>
+  );
+});
+
+function HtmlOverlay(props: HtmlOverlayProps) {
+  const {
+    debug,
+    setDebug,
+    physicsWireframe,
+    setPhysicsWireframe,
+  gravity,
+  setGravity,
+  solverGravityEnabled,
+  setSolverGravityEnabled,
+  singleCollisionMode,
+  setSingleCollisionMode,
+  skipSingleBodies,
+  setSkipSingleBodies,
+  damageEnabled,
+  setDamageEnabled,
+  mode,
+  setMode,
+  projType,
+  setProjType,
+  reset,
+  projectileSpeed,
+  setProjectileSpeed,
+  projectileMass,
+  setProjectileMass,
+  projectileRadius,
+  setProjectileRadius,
+  materialScale,
+  setMaterialScale,
+  wallSpan,
+  setWallSpan,
+  wallHeight,
+  setWallHeight,
+  wallThickness,
+  setWallThickness,
+  wallSpanSeg,
+  setWallSpanSeg,
+  wallHeightSeg,
+  setWallHeightSeg,
+  wallLayers,
+  setWallLayers,
+  showAllDebugLines,
+  setShowAllDebugLines,
+  bondsXEnabled,
+  setBondsXEnabled,
+  bondsYEnabled,
+  setBondsYEnabled,
+  bondsZEnabled,
+  setBondsZEnabled,
+  autoBondingEnabled,
+  setAutoBondingEnabled,
+  structureId,
+  setStructureId,
+  structures,
+  structureDescription,
+  pushForce,
+  setPushForce,
+  damageClickRatio,
+  setDamageClickRatio,
+  contactDamageScale,
+  setContactDamageScale,
+  minImpulseThreshold,
+  setMinImpulseThreshold,
+  contactCooldownMs,
+  setContactCooldownMs,
+  internalContactScale,
+  setInternalContactScale,
+  speedMinExternal,
+  setSpeedMinExternal,
+  speedMinInternal,
+  setSpeedMinInternal,
+  speedMax,
+  setSpeedMax,
+  speedExponent,
+  setSpeedExponent,
+  slowSpeedFactor,
+  setSlowSpeedFactor,
+  fastSpeedFactor,
+  setFastSpeedFactor,
+  resimulateOnFracture,
+  setResimulateOnFracture,
+  maxResimulationPasses,
+  setMaxResimulationPasses,
+  snapshotMode,
+  setSnapshotMode,
+  resimulateOnDamageDestroy,
+  setResimulateOnDamageDestroy,
+  bodyCountRef,
+  activeBodyCountRef,
+  colliderCountRef,
+  adaptiveDt,
+  setAdaptiveDt,
+  sleepLinearThreshold,
+  setSleepLinearThreshold,
+  sleepAngularThreshold,
+  setSleepAngularThreshold,
+  showPerfOverlay,
+  setShowPerfOverlay,
+  profilingEnabled,
+  startProfiling,
+  stopProfiling,
+  profilerStats,
+  } = props;
+  const overlayRenderStart = perfNow();
+  useEffect(() => {
+    const duration = perfNow() - overlayRenderStart;
+    try {
+      const stressWindow = window as StressDebugWindow;
+      const stats = stressWindow.__stressOverlayStats ?? {
+        renders: 0,
+        maxDuration: 0,
+        lastDuration: 0,
+        updatedAt: Date.now(),
+      };
+      stats.renders += 1;
+      stats.lastDuration = duration;
+      stats.maxDuration = Math.max(stats.maxDuration, duration);
+      stats.updatedAt = Date.now();
+      stressWindow.__stressOverlayStats = stats;
+      if (duration > 4) {
+        console.info(`[Overlay] render ${duration.toFixed(2)} ms`);
+      }
+    } catch {}
+  });
+  const isWallStructure =
+    structureId === "wall" ||
+    structureId === "fracturedWall" ||
+    structureId === "brickWall";
+  return (
+    <div
+      style={{
+        position: "absolute",
+        top: 110,
+        left: 16,
+        bottom: 16,
+        zIndex: 10,
+        display: "flex",
+        flexDirection: "column",
+        gap: 8,
+        maxWidth: 360,
+        overflowY: "auto",
+        paddingRight: 8,
+      }}
+    >
+      <ProfilerControls
+        profilingEnabled={profilingEnabled}
+        startProfiling={startProfiling}
+        stopProfiling={stopProfiling}
+        profilerStats={profilerStats}
+      />
+      <label
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          color: "#d1d5db",
+          fontSize: 14,
+        }}
+      >
+        <input
+          type="checkbox"
+          checked={showPerfOverlay}
+          onChange={(e) => setShowPerfOverlay(e.target.checked)}
+          style={{ accentColor: "#4da2ff", width: 16, height: 16 }}
+        />
+        Show perf overlay
+      </label>
       <div style={{ display: "flex", gap: 8 }}>
         <button
           type="button"
@@ -1527,6 +1773,19 @@ function HtmlOverlay({
       >
         <span>Active rigid bodies</span>
         <span ref={activeBodyCountRef}>-</span>
+      </div>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          color: "#e5e7eb",
+          fontSize: 14,
+          fontVariantNumeric: "tabular-nums",
+        }}
+      >
+        <span>Colliders</span>
+        <span ref={colliderCountRef}>-</span>
       </div>
       <label
         style={{
@@ -1652,6 +1911,70 @@ function HtmlOverlay({
           style={{ accentColor: "#4da2ff", width: 16, height: 16 }}
         />
         Adaptive dt (render delta)
+      </label>
+      <label
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          color: "#d1d5db",
+          fontSize: 14,
+        }}
+      >
+        Sleep linear threshold (m/s)
+        <input
+          type="number"
+          min={0}
+          step={0.01}
+          value={sleepLinearThreshold}
+          onChange={(e) => {
+            const next = e.target.valueAsNumber;
+            setSleepLinearThreshold(Number.isFinite(next) ? Math.max(0, next) : 0);
+          }}
+          style={{
+            flex: 1,
+            background: "#111",
+            color: "#eee",
+            border: "1px solid #333",
+            borderRadius: 6,
+            padding: "6px 8px",
+          }}
+        />
+        <span style={{ color: "#9ca3af", width: 90, textAlign: "right" }}>
+          {sleepLinearThreshold.toFixed(2)} m/s
+        </span>
+      </label>
+      <label
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          color: "#d1d5db",
+          fontSize: 14,
+        }}
+      >
+        Sleep angular threshold (rad/s)
+        <input
+          type="number"
+          min={0}
+          step={0.01}
+          value={sleepAngularThreshold}
+          onChange={(e) => {
+            const next = e.target.valueAsNumber;
+            setSleepAngularThreshold(Number.isFinite(next) ? Math.max(0, next) : 0);
+          }}
+          style={{
+            flex: 1,
+            background: "#111",
+            color: "#eee",
+            border: "1px solid #333",
+            borderRadius: 6,
+            padding: "6px 8px",
+          }}
+        />
+        <span style={{ color: "#9ca3af", width: 90, textAlign: "right" }}>
+          {sleepAngularThreshold.toFixed(2)} rad/s
+        </span>
       </label>
       <label
         style={{
@@ -2397,11 +2720,15 @@ function HtmlOverlay({
 }
 
 export default function Page() {
+  console.log("Page render");
+
   const [debug, setDebug] = useState(false);
   const [physicsWireframe, setPhysicsWireframe] = useState(false);
   const [gravity, setGravity] = useState(-9.81);
   const [solverGravityEnabled, setSolverGravityEnabled] = useState(true);
   const [adaptiveDt, setAdaptiveDt] = useState(true);
+  const [sleepLinearThreshold, setSleepLinearThreshold] = useState(0.1);
+  const [sleepAngularThreshold, setSleepAngularThreshold] = useState(0.1);
   const [singleCollisionMode, setSingleCollisionMode] =
     useState<SingleCollisionMode>("all");
   const [skipSingleBodies, setSkipSingleBodies] = useState(false);
@@ -2422,7 +2749,8 @@ export default function Page() {
   const [speedExponent, setSpeedExponent] = useState(1.0);
   const [slowSpeedFactor, setSlowSpeedFactor] = useState(0.1);
   const [fastSpeedFactor, setFastSpeedFactor] = useState(10.0);
-  const [structureId, setStructureId] = useState<StressPresetId>("hut");
+  // const [structureId, setStructureId] = useState<StressPresetId>("hut");
+  const [structureId, setStructureId] = useState<StressPresetId>("tower");
   const [projType, setProjType] = useState<"ball" | "box">("ball");
   const [projectileSpeed, setProjectileSpeed] = useState(36);
   const [projectileMass, setProjectileMass] = useState(15000);
@@ -2447,14 +2775,44 @@ export default function Page() {
   const [bondsYEnabled, setBondsYEnabled] = useState(true);
   const [bondsZEnabled, setBondsZEnabled] = useState(true);
   const [autoBondingEnabled, setAutoBondingEnabled] = useState(false);
+  const [showPerfOverlay, setShowPerfOverlay] = useState(true);
   const [profilingEnabled, setProfilingEnabled] = useState(false);
   const profilerSamplesRef = useRef<CoreProfilerSample[]>([]);
   const profilerSessionRef = useRef<{ startedAt: number; config: Record<string, unknown> } | null>(null);
-  const [profilerStats, setProfilerStats] = useState<{
-    sampleCount: number;
-    lastFrameMs: number | null;
-    lastSample: CoreProfilerSample | null;
-  }>({ sampleCount: 0, lastFrameMs: null, lastSample: null });
+  const [profilerStats, setProfilerStats] =
+    useState<ProfilerStatsState>(EMPTY_PROFILER_STATS);
+  const profilerPendingStatsRef = useRef<ProfilerStatsState | null>(null);
+  const profilerStatsTimerRef = useRef<number | null>(null);
+  const scheduleProfilerStatsUpdate = useCallback(
+    (next: ProfilerStatsState, immediate = false) => {
+      profilerPendingStatsRef.current = next;
+      if (immediate) {
+        if (profilerStatsTimerRef.current != null) {
+          window.clearTimeout(profilerStatsTimerRef.current);
+          profilerStatsTimerRef.current = null;
+        }
+        startTransition(() => setProfilerStats(next));
+        profilerPendingStatsRef.current = null;
+        return;
+      }
+      if (profilerStatsTimerRef.current != null) return;
+      profilerStatsTimerRef.current = window.setTimeout(() => {
+        profilerStatsTimerRef.current = null;
+        const latest = profilerPendingStatsRef.current;
+        if (!latest) return;
+        startTransition(() => setProfilerStats(latest));
+        profilerPendingStatsRef.current = null;
+      }, PROFILER_STATS_THROTTLE_MS);
+    },
+    [],
+  );
+  useEffect(() => {
+    return () => {
+      if (profilerStatsTimerRef.current != null) {
+        window.clearTimeout(profilerStatsTimerRef.current);
+      }
+    };
+  }, []);
   const captureProfilerConfig = useCallback(
     () => ({
       structureId,
@@ -2462,6 +2820,8 @@ export default function Page() {
       gravity,
       solverGravityEnabled,
       adaptiveDt,
+      sleepLinearThreshold,
+      sleepAngularThreshold,
       singleCollisionMode,
       skipSingleBodies,
       damageEnabled,
@@ -2503,6 +2863,8 @@ export default function Page() {
       gravity,
       solverGravityEnabled,
       adaptiveDt,
+      sleepLinearThreshold,
+      sleepAngularThreshold,
       singleCollisionMode,
       skipSingleBodies,
       damageEnabled,
@@ -2541,26 +2903,34 @@ export default function Page() {
   );
   const rigidBodyCountRef = useRef<HTMLSpanElement | null>(null);
   const activeRigidBodyCountRef = useRef<HTMLSpanElement | null>(null);
+  const colliderCountRef = useRef<HTMLSpanElement | null>(null);
   const structures = STRESS_PRESET_METADATA;
   const currentStructure =
     structures.find((item) => item.id === structureId) ?? structures[0];
-  const handleProfilerSample = useCallback((sample: CoreProfilerSample) => {
+  const handleProfilerSample = useCallback(
+    (sample: CoreProfilerSample) => {
     profilerSamplesRef.current.push(sample);
-    setProfilerStats({
+      scheduleProfilerStatsUpdate(
+        {
       sampleCount: profilerSamplesRef.current.length,
-      lastFrameMs: sample.totalMs,
+          lastFrameMs:
+            typeof sample.totalMs === "number" ? sample.totalMs : null,
       lastSample: sample,
-    });
-  }, []);
+        },
+        false,
+      );
+    },
+    [scheduleProfilerStatsUpdate],
+  );
   const startProfiling = useCallback(() => {
     profilerSamplesRef.current = [];
     profilerSessionRef.current = {
       startedAt: Date.now(),
       config: captureProfilerConfig(),
     };
-    setProfilerStats({ sampleCount: 0, lastFrameMs: null, lastSample: null });
+    scheduleProfilerStatsUpdate(EMPTY_PROFILER_STATS, true);
     setProfilingEnabled(true);
-  }, [captureProfilerConfig]);
+  }, [captureProfilerConfig, scheduleProfilerStatsUpdate]);
   const stopProfiling = useCallback(() => {
     setProfilingEnabled(false);
     const payload = {
@@ -2583,8 +2953,8 @@ export default function Page() {
     URL.revokeObjectURL(url);
     profilerSessionRef.current = null;
     profilerSamplesRef.current = [];
-    setProfilerStats({ sampleCount: 0, lastFrameMs: null, lastSample: null });
-  }, [captureProfilerConfig]);
+    scheduleProfilerStatsUpdate(EMPTY_PROFILER_STATS, true);
+  }, [captureProfilerConfig, scheduleProfilerStatsUpdate]);
   const profilingControls = useMemo(
     () => ({
       enabled: profilingEnabled,
@@ -2683,14 +3053,22 @@ export default function Page() {
         setResimulateOnDamageDestroy={setResimulateOnDamageDestroy}
         bodyCountRef={rigidBodyCountRef}
         activeBodyCountRef={activeRigidBodyCountRef}
+        colliderCountRef={colliderCountRef}
         adaptiveDt={adaptiveDt}
         setAdaptiveDt={setAdaptiveDt}
+        sleepLinearThreshold={sleepLinearThreshold}
+        setSleepLinearThreshold={setSleepLinearThreshold}
+        sleepAngularThreshold={sleepAngularThreshold}
+        setSleepAngularThreshold={setSleepAngularThreshold}
+        showPerfOverlay={showPerfOverlay}
+        setShowPerfOverlay={setShowPerfOverlay}
         profilingEnabled={profilingEnabled}
         startProfiling={startProfiling}
         stopProfiling={stopProfiling}
         profilerStats={profilerStats}
       />
-      <Canvas shadows camera={{ position: [7, 5, 9], fov: 45 }}>
+      
+      <Canvas shadows={shadowsEnabled} camera={{ position: [7, 5, 9], fov: 45 }}>
         <color attach="background" args={["#0e0e12"]} />
         <Scene
           debug={debug}
@@ -2738,13 +3116,18 @@ export default function Page() {
           onReset={() => setIteration((v) => v + 1)}
           bodyCountRef={rigidBodyCountRef}
           activeBodyCountRef={activeRigidBodyCountRef}
+        colliderCountRef={colliderCountRef}
           adaptiveDt={adaptiveDt}
+          sleepLinearThreshold={sleepLinearThreshold}
+          sleepAngularThreshold={sleepAngularThreshold}
           profiling={profilingControls}
         />
-        <R3FPerf
-          // matrixUpdate deepAnalyze overClock
-          position="top-left"
-        />
+        {showPerfOverlay ? (
+          <R3FPerf
+            // matrixUpdate deepAnalyze overClock
+            position="top-left"
+          />
+        ) : null}
         {/* <StatsGl className="absolute top-2 left-2" trackGPU={true} horizontal={true} /> */}
       </Canvas>
     </div>
