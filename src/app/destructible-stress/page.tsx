@@ -75,7 +75,11 @@ const perfNow = () =>
 function Ground() {
   return (
     <group>
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} receiveShadow={shadowsEnabled}>
+      <mesh
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[0, 0, 0]}
+        receiveShadow={shadowsEnabled}
+      >
         <planeGeometry args={[200, 200]} />
         <meshStandardMaterial color="#3d3d3d" />
       </mesh>
@@ -352,9 +356,8 @@ function Scene({
   useEffect(() => {
     solverGravityRef.current = solverGravityEnabled;
   }, [solverGravityEnabled]);
-  const singleCollisionModeRef = useRef<SingleCollisionMode>(
-    singleCollisionMode,
-  );
+  const singleCollisionModeRef =
+    useRef<SingleCollisionMode>(singleCollisionMode);
   useEffect(() => {
     singleCollisionModeRef.current = singleCollisionMode;
   }, [singleCollisionMode]);
@@ -517,9 +520,13 @@ function Scene({
               rapierDebugRef.current = null;
             }
             if (physicsWireframeStateRef.current) {
-            rapierDebugRef.current = new RapierDebugRenderer(scene, newWorld, {
-              enabled: true,
-            });
+              rapierDebugRef.current = new RapierDebugRenderer(
+                scene,
+                newWorld,
+                {
+                  enabled: true,
+                },
+              );
             }
           } catch {}
         },
@@ -575,11 +582,15 @@ function Scene({
       // Use BatchedMesh for optimized rendering (single draw call)
       if (useBatchedMesh) {
         const batchedResult = params?.fragmentGeometries?.length
-          ? buildBatchedChunkMeshFromGeometries(core, params.fragmentGeometries, {
-              enablePerInstanceUniforms: true,
-              enableBVH: false, // Disable BVH - it causes aggressive culling when camera is close
-              bvhMargin: 5.0,
-            })
+          ? buildBatchedChunkMeshFromGeometries(
+              core,
+              params.fragmentGeometries,
+              {
+                enablePerInstanceUniforms: true,
+                enableBVH: false, // Disable BVH - it causes aggressive culling when camera is close
+                bvhMargin: 5.0,
+              },
+            )
           : buildBatchedChunkMesh(core, {
               enablePerInstanceUniforms: true,
               enableBVH: false, // Disable BVH - it causes aggressive culling when camera is close
@@ -754,9 +765,9 @@ function Scene({
     const core = coreRef.current;
     if (!physicsWireframe) {
       if (rapierDebugRef.current) {
-    try {
+        try {
           rapierDebugRef.current.dispose({});
-    } catch {}
+        } catch {}
         rapierDebugRef.current = null;
       }
       return;
@@ -850,7 +861,12 @@ function Scene({
       minLinearDamping: smallBodyMinLinearDamping,
       minAngularDamping: smallBodyMinAngularDamping,
     });
-  }, [smallBodyDampingMode, smallBodyColliderThreshold, smallBodyMinLinearDamping, smallBodyMinAngularDamping]);
+  }, [
+    smallBodyDampingMode,
+    smallBodyColliderThreshold,
+    smallBodyMinLinearDamping,
+    smallBodyMinAngularDamping,
+  ]);
 
   // Update sleep mode dynamically
   useEffect(() => {
@@ -1172,7 +1188,7 @@ function Scene({
           core,
           batchedMeshResultRef.current.batchedMesh,
           batchedMeshResultRef.current.chunkToInstanceId,
-          { updateBVH: false } // BVH updates are expensive, use margin instead
+          { updateBVH: false }, // BVH updates are expensive, use margin instead
         );
       } else if (chunkMeshesRef.current) {
         // Fallback to individual mesh updates
@@ -1199,7 +1215,11 @@ function Scene({
       }
     }
 
-    if (bodyCountRef?.current || activeBodyCountRef?.current || colliderCountRef?.current) {
+    if (
+      bodyCountRef?.current ||
+      activeBodyCountRef?.current ||
+      colliderCountRef?.current
+    ) {
       let liveCount = 0;
       let activeCount = 0;
       let colliderCount = 0;
@@ -1466,62 +1486,65 @@ const ProfilerControls = memo(function ProfilerControls({
         { label: "Spawn queue", value: lastSample.spawnMs },
         { label: "External forces", value: lastSample.externalForceMs },
         { label: "Pre-step sweep", value: lastSample.preStepSweepMs },
-        { label: "Collider rebuild map", value: lastSample.rebuildColliderMapMs },
+        {
+          label: "Collider rebuild map",
+          value: lastSample.rebuildColliderMapMs,
+        },
         { label: "Projectile cleanup", value: lastSample.projectileCleanupMs },
       ]
     : [];
   return (
-      <div
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          gap: 4,
-          padding: "4px 0",
-        }}
-      >
-        <div style={{ display: "flex", gap: 8 }}>
-          {!profilingEnabled ? (
-            <button
-              type="button"
-              onClick={startProfiling}
-              style={{
-                padding: "4px 10px",
-                fontSize: 13,
-                borderRadius: 4,
-                border: "1px solid #374151",
-                background: "transparent",
-                color: "#e5e7eb",
-                cursor: "pointer",
-              }}
-            >
-              Start profiler
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={stopProfiling}
-              style={{
-                padding: "4px 10px",
-                fontSize: 13,
-                borderRadius: 4,
-                border: "1px solid #b91c1c",
-                background: "#b91c1c",
-                color: "#f9fafb",
-                cursor: "pointer",
-              }}
-            >
-              Stop & Download
-            </button>
-          )}
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 4,
+        padding: "4px 0",
+      }}
+    >
+      <div style={{ display: "flex", gap: 8 }}>
+        {!profilingEnabled ? (
+          <button
+            type="button"
+            onClick={startProfiling}
+            style={{
+              padding: "4px 10px",
+              fontSize: 13,
+              borderRadius: 4,
+              border: "1px solid #374151",
+              background: "transparent",
+              color: "#e5e7eb",
+              cursor: "pointer",
+            }}
+          >
+            Start profiler
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={stopProfiling}
+            style={{
+              padding: "4px 10px",
+              fontSize: 13,
+              borderRadius: 4,
+              border: "1px solid #b91c1c",
+              background: "#b91c1c",
+              color: "#f9fafb",
+              cursor: "pointer",
+            }}
+          >
+            Stop & Download
+          </button>
+        )}
+      </div>
+      {profilingEnabled ? (
+        <div style={{ fontSize: 12, color: "#9ca3af" }}>
+          Status: Recording · Samples: {profilerStats.sampleCount}
+          {typeof profilerStats.lastFrameMs === "number"
+            ? ` · Last frame ${profilerStats.lastFrameMs.toFixed(2)} ms`
+            : ""}
         </div>
-        {profilingEnabled ? (
-          <div style={{ fontSize: 12, color: "#9ca3af" }}>
-            Status: Recording · Samples: {profilerStats.sampleCount}
-            {typeof profilerStats.lastFrameMs === "number"
-              ? ` · Last frame ${profilerStats.lastFrameMs.toFixed(2)} ms`
-              : ""}
-          </div>
-        ) : null}
+      ) : null}
       {profilingEnabled && lastSample ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {fractureRows.length > 0 ? (
@@ -1540,7 +1563,9 @@ const ProfilerControls = memo(function ProfilerControls({
                   border: "1px solid #1f2937",
                 }}
               >
-                {fractureRows.map((row) => renderMetricRow(row.label, row.value))}
+                {fractureRows.map((row) =>
+                  renderMetricRow(row.label, row.value),
+                )}
               </div>
             </div>
           ) : null}
@@ -1580,13 +1605,15 @@ const ProfilerControls = memo(function ProfilerControls({
                   border: "1px solid #1f2937",
                 }}
               >
-                {maintenanceRows.map((row) => renderMetricRow(row.label, row.value))}
+                {maintenanceRows.map((row) =>
+                  renderMetricRow(row.label, row.value),
+                )}
               </div>
             </div>
           ) : null}
         </div>
       ) : null}
-      </div>
+    </div>
   );
 });
 
@@ -1596,114 +1623,114 @@ function HtmlOverlay(props: HtmlOverlayProps) {
     setDebug,
     physicsWireframe,
     setPhysicsWireframe,
-  gravity,
-  setGravity,
-  solverGravityEnabled,
-  setSolverGravityEnabled,
-  singleCollisionMode,
-  setSingleCollisionMode,
-  skipSingleBodies,
-  setSkipSingleBodies,
-  damageEnabled,
-  setDamageEnabled,
-  mode,
-  setMode,
-  projType,
-  setProjType,
-  reset,
-  projectileSpeed,
-  setProjectileSpeed,
-  projectileMass,
-  setProjectileMass,
-  projectileRadius,
-  setProjectileRadius,
-  materialScale,
-  setMaterialScale,
-  wallSpan,
-  setWallSpan,
-  wallHeight,
-  setWallHeight,
-  wallThickness,
-  setWallThickness,
-  wallSpanSeg,
-  setWallSpanSeg,
-  wallHeightSeg,
-  setWallHeightSeg,
-  wallLayers,
-  setWallLayers,
-  showAllDebugLines,
-  setShowAllDebugLines,
-  bondsXEnabled,
-  setBondsXEnabled,
-  bondsYEnabled,
-  setBondsYEnabled,
-  bondsZEnabled,
-  setBondsZEnabled,
-  autoBondingEnabled,
-  setAutoBondingEnabled,
-  structureId,
-  setStructureId,
-  structures,
-  structureDescription,
-  pushForce,
-  setPushForce,
-  damageClickRatio,
-  setDamageClickRatio,
-  contactDamageScale,
-  setContactDamageScale,
-  minImpulseThreshold,
-  setMinImpulseThreshold,
-  contactCooldownMs,
-  setContactCooldownMs,
-  internalContactScale,
-  setInternalContactScale,
-  speedMinExternal,
-  setSpeedMinExternal,
-  speedMinInternal,
-  setSpeedMinInternal,
-  speedMax,
-  setSpeedMax,
-  speedExponent,
-  setSpeedExponent,
-  slowSpeedFactor,
-  setSlowSpeedFactor,
-  fastSpeedFactor,
-  setFastSpeedFactor,
-  resimulateOnFracture,
-  setResimulateOnFracture,
-  maxResimulationPasses,
-  setMaxResimulationPasses,
-  snapshotMode,
-  setSnapshotMode,
-  resimulateOnDamageDestroy,
-  setResimulateOnDamageDestroy,
-  bodyCountRef,
-  activeBodyCountRef,
-  colliderCountRef,
-  adaptiveDt,
-  setAdaptiveDt,
-  sleepLinearThreshold,
-  setSleepLinearThreshold,
-  sleepAngularThreshold,
-  setSleepAngularThreshold,
-  smallBodyColliderThreshold,
-  setSmallBodyColliderThreshold,
-  smallBodyMinLinearDamping,
-  setSmallBodyMinLinearDamping,
-  smallBodyMinAngularDamping,
-  setSmallBodyMinAngularDamping,
-  sleepMode,
-  setSleepMode,
-  smallBodyDampingMode,
-  setSmallBodyDampingMode,
-  showPerfOverlay,
-  setShowPerfOverlay,
-  profilingEnabled,
-  startProfiling,
-  stopProfiling,
-  profilerStats,
-  collapsed = false,
-  setCollapsed,
+    gravity,
+    setGravity,
+    solverGravityEnabled,
+    setSolverGravityEnabled,
+    singleCollisionMode,
+    setSingleCollisionMode,
+    skipSingleBodies,
+    setSkipSingleBodies,
+    damageEnabled,
+    setDamageEnabled,
+    mode,
+    setMode,
+    projType,
+    setProjType,
+    reset,
+    projectileSpeed,
+    setProjectileSpeed,
+    projectileMass,
+    setProjectileMass,
+    projectileRadius,
+    setProjectileRadius,
+    materialScale,
+    setMaterialScale,
+    wallSpan,
+    setWallSpan,
+    wallHeight,
+    setWallHeight,
+    wallThickness,
+    setWallThickness,
+    wallSpanSeg,
+    setWallSpanSeg,
+    wallHeightSeg,
+    setWallHeightSeg,
+    wallLayers,
+    setWallLayers,
+    showAllDebugLines,
+    setShowAllDebugLines,
+    bondsXEnabled,
+    setBondsXEnabled,
+    bondsYEnabled,
+    setBondsYEnabled,
+    bondsZEnabled,
+    setBondsZEnabled,
+    autoBondingEnabled,
+    setAutoBondingEnabled,
+    structureId,
+    setStructureId,
+    structures,
+    structureDescription,
+    pushForce,
+    setPushForce,
+    damageClickRatio,
+    setDamageClickRatio,
+    contactDamageScale,
+    setContactDamageScale,
+    minImpulseThreshold,
+    setMinImpulseThreshold,
+    contactCooldownMs,
+    setContactCooldownMs,
+    internalContactScale,
+    setInternalContactScale,
+    speedMinExternal,
+    setSpeedMinExternal,
+    speedMinInternal,
+    setSpeedMinInternal,
+    speedMax,
+    setSpeedMax,
+    speedExponent,
+    setSpeedExponent,
+    slowSpeedFactor,
+    setSlowSpeedFactor,
+    fastSpeedFactor,
+    setFastSpeedFactor,
+    resimulateOnFracture,
+    setResimulateOnFracture,
+    maxResimulationPasses,
+    setMaxResimulationPasses,
+    snapshotMode,
+    setSnapshotMode,
+    resimulateOnDamageDestroy,
+    setResimulateOnDamageDestroy,
+    bodyCountRef,
+    activeBodyCountRef,
+    colliderCountRef,
+    adaptiveDt,
+    setAdaptiveDt,
+    sleepLinearThreshold,
+    setSleepLinearThreshold,
+    sleepAngularThreshold,
+    setSleepAngularThreshold,
+    smallBodyColliderThreshold,
+    setSmallBodyColliderThreshold,
+    smallBodyMinLinearDamping,
+    setSmallBodyMinLinearDamping,
+    smallBodyMinAngularDamping,
+    setSmallBodyMinAngularDamping,
+    sleepMode,
+    setSleepMode,
+    smallBodyDampingMode,
+    setSmallBodyDampingMode,
+    showPerfOverlay,
+    setShowPerfOverlay,
+    profilingEnabled,
+    startProfiling,
+    stopProfiling,
+    profilerStats,
+    collapsed = false,
+    setCollapsed,
   } = props;
   const overlayRenderStart = perfNow();
   useEffect(() => {
@@ -1804,1021 +1831,12 @@ function HtmlOverlay(props: HtmlOverlayProps) {
           <span>✕</span>
           <span>Hide</span>
         </button>
-      <ProfilerControls
-        profilingEnabled={profilingEnabled}
-        startProfiling={startProfiling}
-        stopProfiling={stopProfiling}
-        profilerStats={profilerStats}
-      />
-      <label
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          color: "#d1d5db",
-          fontSize: 14,
-        }}
-      >
-        <input
-          type="checkbox"
-          checked={showPerfOverlay}
-          onChange={(e) => setShowPerfOverlay(e.target.checked)}
-          style={{ accentColor: "#4da2ff", width: 16, height: 16 }}
+        <ProfilerControls
+          profilingEnabled={profilingEnabled}
+          startProfiling={startProfiling}
+          stopProfiling={stopProfiling}
+          profilerStats={profilerStats}
         />
-        Show perf overlay
-      </label>
-      <div style={{ display: "flex", gap: 8 }}>
-        <button
-          type="button"
-          onClick={reset}
-          style={{
-            padding: "8px 14px",
-            background: "#0d0d0d",
-            color: "white",
-            borderRadius: 6,
-            border: "1px solid #303030",
-          }}
-        >
-          Reset
-        </button>
-        <select
-          value={mode}
-          onChange={(e) =>
-            setMode(
-              e.target.value as "projectile" | "cutter" | "push" | "damage",
-            )
-          }
-          style={{
-            background: "#111",
-            color: "#eee",
-            border: "1px solid #333",
-            borderRadius: 6,
-            padding: "8px 10px",
-            flex: 1,
-          }}
-        >
-          <option value="projectile">Projectile</option>
-          <option value="cutter">Cutter</option>
-          <option value="push">Push</option>
-          <option value="damage">Damage</option>
-        </select>
-      </div>
-      <select
-        value={structureId}
-        onChange={(e) => setStructureId(e.target.value as StressPresetId)}
-        style={{
-          background: "#111",
-          color: "#eee",
-          border: "1px solid #333",
-          borderRadius: 6,
-          padding: "8px 10px",
-        }}
-      >
-        {structures.map((item) => (
-          <option key={item.id} value={item.id}>
-            {item.label}
-          </option>
-        ))}
-      </select>
-      {structureDescription ? (
-        <p
-          style={{ margin: 0, color: "#9ca3af", fontSize: 13, lineHeight: 1.4 }}
-        >
-          {structureDescription}
-        </p>
-      ) : null}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          color: "#e5e7eb",
-          fontSize: 14,
-          fontVariantNumeric: "tabular-nums",
-        }}
-      >
-        <span>Rigid bodies</span>
-        <span ref={bodyCountRef}>-</span>
-      </div>
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          color: "#e5e7eb",
-          fontSize: 14,
-          fontVariantNumeric: "tabular-nums",
-        }}
-      >
-        <span>Active rigid bodies</span>
-        <span ref={activeBodyCountRef}>-</span>
-      </div>
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          color: "#e5e7eb",
-          fontSize: 14,
-          fontVariantNumeric: "tabular-nums",
-        }}
-      >
-        <span>Colliders</span>
-        <span ref={colliderCountRef}>-</span>
-      </div>
-      <label
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          color: "#d1d5db",
-          fontSize: 14,
-        }}
-      >
-        <input
-          type="checkbox"
-          checked={debug}
-          onChange={(e) => setDebug(e.target.checked)}
-          style={{ accentColor: "#4da2ff", width: 16, height: 16 }}
-        />
-        Stress debug lines
-      </label>
-      <label
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          color: "#d1d5db",
-          fontSize: 14,
-        }}
-      >
-        <input
-          type="checkbox"
-          checked={physicsWireframe}
-          onChange={(e) => setPhysicsWireframe(e.target.checked)}
-          style={{ accentColor: "#4da2ff", width: 16, height: 16 }}
-        />
-        Physics wireframe
-      </label>
-      <label
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          color: "#d1d5db",
-          fontSize: 14,
-        }}
-      >
-        <input
-          type="checkbox"
-          checked={showAllDebugLines}
-          onChange={(e) => setShowAllDebugLines(e.target.checked)}
-          style={{ accentColor: "#4da2ff", width: 16, height: 16 }}
-        />
-        Show all solver lines
-      </label>
-      <label
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          color: "#d1d5db",
-          fontSize: 14,
-        }}
-      >
-        <input
-          type="checkbox"
-          checked={autoBondingEnabled}
-          onChange={(e) => setAutoBondingEnabled(e.target.checked)}
-          style={{ accentColor: "#4da2ff", width: 16, height: 16 }}
-        />
-        Auto bonds (experimental)
-      </label>
-      <label
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          color: "#d1d5db",
-          fontSize: 14,
-        }}
-      >
-        Gravity
-        <input
-          type="range"
-          min={-30}
-          max={0.0}
-          step={0.5}
-          value={gravity}
-          onChange={(e) => setGravity(parseFloat(e.target.value))}
-          style={{ flex: 1 }}
-        />
-        <span style={{ color: "#9ca3af", width: 60, textAlign: "right" }}>
-          {gravity.toFixed(2)}
-        </span>
-      </label>
-      <label
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          color: "#d1d5db",
-          fontSize: 14,
-        }}
-      >
-        <input
-          type="checkbox"
-          checked={solverGravityEnabled}
-          onChange={(e) => setSolverGravityEnabled(e.target.checked)}
-          style={{ accentColor: "#4da2ff", width: 16, height: 16 }}
-        />
-        Apply gravity to solver
-      </label>
-      <label
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          color: "#d1d5db",
-          fontSize: 14,
-        }}
-      >
-        <input
-          type="checkbox"
-          checked={adaptiveDt}
-          onChange={(e) => setAdaptiveDt(e.target.checked)}
-          style={{ accentColor: "#4da2ff", width: 16, height: 16 }}
-        />
-        Adaptive dt (render delta)
-      </label>
-      <div style={{ height: 8 }} />
-      <div style={{ color: "#9ca3af", fontSize: 13 }}>Sleep Optimization</div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-        <span style={{ color: "#d1d5db", fontSize: 14 }}>Mode</span>
-        <select
-          value={sleepMode}
-          onChange={(e) => setSleepMode(e.target.value as OptimizationMode)}
-          style={{
-            background: "#111",
-            color: "#eee",
-            border: "1px solid #333",
-            borderRadius: 6,
-            padding: "8px 10px",
-          }}
-        >
-          <option value="off">Off</option>
-          <option value="always">Always</option>
-          <option value="afterGroundCollision">After ground collision</option>
-        </select>
-      </div>
-      <label
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          color: "#d1d5db",
-          fontSize: 14,
-          opacity: sleepMode === "off" ? 0.5 : 1,
-        }}
-      >
-        Sleep linear threshold (m/s)
-        <input
-          type="number"
-          min={0}
-          step={0.01}
-          value={sleepLinearThreshold}
-          onChange={(e) => {
-            const next = e.target.valueAsNumber;
-            setSleepLinearThreshold(Number.isFinite(next) ? Math.max(0, next) : 0);
-          }}
-          style={{
-            flex: 1,
-            background: "#111",
-            color: "#eee",
-            border: "1px solid #333",
-            borderRadius: 6,
-            padding: "6px 8px",
-          }}
-        />
-        <span style={{ color: "#9ca3af", width: 90, textAlign: "right" }}>
-          {sleepLinearThreshold.toFixed(2)} m/s
-        </span>
-      </label>
-      <label
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          color: "#d1d5db",
-          fontSize: 14,
-        }}
-      >
-        Sleep angular threshold (rad/s)
-        <input
-          type="number"
-          min={0}
-          step={0.01}
-          value={sleepAngularThreshold}
-          onChange={(e) => {
-            const next = e.target.valueAsNumber;
-            setSleepAngularThreshold(Number.isFinite(next) ? Math.max(0, next) : 0);
-          }}
-          style={{
-            flex: 1,
-            background: "#111",
-            color: "#eee",
-            border: "1px solid #333",
-            borderRadius: 6,
-            padding: "6px 8px",
-          }}
-        />
-        <span style={{ color: "#9ca3af", width: 90, textAlign: "right" }}>
-          {sleepAngularThreshold.toFixed(2)} rad/s
-        </span>
-      </label>
-      <div style={{ height: 8 }} />
-      <div style={{ color: "#9ca3af", fontSize: 13 }}>Small Body Damping</div>
-      <p style={{ margin: 0, color: "#6b7280", fontSize: 12 }}>
-        Apply higher damping to fractured bodies with few colliders to reduce jitter
-      </p>
-      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-        <span style={{ color: "#d1d5db", fontSize: 14 }}>Mode</span>
-        <select
-          value={smallBodyDampingMode}
-          onChange={(e) => setSmallBodyDampingMode(e.target.value as OptimizationMode)}
-          style={{
-            background: "#111",
-            color: "#eee",
-            border: "1px solid #333",
-            borderRadius: 6,
-            padding: "8px 10px",
-          }}
-        >
-          <option value="off">Off</option>
-          <option value="always">Always</option>
-          <option value="afterGroundCollision">After ground collision</option>
-        </select>
-      </div>
-      <label
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          color: "#d1d5db",
-          fontSize: 14,
-          opacity: smallBodyDampingMode === "off" ? 0.5 : 1,
-        }}
-      >
-        Collider count threshold
-        <input
-          type="range"
-          min={1}
-          max={10}
-          step={1}
-          value={smallBodyColliderThreshold}
-          onChange={(e) => setSmallBodyColliderThreshold(parseInt(e.target.value, 10))}
-          style={{ flex: 1 }}
-        />
-        <span style={{ color: "#9ca3af", width: 60, textAlign: "right" }}>
-          ≤{smallBodyColliderThreshold}
-        </span>
-      </label>
-      <label
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          color: "#d1d5db",
-          fontSize: 14,
-        }}
-      >
-        Min linear damping
-        <input
-          type="range"
-          min={0}
-          max={10}
-          step={0.1}
-          value={smallBodyMinLinearDamping}
-          onChange={(e) => setSmallBodyMinLinearDamping(parseFloat(e.target.value))}
-          style={{ flex: 1 }}
-        />
-        <span style={{ color: "#9ca3af", width: 60, textAlign: "right" }}>
-          {smallBodyMinLinearDamping.toFixed(1)}
-        </span>
-      </label>
-      <label
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          color: "#d1d5db",
-          fontSize: 14,
-        }}
-      >
-        Min angular damping
-        <input
-          type="range"
-          min={0}
-          max={10}
-          step={0.1}
-          value={smallBodyMinAngularDamping}
-          onChange={(e) => setSmallBodyMinAngularDamping(parseFloat(e.target.value))}
-          style={{ flex: 1 }}
-        />
-        <span style={{ color: "#9ca3af", width: 60, textAlign: "right" }}>
-          {smallBodyMinAngularDamping.toFixed(1)}
-        </span>
-      </label>
-      <label
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          color: "#d1d5db",
-          fontSize: 14,
-        }}
-      >
-        <input
-          type="checkbox"
-          checked={damageEnabled}
-          onChange={(e) => setDamageEnabled(e.target.checked)}
-          style={{ accentColor: "#4da2ff", width: 16, height: 16 }}
-        />
-        Enable damageable chunks
-      </label>
-      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-        <span style={{ color: "#d1d5db", fontSize: 14 }}>
-          Single collision mode
-        </span>
-        <select
-          value={singleCollisionMode}
-          onChange={(e) =>
-            setSingleCollisionMode(e.target.value as SingleCollisionMode)
-          }
-          style={{
-            background: "#111",
-            color: "#eee",
-            border: "1px solid #333",
-            borderRadius: 6,
-            padding: "8px 10px",
-          }}
-        >
-          <option value="all">All collisions allowed</option>
-          <option value="noSinglePairs">Block single ↔ single</option>
-          <option value="singleGround">Singles vs ground only</option>
-          <option value="singleNone">Singles have no collisions</option>
-        </select>
-      </div>
-      <label
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          color: "#d1d5db",
-          fontSize: 14,
-        }}
-      >
-        <input
-          type="checkbox"
-          checked={skipSingleBodies}
-          onChange={(e) => setSkipSingleBodies(e.target.checked)}
-          style={{ accentColor: "#4da2ff", width: 16, height: 16 }}
-        />
-        Destroy single fragment bodies
-      </label>
-      <div style={{ height: 8 }} />
-      <div style={{ color: "#9ca3af", fontSize: 13 }}>Fracture Rollback</div>
-      <label
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          color: "#d1d5db",
-          fontSize: 14,
-        }}
-      >
-        <input
-          type="checkbox"
-          checked={resimulateOnFracture}
-          onChange={(e) => setResimulateOnFracture(e.target.checked)}
-          style={{ accentColor: "#4da2ff", width: 16, height: 16 }}
-        />
-        Resimulate on fracture (same-frame)
-      </label>
-      <label
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          color: "#d1d5db",
-          fontSize: 14,
-        }}
-      >
-        <input
-          type="checkbox"
-          checked={resimulateOnDamageDestroy}
-          onChange={(e) => setResimulateOnDamageDestroy(e.target.checked)}
-          style={{ accentColor: "#4da2ff", width: 16, height: 16 }}
-          disabled={!damageEnabled}
-        />
-        Resimulate on damage destroy
-      </label>
-      <label
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          color: "#d1d5db",
-          fontSize: 14,
-        }}
-      >
-        Max resim passes
-        <input
-          type="range"
-          min={0}
-          max={2}
-          step={1}
-          value={maxResimulationPasses}
-          onChange={(e) =>
-            setMaxResimulationPasses(parseInt(e.target.value, 10))
-          }
-          style={{ flex: 1 }}
-        />
-        <span style={{ color: "#9ca3af", width: 60, textAlign: "right" }}>
-          {maxResimulationPasses}
-        </span>
-      </label>
-      <label
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          color: "#d1d5db",
-          fontSize: 14,
-        }}
-      >
-        Snapshot mode
-        <select
-          value={snapshotMode}
-          onChange={(e) =>
-            setSnapshotMode(e.target.value as "perBody" | "world")
-          }
-          style={{
-            background: "#111",
-            color: "#eee",
-            border: "1px solid #333",
-            borderRadius: 6,
-            padding: "8px 10px",
-            flex: 1,
-          }}
-        >
-          <option value="perBody">Per-body (recommended)</option>
-          <option value="world">World snapshot</option>
-        </select>
-      </label>
-      <div style={{ height: 8 }} />
-      <div style={{ color: "#9ca3af", fontSize: 13 }}>Push</div>
-      <label
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          color: "#d1d5db",
-          fontSize: 14,
-        }}
-      >
-        Force (N)
-        <input
-          type="range"
-          min={100}
-          max={100_000_000}
-          step={100}
-          value={pushForce}
-          onChange={(e) => setPushForce(parseFloat(e.target.value))}
-          style={{ flex: 1 }}
-        />
-        <span style={{ color: "#9ca3af", width: 80, textAlign: "right" }}>
-          {Math.round(pushForce).toLocaleString()}
-        </span>
-      </label>
-      <div style={{ color: "#9ca3af", fontSize: 13 }}>Projectile</div>
-      <div style={{ color: "#9ca3af", fontSize: 13 }}>Damage</div>
-      <label
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          color: "#d1d5db",
-          fontSize: 14,
-        }}
-      >
-        Per-click (% max health)
-        <input
-          type="range"
-          min={0.05}
-          max={1}
-          step={0.05}
-          value={damageClickRatio}
-          onChange={(e) => setDamageClickRatio(parseFloat(e.target.value))}
-          style={{ flex: 1 }}
-        />
-        <span style={{ color: "#9ca3af", width: 60, textAlign: "right" }}>
-          {Math.round(damageClickRatio * 100)}%
-        </span>
-      </label>
-      <label
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          color: "#d1d5db",
-          fontSize: 14,
-        }}
-      >
-        Contact damage scale
-        <input
-          type="range"
-          min={0}
-          max={10_000.0}
-          step={0.1}
-          value={contactDamageScale}
-          onChange={(e) => setContactDamageScale(parseFloat(e.target.value))}
-          style={{ flex: 1 }}
-        />
-        <span style={{ color: "#9ca3af", width: 60, textAlign: "right" }}>
-          {contactDamageScale.toFixed(1)}×
-        </span>
-      </label>
-      <label
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          color: "#d1d5db",
-          fontSize: 14,
-        }}
-      >
-        Internal contact scale
-        <input
-          type="range"
-          min={0}
-          max={1_000.0}
-          step={0.05}
-          value={internalContactScale}
-          onChange={(e) => setInternalContactScale(parseFloat(e.target.value))}
-          style={{ flex: 1 }}
-        />
-        <span style={{ color: "#9ca3af", width: 60, textAlign: "right" }}>
-          {internalContactScale.toFixed(2)}×
-        </span>
-      </label>
-      <label
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          color: "#d1d5db",
-          fontSize: 14,
-        }}
-      >
-        Min impulse (N·s)
-        <input
-          type="range"
-          min={0}
-          max={500}
-          step={5}
-          value={minImpulseThreshold}
-          onChange={(e) => setMinImpulseThreshold(parseFloat(e.target.value))}
-          style={{ flex: 1 }}
-        />
-        <span style={{ color: "#9ca3af", width: 60, textAlign: "right" }}>
-          {Math.round(minImpulseThreshold)}
-        </span>
-      </label>
-      <label
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          color: "#d1d5db",
-          fontSize: 14,
-        }}
-      >
-        Contact cooldown (ms)
-        <input
-          type="range"
-          min={0}
-          max={1000}
-          step={10}
-          value={contactCooldownMs}
-          onChange={(e) => setContactCooldownMs(parseFloat(e.target.value))}
-          style={{ flex: 1 }}
-        />
-        <span style={{ color: "#9ca3af", width: 60, textAlign: "right" }}>
-          {Math.round(contactCooldownMs)}ms
-        </span>
-      </label>
-      <div style={{ color: "#9ca3af", fontSize: 13 }}>Impact speed scaling</div>
-      <label
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          color: "#d1d5db",
-          fontSize: 14,
-        }}
-      >
-        Min speed external (m/s)
-        <input
-          type="range"
-          min={0}
-          max={5}
-          step={0.05}
-          value={speedMinExternal}
-          onChange={(e) => setSpeedMinExternal(parseFloat(e.target.value))}
-          style={{ flex: 1 }}
-        />
-        <span style={{ color: "#9ca3af", width: 60, textAlign: "right" }}>
-          {speedMinExternal.toFixed(2)}
-        </span>
-      </label>
-      <label
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          color: "#d1d5db",
-          fontSize: 14,
-        }}
-      >
-        Min speed internal (m/s)
-        <input
-          type="range"
-          min={0}
-          max={5}
-          step={0.05}
-          value={speedMinInternal}
-          onChange={(e) => setSpeedMinInternal(parseFloat(e.target.value))}
-          style={{ flex: 1 }}
-        />
-        <span style={{ color: "#9ca3af", width: 60, textAlign: "right" }}>
-          {speedMinInternal.toFixed(2)}
-        </span>
-      </label>
-      <label
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          color: "#d1d5db",
-          fontSize: 14,
-        }}
-      >
-        Full boost speed (m/s)
-        <input
-          type="range"
-          min={1}
-          max={20}
-          step={0.5}
-          value={speedMax}
-          onChange={(e) => setSpeedMax(parseFloat(e.target.value))}
-          style={{ flex: 1 }}
-        />
-        <span style={{ color: "#9ca3af", width: 60, textAlign: "right" }}>
-          {speedMax.toFixed(1)}
-        </span>
-      </label>
-      <label
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          color: "#d1d5db",
-          fontSize: 14,
-        }}
-      >
-        Boost curve (exp)
-        <input
-          type="range"
-          min={0.5}
-          max={4}
-          step={0.05}
-          value={speedExponent}
-          onChange={(e) => setSpeedExponent(parseFloat(e.target.value))}
-          style={{ flex: 1 }}
-        />
-        <span style={{ color: "#9ca3af", width: 60, textAlign: "right" }}>
-          {speedExponent.toFixed(2)}
-        </span>
-      </label>
-      <label
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          color: "#d1d5db",
-          fontSize: 14,
-        }}
-      >
-        Slow factor
-        <input
-          type="range"
-          min={0.5}
-          max={1.0}
-          step={0.01}
-          value={slowSpeedFactor}
-          onChange={(e) => setSlowSpeedFactor(parseFloat(e.target.value))}
-          style={{ flex: 1 }}
-        />
-        <span style={{ color: "#9ca3af", width: 60, textAlign: "right" }}>
-          {slowSpeedFactor.toFixed(2)}×
-        </span>
-      </label>
-      <label
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          color: "#d1d5db",
-          fontSize: 14,
-        }}
-      >
-        Fast factor
-        <input
-          type="range"
-          min={1.0}
-          max={8.0}
-          step={0.05}
-          value={fastSpeedFactor}
-          onChange={(e) => setFastSpeedFactor(parseFloat(e.target.value))}
-          style={{ flex: 1 }}
-        />
-        <span style={{ color: "#9ca3af", width: 60, textAlign: "right" }}>
-          {fastSpeedFactor.toFixed(2)}×
-        </span>
-      </label>
-      <select
-        value={projType}
-        onChange={(e) => setProjType(e.target.value as "ball" | "box")}
-        style={{
-          background: "#111",
-          color: "#eee",
-          border: "1px solid #333",
-          borderRadius: 6,
-          padding: "8px 10px",
-        }}
-      >
-        <option value="ball">Ball</option>
-        <option value="box">Box</option>
-      </select>
-      <label
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          color: "#d1d5db",
-          fontSize: 14,
-        }}
-      >
-        Size (radius, m)
-        <input
-          type="range"
-          min={0.1}
-          max={3.0}
-          step={0.05}
-          value={projectileRadius}
-          onChange={(e) => setProjectileRadius(parseFloat(e.target.value))}
-          style={{ flex: 1 }}
-        />
-        <span style={{ color: "#9ca3af", width: 80, textAlign: "right" }}>
-          {projectileRadius.toFixed(2)}m
-        </span>
-      </label>
-      <label
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          color: "#d1d5db",
-          fontSize: 14,
-        }}
-      >
-        Speed
-        <input
-          type="range"
-          min={1}
-          max={100}
-          step={1}
-          value={projectileSpeed}
-          onChange={(e) => setProjectileSpeed(parseFloat(e.target.value))}
-          style={{ flex: 1 }}
-        />
-        <span style={{ color: "#9ca3af", width: 60, textAlign: "right" }}>
-          {projectileSpeed.toFixed(0)}
-        </span>
-      </label>
-      <label
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          color: "#d1d5db",
-          fontSize: 14,
-        }}
-      >
-        Mass
-        <input
-          type="range"
-          min={1}
-          max={200000}
-          step={1000}
-          value={projectileMass}
-          onChange={(e) => setProjectileMass(parseFloat(e.target.value))}
-          style={{ flex: 1 }}
-        />
-        <span style={{ color: "#9ca3af", width: 80, textAlign: "right" }}>
-          {projectileMass.toLocaleString()}
-        </span>
-      </label>
-      <div style={{ height: 8 }} />
-      <div style={{ color: "#9ca3af", fontSize: 13 }}>Material</div>
-      <label
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          color: "#d1d5db",
-          fontSize: 14,
-        }}
-      >
-        Strength Scale
-        {/* <input type="range" min={0.05} max={5} step={0.05} value={materialScale} onChange={(e) => setMaterialScale(parseFloat(e.target.value))} style={{ flex: 1 }} /> */}
-        {/* <input type="range" min={0.5} max={5_000_000} step={0.5} value={materialScale} onChange={(e) => setMaterialScale(parseFloat(e.target.value))} style={{ flex: 1 }} /> */}
-        <input
-          type="range"
-          min={1}
-          max={50_000_000}
-          step={10}
-          value={materialScale}
-          onChange={(e) => setMaterialScale(parseFloat(e.target.value))}
-          style={{ flex: 1 }}
-        />
-        <span style={{ color: "#9ca3af", width: 60, textAlign: "right" }}>
-          {materialScale.toFixed(2)}×
-        </span>
-      </label>
-      <div style={{ display: "flex", gap: 8, color: "#d1d5db", fontSize: 14 }}>
-        <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <input
-            type="checkbox"
-            checked={bondsXEnabled}
-            onChange={(e) => setBondsXEnabled(e.target.checked)}
-            style={{ accentColor: "#4da2ff", width: 16, height: 16 }}
-          />{" "}
-          X
-        </label>
-        <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <input
-            type="checkbox"
-            checked={bondsYEnabled}
-            onChange={(e) => setBondsYEnabled(e.target.checked)}
-            style={{ accentColor: "#4da2ff", width: 16, height: 16 }}
-          />{" "}
-          Y
-        </label>
-        <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <input
-            type="checkbox"
-            checked={bondsZEnabled}
-            onChange={(e) => setBondsZEnabled(e.target.checked)}
-            style={{ accentColor: "#4da2ff", width: 16, height: 16 }}
-          />{" "}
-          Z
-        </label>
-      </div>
-      <div style={{ height: 8 }} />
-      <div
-        style={{
-          color: "#9ca3af",
-          fontSize: 13,
-          display: "flex",
-          flexDirection: "column",
-          gap: 4,
-        }}
-      >
-        <span>Wall</span>
-        {!isWallStructure ? (
-          <span style={{ color: "#6b7280", fontSize: 12 }}>
-            Dimension sliders only apply to the tunable wall preset.
-          </span>
-        ) : null}
-      </div>
-      <div
-        style={{
-          opacity: isWallStructure ? 1 : 0.5,
-          pointerEvents: isWallStructure ? "auto" : "none",
-        }}
-      >
         <label
           style={{
             display: "flex",
@@ -2828,19 +1846,207 @@ function HtmlOverlay(props: HtmlOverlayProps) {
             fontSize: 14,
           }}
         >
-          Span (m)
+          <input
+            type="checkbox"
+            checked={showPerfOverlay}
+            onChange={(e) => setShowPerfOverlay(e.target.checked)}
+            style={{ accentColor: "#4da2ff", width: 16, height: 16 }}
+          />
+          Show perf overlay
+        </label>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button
+            type="button"
+            onClick={reset}
+            style={{
+              padding: "8px 14px",
+              background: "#0d0d0d",
+              color: "white",
+              borderRadius: 6,
+              border: "1px solid #303030",
+            }}
+          >
+            Reset
+          </button>
+          <select
+            value={mode}
+            onChange={(e) =>
+              setMode(
+                e.target.value as "projectile" | "cutter" | "push" | "damage",
+              )
+            }
+            style={{
+              background: "#111",
+              color: "#eee",
+              border: "1px solid #333",
+              borderRadius: 6,
+              padding: "8px 10px",
+              flex: 1,
+            }}
+          >
+            <option value="projectile">Projectile</option>
+            <option value="cutter">Cutter</option>
+            <option value="push">Push</option>
+            <option value="damage">Damage</option>
+          </select>
+        </div>
+        <select
+          value={structureId}
+          onChange={(e) => setStructureId(e.target.value as StressPresetId)}
+          style={{
+            background: "#111",
+            color: "#eee",
+            border: "1px solid #333",
+            borderRadius: 6,
+            padding: "8px 10px",
+          }}
+        >
+          {structures.map((item) => (
+            <option key={item.id} value={item.id}>
+              {item.label}
+            </option>
+          ))}
+        </select>
+        {structureDescription ? (
+          <p
+            style={{
+              margin: 0,
+              color: "#9ca3af",
+              fontSize: 13,
+              lineHeight: 1.4,
+            }}
+          >
+            {structureDescription}
+          </p>
+        ) : null}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            color: "#e5e7eb",
+            fontSize: 14,
+            fontVariantNumeric: "tabular-nums",
+          }}
+        >
+          <span>Rigid bodies</span>
+          <span ref={bodyCountRef}>-</span>
+        </div>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            color: "#e5e7eb",
+            fontSize: 14,
+            fontVariantNumeric: "tabular-nums",
+          }}
+        >
+          <span>Active rigid bodies</span>
+          <span ref={activeBodyCountRef}>-</span>
+        </div>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            color: "#e5e7eb",
+            fontSize: 14,
+            fontVariantNumeric: "tabular-nums",
+          }}
+        >
+          <span>Colliders</span>
+          <span ref={colliderCountRef}>-</span>
+        </div>
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            color: "#d1d5db",
+            fontSize: 14,
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={debug}
+            onChange={(e) => setDebug(e.target.checked)}
+            style={{ accentColor: "#4da2ff", width: 16, height: 16 }}
+          />
+          Stress debug lines
+        </label>
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            color: "#d1d5db",
+            fontSize: 14,
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={physicsWireframe}
+            onChange={(e) => setPhysicsWireframe(e.target.checked)}
+            style={{ accentColor: "#4da2ff", width: 16, height: 16 }}
+          />
+          Physics wireframe
+        </label>
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            color: "#d1d5db",
+            fontSize: 14,
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={showAllDebugLines}
+            onChange={(e) => setShowAllDebugLines(e.target.checked)}
+            style={{ accentColor: "#4da2ff", width: 16, height: 16 }}
+          />
+          Show all solver lines
+        </label>
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            color: "#d1d5db",
+            fontSize: 14,
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={autoBondingEnabled}
+            onChange={(e) => setAutoBondingEnabled(e.target.checked)}
+            style={{ accentColor: "#4da2ff", width: 16, height: 16 }}
+          />
+          Auto bonds (experimental)
+        </label>
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            color: "#d1d5db",
+            fontSize: 14,
+          }}
+        >
+          Gravity
           <input
             type="range"
-            min={2}
-            max={20}
+            min={-30}
+            max={0.0}
             step={0.5}
-            value={wallSpan}
-            onChange={(e) => setWallSpan(parseFloat(e.target.value))}
+            value={gravity}
+            onChange={(e) => setGravity(parseFloat(e.target.value))}
             style={{ flex: 1 }}
-            disabled={!isWallStructure}
           />
           <span style={{ color: "#9ca3af", width: 60, textAlign: "right" }}>
-            {wallSpan.toFixed(1)}
+            {gravity.toFixed(2)}
           </span>
         </label>
         <label
@@ -2852,19 +2058,170 @@ function HtmlOverlay(props: HtmlOverlayProps) {
             fontSize: 14,
           }}
         >
-          Height (m)
+          <input
+            type="checkbox"
+            checked={solverGravityEnabled}
+            onChange={(e) => setSolverGravityEnabled(e.target.checked)}
+            style={{ accentColor: "#4da2ff", width: 16, height: 16 }}
+          />
+          Apply gravity to solver
+        </label>
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            color: "#d1d5db",
+            fontSize: 14,
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={adaptiveDt}
+            onChange={(e) => setAdaptiveDt(e.target.checked)}
+            style={{ accentColor: "#4da2ff", width: 16, height: 16 }}
+          />
+          Adaptive dt (render delta)
+        </label>
+        <div style={{ height: 8 }} />
+        <div style={{ color: "#9ca3af", fontSize: 13 }}>Sleep Optimization</div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <span style={{ color: "#d1d5db", fontSize: 14 }}>Mode</span>
+          <select
+            value={sleepMode}
+            onChange={(e) => setSleepMode(e.target.value as OptimizationMode)}
+            style={{
+              background: "#111",
+              color: "#eee",
+              border: "1px solid #333",
+              borderRadius: 6,
+              padding: "8px 10px",
+            }}
+          >
+            <option value="off">Off</option>
+            <option value="always">Always</option>
+            <option value="afterGroundCollision">After ground collision</option>
+          </select>
+        </div>
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            color: "#d1d5db",
+            fontSize: 14,
+            opacity: sleepMode === "off" ? 0.5 : 1,
+          }}
+        >
+          Sleep linear threshold (m/s)
+          <input
+            type="number"
+            min={0}
+            step={0.01}
+            value={sleepLinearThreshold}
+            onChange={(e) => {
+              const next = e.target.valueAsNumber;
+              setSleepLinearThreshold(
+                Number.isFinite(next) ? Math.max(0, next) : 0,
+              );
+            }}
+            style={{
+              flex: 1,
+              background: "#111",
+              color: "#eee",
+              border: "1px solid #333",
+              borderRadius: 6,
+              padding: "6px 8px",
+            }}
+          />
+          <span style={{ color: "#9ca3af", width: 90, textAlign: "right" }}>
+            {sleepLinearThreshold.toFixed(2)} m/s
+          </span>
+        </label>
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            color: "#d1d5db",
+            fontSize: 14,
+          }}
+        >
+          Sleep angular threshold (rad/s)
+          <input
+            type="number"
+            min={0}
+            step={0.01}
+            value={sleepAngularThreshold}
+            onChange={(e) => {
+              const next = e.target.valueAsNumber;
+              setSleepAngularThreshold(
+                Number.isFinite(next) ? Math.max(0, next) : 0,
+              );
+            }}
+            style={{
+              flex: 1,
+              background: "#111",
+              color: "#eee",
+              border: "1px solid #333",
+              borderRadius: 6,
+              padding: "6px 8px",
+            }}
+          />
+          <span style={{ color: "#9ca3af", width: 90, textAlign: "right" }}>
+            {sleepAngularThreshold.toFixed(2)} rad/s
+          </span>
+        </label>
+        <div style={{ height: 8 }} />
+        <div style={{ color: "#9ca3af", fontSize: 13 }}>Small Body Damping</div>
+        <p style={{ margin: 0, color: "#6b7280", fontSize: 12 }}>
+          Apply higher damping to fractured bodies with few colliders to reduce
+          jitter
+        </p>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <span style={{ color: "#d1d5db", fontSize: 14 }}>Mode</span>
+          <select
+            value={smallBodyDampingMode}
+            onChange={(e) =>
+              setSmallBodyDampingMode(e.target.value as OptimizationMode)
+            }
+            style={{
+              background: "#111",
+              color: "#eee",
+              border: "1px solid #333",
+              borderRadius: 6,
+              padding: "8px 10px",
+            }}
+          >
+            <option value="off">Off</option>
+            <option value="always">Always</option>
+            <option value="afterGroundCollision">After ground collision</option>
+          </select>
+        </div>
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            color: "#d1d5db",
+            fontSize: 14,
+            opacity: smallBodyDampingMode === "off" ? 0.5 : 1,
+          }}
+        >
+          Collider count threshold
           <input
             type="range"
             min={1}
             max={10}
-            step={0.5}
-            value={wallHeight}
-            onChange={(e) => setWallHeight(parseFloat(e.target.value))}
+            step={1}
+            value={smallBodyColliderThreshold}
+            onChange={(e) =>
+              setSmallBodyColliderThreshold(parseInt(e.target.value, 10))
+            }
             style={{ flex: 1 }}
-            disabled={!isWallStructure}
           />
           <span style={{ color: "#9ca3af", width: 60, textAlign: "right" }}>
-            {wallHeight.toFixed(1)}
+            ≤{smallBodyColliderThreshold}
           </span>
         </label>
         <label
@@ -2876,19 +2233,514 @@ function HtmlOverlay(props: HtmlOverlayProps) {
             fontSize: 14,
           }}
         >
-          Thickness (m)
+          Min linear damping
+          <input
+            type="range"
+            min={0}
+            max={10}
+            step={0.1}
+            value={smallBodyMinLinearDamping}
+            onChange={(e) =>
+              setSmallBodyMinLinearDamping(parseFloat(e.target.value))
+            }
+            style={{ flex: 1 }}
+          />
+          <span style={{ color: "#9ca3af", width: 60, textAlign: "right" }}>
+            {smallBodyMinLinearDamping.toFixed(1)}
+          </span>
+        </label>
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            color: "#d1d5db",
+            fontSize: 14,
+          }}
+        >
+          Min angular damping
+          <input
+            type="range"
+            min={0}
+            max={10}
+            step={0.1}
+            value={smallBodyMinAngularDamping}
+            onChange={(e) =>
+              setSmallBodyMinAngularDamping(parseFloat(e.target.value))
+            }
+            style={{ flex: 1 }}
+          />
+          <span style={{ color: "#9ca3af", width: 60, textAlign: "right" }}>
+            {smallBodyMinAngularDamping.toFixed(1)}
+          </span>
+        </label>
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            color: "#d1d5db",
+            fontSize: 14,
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={damageEnabled}
+            onChange={(e) => setDamageEnabled(e.target.checked)}
+            style={{ accentColor: "#4da2ff", width: 16, height: 16 }}
+          />
+          Enable damageable chunks
+        </label>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <span style={{ color: "#d1d5db", fontSize: 14 }}>
+            Single collision mode
+          </span>
+          <select
+            value={singleCollisionMode}
+            onChange={(e) =>
+              setSingleCollisionMode(e.target.value as SingleCollisionMode)
+            }
+            style={{
+              background: "#111",
+              color: "#eee",
+              border: "1px solid #333",
+              borderRadius: 6,
+              padding: "8px 10px",
+            }}
+          >
+            <option value="all">All collisions allowed</option>
+            <option value="noSinglePairs">Block single ↔ single</option>
+            <option value="singleGround">Singles vs ground only</option>
+            <option value="singleNone">Singles have no collisions</option>
+          </select>
+        </div>
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            color: "#d1d5db",
+            fontSize: 14,
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={skipSingleBodies}
+            onChange={(e) => setSkipSingleBodies(e.target.checked)}
+            style={{ accentColor: "#4da2ff", width: 16, height: 16 }}
+          />
+          Destroy single fragment bodies
+        </label>
+        <div style={{ height: 8 }} />
+        <div style={{ color: "#9ca3af", fontSize: 13 }}>Fracture Rollback</div>
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            color: "#d1d5db",
+            fontSize: 14,
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={resimulateOnFracture}
+            onChange={(e) => setResimulateOnFracture(e.target.checked)}
+            style={{ accentColor: "#4da2ff", width: 16, height: 16 }}
+          />
+          Resimulate on fracture (same-frame)
+        </label>
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            color: "#d1d5db",
+            fontSize: 14,
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={resimulateOnDamageDestroy}
+            onChange={(e) => setResimulateOnDamageDestroy(e.target.checked)}
+            style={{ accentColor: "#4da2ff", width: 16, height: 16 }}
+            disabled={!damageEnabled}
+          />
+          Resimulate on damage destroy
+        </label>
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            color: "#d1d5db",
+            fontSize: 14,
+          }}
+        >
+          Max resim passes
+          <input
+            type="range"
+            min={0}
+            max={2}
+            step={1}
+            value={maxResimulationPasses}
+            onChange={(e) =>
+              setMaxResimulationPasses(parseInt(e.target.value, 10))
+            }
+            style={{ flex: 1 }}
+          />
+          <span style={{ color: "#9ca3af", width: 60, textAlign: "right" }}>
+            {maxResimulationPasses}
+          </span>
+        </label>
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            color: "#d1d5db",
+            fontSize: 14,
+          }}
+        >
+          Snapshot mode
+          <select
+            value={snapshotMode}
+            onChange={(e) =>
+              setSnapshotMode(e.target.value as "perBody" | "world")
+            }
+            style={{
+              background: "#111",
+              color: "#eee",
+              border: "1px solid #333",
+              borderRadius: 6,
+              padding: "8px 10px",
+              flex: 1,
+            }}
+          >
+            <option value="perBody">Per-body (recommended)</option>
+            <option value="world">World snapshot</option>
+          </select>
+        </label>
+        <div style={{ height: 8 }} />
+        <div style={{ color: "#9ca3af", fontSize: 13 }}>Push</div>
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            color: "#d1d5db",
+            fontSize: 14,
+          }}
+        >
+          Force (N)
+          <input
+            type="range"
+            min={100}
+            max={100_000_000}
+            step={100}
+            value={pushForce}
+            onChange={(e) => setPushForce(parseFloat(e.target.value))}
+            style={{ flex: 1 }}
+          />
+          <span style={{ color: "#9ca3af", width: 80, textAlign: "right" }}>
+            {Math.round(pushForce).toLocaleString()}
+          </span>
+        </label>
+        <div style={{ color: "#9ca3af", fontSize: 13 }}>Projectile</div>
+        <div style={{ color: "#9ca3af", fontSize: 13 }}>Damage</div>
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            color: "#d1d5db",
+            fontSize: 14,
+          }}
+        >
+          Per-click (% max health)
+          <input
+            type="range"
+            min={0.05}
+            max={1}
+            step={0.05}
+            value={damageClickRatio}
+            onChange={(e) => setDamageClickRatio(parseFloat(e.target.value))}
+            style={{ flex: 1 }}
+          />
+          <span style={{ color: "#9ca3af", width: 60, textAlign: "right" }}>
+            {Math.round(damageClickRatio * 100)}%
+          </span>
+        </label>
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            color: "#d1d5db",
+            fontSize: 14,
+          }}
+        >
+          Contact damage scale
+          <input
+            type="range"
+            min={0}
+            max={10_000.0}
+            step={0.1}
+            value={contactDamageScale}
+            onChange={(e) => setContactDamageScale(parseFloat(e.target.value))}
+            style={{ flex: 1 }}
+          />
+          <span style={{ color: "#9ca3af", width: 60, textAlign: "right" }}>
+            {contactDamageScale.toFixed(1)}×
+          </span>
+        </label>
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            color: "#d1d5db",
+            fontSize: 14,
+          }}
+        >
+          Internal contact scale
+          <input
+            type="range"
+            min={0}
+            max={1_000.0}
+            step={0.05}
+            value={internalContactScale}
+            onChange={(e) =>
+              setInternalContactScale(parseFloat(e.target.value))
+            }
+            style={{ flex: 1 }}
+          />
+          <span style={{ color: "#9ca3af", width: 60, textAlign: "right" }}>
+            {internalContactScale.toFixed(2)}×
+          </span>
+        </label>
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            color: "#d1d5db",
+            fontSize: 14,
+          }}
+        >
+          Min impulse (N·s)
+          <input
+            type="range"
+            min={0}
+            max={500}
+            step={5}
+            value={minImpulseThreshold}
+            onChange={(e) => setMinImpulseThreshold(parseFloat(e.target.value))}
+            style={{ flex: 1 }}
+          />
+          <span style={{ color: "#9ca3af", width: 60, textAlign: "right" }}>
+            {Math.round(minImpulseThreshold)}
+          </span>
+        </label>
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            color: "#d1d5db",
+            fontSize: 14,
+          }}
+        >
+          Contact cooldown (ms)
+          <input
+            type="range"
+            min={0}
+            max={1000}
+            step={10}
+            value={contactCooldownMs}
+            onChange={(e) => setContactCooldownMs(parseFloat(e.target.value))}
+            style={{ flex: 1 }}
+          />
+          <span style={{ color: "#9ca3af", width: 60, textAlign: "right" }}>
+            {Math.round(contactCooldownMs)}ms
+          </span>
+        </label>
+        <div style={{ color: "#9ca3af", fontSize: 13 }}>
+          Impact speed scaling
+        </div>
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            color: "#d1d5db",
+            fontSize: 14,
+          }}
+        >
+          Min speed external (m/s)
+          <input
+            type="range"
+            min={0}
+            max={5}
+            step={0.05}
+            value={speedMinExternal}
+            onChange={(e) => setSpeedMinExternal(parseFloat(e.target.value))}
+            style={{ flex: 1 }}
+          />
+          <span style={{ color: "#9ca3af", width: 60, textAlign: "right" }}>
+            {speedMinExternal.toFixed(2)}
+          </span>
+        </label>
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            color: "#d1d5db",
+            fontSize: 14,
+          }}
+        >
+          Min speed internal (m/s)
+          <input
+            type="range"
+            min={0}
+            max={5}
+            step={0.05}
+            value={speedMinInternal}
+            onChange={(e) => setSpeedMinInternal(parseFloat(e.target.value))}
+            style={{ flex: 1 }}
+          />
+          <span style={{ color: "#9ca3af", width: 60, textAlign: "right" }}>
+            {speedMinInternal.toFixed(2)}
+          </span>
+        </label>
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            color: "#d1d5db",
+            fontSize: 14,
+          }}
+        >
+          Full boost speed (m/s)
+          <input
+            type="range"
+            min={1}
+            max={20}
+            step={0.5}
+            value={speedMax}
+            onChange={(e) => setSpeedMax(parseFloat(e.target.value))}
+            style={{ flex: 1 }}
+          />
+          <span style={{ color: "#9ca3af", width: 60, textAlign: "right" }}>
+            {speedMax.toFixed(1)}
+          </span>
+        </label>
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            color: "#d1d5db",
+            fontSize: 14,
+          }}
+        >
+          Boost curve (exp)
+          <input
+            type="range"
+            min={0.5}
+            max={4}
+            step={0.05}
+            value={speedExponent}
+            onChange={(e) => setSpeedExponent(parseFloat(e.target.value))}
+            style={{ flex: 1 }}
+          />
+          <span style={{ color: "#9ca3af", width: 60, textAlign: "right" }}>
+            {speedExponent.toFixed(2)}
+          </span>
+        </label>
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            color: "#d1d5db",
+            fontSize: 14,
+          }}
+        >
+          Slow factor
+          <input
+            type="range"
+            min={0.5}
+            max={1.0}
+            step={0.01}
+            value={slowSpeedFactor}
+            onChange={(e) => setSlowSpeedFactor(parseFloat(e.target.value))}
+            style={{ flex: 1 }}
+          />
+          <span style={{ color: "#9ca3af", width: 60, textAlign: "right" }}>
+            {slowSpeedFactor.toFixed(2)}×
+          </span>
+        </label>
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            color: "#d1d5db",
+            fontSize: 14,
+          }}
+        >
+          Fast factor
+          <input
+            type="range"
+            min={1.0}
+            max={8.0}
+            step={0.05}
+            value={fastSpeedFactor}
+            onChange={(e) => setFastSpeedFactor(parseFloat(e.target.value))}
+            style={{ flex: 1 }}
+          />
+          <span style={{ color: "#9ca3af", width: 60, textAlign: "right" }}>
+            {fastSpeedFactor.toFixed(2)}×
+          </span>
+        </label>
+        <select
+          value={projType}
+          onChange={(e) => setProjType(e.target.value as "ball" | "box")}
+          style={{
+            background: "#111",
+            color: "#eee",
+            border: "1px solid #333",
+            borderRadius: 6,
+            padding: "8px 10px",
+          }}
+        >
+          <option value="ball">Ball</option>
+          <option value="box">Box</option>
+        </select>
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            color: "#d1d5db",
+            fontSize: 14,
+          }}
+        >
+          Size (radius, m)
           <input
             type="range"
             min={0.1}
-            max={1.0}
-            step={0.02}
-            value={wallThickness}
-            onChange={(e) => setWallThickness(parseFloat(e.target.value))}
+            max={3.0}
+            step={0.05}
+            value={projectileRadius}
+            onChange={(e) => setProjectileRadius(parseFloat(e.target.value))}
             style={{ flex: 1 }}
-            disabled={!isWallStructure}
           />
-          <span style={{ color: "#9ca3af", width: 60, textAlign: "right" }}>
-            {wallThickness.toFixed(2)}
+          <span style={{ color: "#9ca3af", width: 80, textAlign: "right" }}>
+            {projectileRadius.toFixed(2)}m
           </span>
         </label>
         <label
@@ -2900,43 +2752,18 @@ function HtmlOverlay(props: HtmlOverlayProps) {
             fontSize: 14,
           }}
         >
-          Span Segments
-          <input
-            type="range"
-            min={3}
-            max={30}
-            step={1}
-            value={wallSpanSeg}
-            onChange={(e) => setWallSpanSeg(parseInt(e.target.value, 10))}
-            style={{ flex: 1 }}
-            disabled={!isWallStructure}
-          />
-          <span style={{ color: "#9ca3af", width: 60, textAlign: "right" }}>
-            {wallSpanSeg}
-          </span>
-        </label>
-        <label
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            color: "#d1d5db",
-            fontSize: 14,
-          }}
-        >
-          Height Segments
+          Speed
           <input
             type="range"
             min={1}
-            max={12}
+            max={100}
             step={1}
-            value={wallHeightSeg}
-            onChange={(e) => setWallHeightSeg(parseInt(e.target.value, 10))}
+            value={projectileSpeed}
+            onChange={(e) => setProjectileSpeed(parseFloat(e.target.value))}
             style={{ flex: 1 }}
-            disabled={!isWallStructure}
           />
           <span style={{ color: "#9ca3af", width: 60, textAlign: "right" }}>
-            {wallHeightSeg}
+            {projectileSpeed.toFixed(0)}
           </span>
         </label>
         <label
@@ -2948,26 +2775,250 @@ function HtmlOverlay(props: HtmlOverlayProps) {
             fontSize: 14,
           }}
         >
-          Layers
+          Mass
           <input
             type="range"
             min={1}
-            max={3}
-            step={1}
-            value={wallLayers}
-            onChange={(e) => setWallLayers(parseInt(e.target.value, 10))}
+            max={200000}
+            step={1000}
+            value={projectileMass}
+            onChange={(e) => setProjectileMass(parseFloat(e.target.value))}
             style={{ flex: 1 }}
-            disabled={!isWallStructure}
           />
-          <span style={{ color: "#9ca3af", width: 60, textAlign: "right" }}>
-            {wallLayers}
+          <span style={{ color: "#9ca3af", width: 80, textAlign: "right" }}>
+            {projectileMass.toLocaleString()}
           </span>
         </label>
-      </div>
-      <p style={{ margin: 0, color: "#d1d5db", fontSize: 14 }}>
-        Click ground to drop a projectile. Bottom row is support (infinite
-        mass). Splits occur when bonds overstress.
-      </p>
+        <div style={{ height: 8 }} />
+        <div style={{ color: "#9ca3af", fontSize: 13 }}>Material</div>
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            color: "#d1d5db",
+            fontSize: 14,
+          }}
+        >
+          Strength Scale
+          {/* <input type="range" min={0.05} max={5} step={0.05} value={materialScale} onChange={(e) => setMaterialScale(parseFloat(e.target.value))} style={{ flex: 1 }} /> */}
+          {/* <input type="range" min={0.5} max={5_000_000} step={0.5} value={materialScale} onChange={(e) => setMaterialScale(parseFloat(e.target.value))} style={{ flex: 1 }} /> */}
+          <input
+            type="range"
+            min={1}
+            max={50_000_000}
+            step={10}
+            value={materialScale}
+            onChange={(e) => setMaterialScale(parseFloat(e.target.value))}
+            style={{ flex: 1 }}
+          />
+          <span style={{ color: "#9ca3af", width: 60, textAlign: "right" }}>
+            {materialScale.toFixed(2)}×
+          </span>
+        </label>
+        <div
+          style={{ display: "flex", gap: 8, color: "#d1d5db", fontSize: 14 }}
+        >
+          <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <input
+              type="checkbox"
+              checked={bondsXEnabled}
+              onChange={(e) => setBondsXEnabled(e.target.checked)}
+              style={{ accentColor: "#4da2ff", width: 16, height: 16 }}
+            />{" "}
+            X
+          </label>
+          <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <input
+              type="checkbox"
+              checked={bondsYEnabled}
+              onChange={(e) => setBondsYEnabled(e.target.checked)}
+              style={{ accentColor: "#4da2ff", width: 16, height: 16 }}
+            />{" "}
+            Y
+          </label>
+          <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <input
+              type="checkbox"
+              checked={bondsZEnabled}
+              onChange={(e) => setBondsZEnabled(e.target.checked)}
+              style={{ accentColor: "#4da2ff", width: 16, height: 16 }}
+            />{" "}
+            Z
+          </label>
+        </div>
+        <div style={{ height: 8 }} />
+        <div
+          style={{
+            color: "#9ca3af",
+            fontSize: 13,
+            display: "flex",
+            flexDirection: "column",
+            gap: 4,
+          }}
+        >
+          <span>Wall</span>
+          {!isWallStructure ? (
+            <span style={{ color: "#6b7280", fontSize: 12 }}>
+              Dimension sliders only apply to the tunable wall preset.
+            </span>
+          ) : null}
+        </div>
+        <div
+          style={{
+            opacity: isWallStructure ? 1 : 0.5,
+            pointerEvents: isWallStructure ? "auto" : "none",
+          }}
+        >
+          <label
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              color: "#d1d5db",
+              fontSize: 14,
+            }}
+          >
+            Span (m)
+            <input
+              type="range"
+              min={2}
+              max={20}
+              step={0.5}
+              value={wallSpan}
+              onChange={(e) => setWallSpan(parseFloat(e.target.value))}
+              style={{ flex: 1 }}
+              disabled={!isWallStructure}
+            />
+            <span style={{ color: "#9ca3af", width: 60, textAlign: "right" }}>
+              {wallSpan.toFixed(1)}
+            </span>
+          </label>
+          <label
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              color: "#d1d5db",
+              fontSize: 14,
+            }}
+          >
+            Height (m)
+            <input
+              type="range"
+              min={1}
+              max={10}
+              step={0.5}
+              value={wallHeight}
+              onChange={(e) => setWallHeight(parseFloat(e.target.value))}
+              style={{ flex: 1 }}
+              disabled={!isWallStructure}
+            />
+            <span style={{ color: "#9ca3af", width: 60, textAlign: "right" }}>
+              {wallHeight.toFixed(1)}
+            </span>
+          </label>
+          <label
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              color: "#d1d5db",
+              fontSize: 14,
+            }}
+          >
+            Thickness (m)
+            <input
+              type="range"
+              min={0.1}
+              max={1.0}
+              step={0.02}
+              value={wallThickness}
+              onChange={(e) => setWallThickness(parseFloat(e.target.value))}
+              style={{ flex: 1 }}
+              disabled={!isWallStructure}
+            />
+            <span style={{ color: "#9ca3af", width: 60, textAlign: "right" }}>
+              {wallThickness.toFixed(2)}
+            </span>
+          </label>
+          <label
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              color: "#d1d5db",
+              fontSize: 14,
+            }}
+          >
+            Span Segments
+            <input
+              type="range"
+              min={3}
+              max={30}
+              step={1}
+              value={wallSpanSeg}
+              onChange={(e) => setWallSpanSeg(parseInt(e.target.value, 10))}
+              style={{ flex: 1 }}
+              disabled={!isWallStructure}
+            />
+            <span style={{ color: "#9ca3af", width: 60, textAlign: "right" }}>
+              {wallSpanSeg}
+            </span>
+          </label>
+          <label
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              color: "#d1d5db",
+              fontSize: 14,
+            }}
+          >
+            Height Segments
+            <input
+              type="range"
+              min={1}
+              max={12}
+              step={1}
+              value={wallHeightSeg}
+              onChange={(e) => setWallHeightSeg(parseInt(e.target.value, 10))}
+              style={{ flex: 1 }}
+              disabled={!isWallStructure}
+            />
+            <span style={{ color: "#9ca3af", width: 60, textAlign: "right" }}>
+              {wallHeightSeg}
+            </span>
+          </label>
+          <label
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              color: "#d1d5db",
+              fontSize: 14,
+            }}
+          >
+            Layers
+            <input
+              type="range"
+              min={1}
+              max={3}
+              step={1}
+              value={wallLayers}
+              onChange={(e) => setWallLayers(parseInt(e.target.value, 10))}
+              style={{ flex: 1 }}
+              disabled={!isWallStructure}
+            />
+            <span style={{ color: "#9ca3af", width: 60, textAlign: "right" }}>
+              {wallLayers}
+            </span>
+          </label>
+        </div>
+        <p style={{ margin: 0, color: "#d1d5db", fontSize: 14 }}>
+          Click ground to drop a projectile. Bottom row is support (infinite
+          mass). Splits occur when bonds overstress.
+        </p>
       </div>
     </>
   );
@@ -2983,12 +3034,15 @@ export default function Page() {
   const [adaptiveDt, setAdaptiveDt] = useState(true);
   const [sleepLinearThreshold, setSleepLinearThreshold] = useState(0.1);
   const [sleepAngularThreshold, setSleepAngularThreshold] = useState(0.1);
-  const [sleepMode, setSleepMode] = useState<OptimizationMode>('off');
+  const [sleepMode, setSleepMode] = useState<OptimizationMode>("off");
   // Small body damping - higher damping for bodies with few colliders
-  const [smallBodyColliderThreshold, setSmallBodyColliderThreshold] = useState(3);
+  const [smallBodyColliderThreshold, setSmallBodyColliderThreshold] =
+    useState(3);
   const [smallBodyMinLinearDamping, setSmallBodyMinLinearDamping] = useState(2);
-  const [smallBodyMinAngularDamping, setSmallBodyMinAngularDamping] = useState(2);
-  const [smallBodyDampingMode, setSmallBodyDampingMode] = useState<OptimizationMode>('off');
+  const [smallBodyMinAngularDamping, setSmallBodyMinAngularDamping] =
+    useState(2);
+  const [smallBodyDampingMode, setSmallBodyDampingMode] =
+    useState<OptimizationMode>("off");
   const [singleCollisionMode, setSingleCollisionMode] =
     useState<SingleCollisionMode>("all");
   const [skipSingleBodies, setSkipSingleBodies] = useState(false);
@@ -3039,7 +3093,10 @@ export default function Page() {
   const [controlsCollapsed, setControlsCollapsed] = useState(false);
   const [profilingEnabled, setProfilingEnabled] = useState(false);
   const profilerSamplesRef = useRef<CoreProfilerSample[]>([]);
-  const profilerSessionRef = useRef<{ startedAt: number; config: Record<string, unknown> } | null>(null);
+  const profilerSessionRef = useRef<{
+    startedAt: number;
+    config: Record<string, unknown>;
+  } | null>(null);
   const [profilerStats, setProfilerStats] =
     useState<ProfilerStatsState>(EMPTY_PROFILER_STATS);
   const profilerPendingStatsRef = useRef<ProfilerStatsState | null>(null);
@@ -3170,13 +3227,13 @@ export default function Page() {
     structures.find((item) => item.id === structureId) ?? structures[0];
   const handleProfilerSample = useCallback(
     (sample: CoreProfilerSample) => {
-    profilerSamplesRef.current.push(sample);
+      profilerSamplesRef.current.push(sample);
       scheduleProfilerStatsUpdate(
         {
-      sampleCount: profilerSamplesRef.current.length,
+          sampleCount: profilerSamplesRef.current.length,
           lastFrameMs:
             typeof sample.totalMs === "number" ? sample.totalMs : null,
-      lastSample: sample,
+          lastSample: sample,
         },
         false,
       );
@@ -3340,8 +3397,11 @@ export default function Page() {
         collapsed={controlsCollapsed}
         setCollapsed={setControlsCollapsed}
       />
-      
-      <Canvas shadows={shadowsEnabled} camera={{ position: [7, 5, 9], fov: 45 }}>
+
+      <Canvas
+        shadows={shadowsEnabled}
+        camera={{ position: [7, 5, 9], fov: 45 }}
+      >
         <color attach="background" args={["#0e0e12"]} />
         <Scene
           debug={debug}
