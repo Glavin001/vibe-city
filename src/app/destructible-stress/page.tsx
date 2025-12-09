@@ -1404,6 +1404,8 @@ type HtmlOverlayProps = {
   setSmallBodyDampingMode: (v: OptimizationMode) => void;
   showPerfOverlay: boolean;
   setShowPerfOverlay: (v: boolean) => void;
+  collapsed?: boolean;
+  setCollapsed?: (v: boolean) => void;
 } & ProfilerControlsProps;
 
 const PROFILER_STATS_THROTTLE_MS = 200;
@@ -1700,6 +1702,8 @@ function HtmlOverlay(props: HtmlOverlayProps) {
   startProfiling,
   stopProfiling,
   profilerStats,
+  collapsed = false,
+  setCollapsed,
   } = props;
   const overlayRenderStart = perfNow();
   useEffect(() => {
@@ -1726,22 +1730,80 @@ function HtmlOverlay(props: HtmlOverlayProps) {
     structureId === "wall" ||
     structureId === "fracturedWall" ||
     structureId === "brickWall";
+  // When perf overlay is hidden, we can position the panel higher
+  const panelTop = showPerfOverlay ? 110 : 16;
   return (
-    <div
-      style={{
-        position: "absolute",
-        top: 110,
-        left: 16,
-        bottom: 16,
-        zIndex: 10,
-        display: "flex",
-        flexDirection: "column",
-        gap: 8,
-        maxWidth: 360,
-        overflowY: "auto",
-        paddingRight: 8,
-      }}
-    >
+    <>
+      {/* Toggle button - shows Controls when collapsed */}
+      {collapsed && (
+        <button
+          type="button"
+          onClick={() => setCollapsed?.(false)}
+          style={{
+            position: "absolute",
+            top: panelTop,
+            left: 8,
+            zIndex: 20,
+            padding: "8px 12px",
+            background: "#1f2937",
+            color: "#e5e7eb",
+            borderRadius: 6,
+            border: "1px solid #374151",
+            cursor: "pointer",
+            fontSize: 14,
+            fontWeight: 500,
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
+          }}
+          aria-label="Show controls"
+        >
+          <span style={{ fontSize: 16 }}>☰</span>
+          <span>Controls</span>
+        </button>
+      )}
+
+      {/* Controls panel */}
+      <div
+        style={{
+          position: "absolute",
+          top: panelTop,
+          left: 8,
+          right: 8,
+          bottom: 16,
+          zIndex: 10,
+          display: collapsed ? "none" : "flex",
+          flexDirection: "column",
+          gap: 8,
+          maxWidth: 400,
+          overflowY: "auto",
+          background: "rgba(13, 13, 13, 0.95)",
+          padding: 12,
+          borderRadius: 8,
+          border: "1px solid #303030",
+        }}
+      >
+        {/* Hide button - same style as other panel buttons */}
+        <button
+          type="button"
+          onClick={() => setCollapsed?.(true)}
+          style={{
+            padding: "8px 14px",
+            background: "#0d0d0d",
+            color: "white",
+            borderRadius: 6,
+            border: "1px solid #303030",
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            width: "fit-content",
+          }}
+        >
+          <span>✕</span>
+          <span>Hide</span>
+        </button>
       <ProfilerControls
         profilingEnabled={profilingEnabled}
         startProfiling={startProfiling}
@@ -2906,7 +2968,8 @@ function HtmlOverlay(props: HtmlOverlayProps) {
         Click ground to drop a projectile. Bottom row is support (infinite
         mass). Splits occur when bonds overstress.
       </p>
-    </div>
+      </div>
+    </>
   );
 }
 
@@ -2973,6 +3036,7 @@ export default function Page() {
   const [bondsZEnabled, setBondsZEnabled] = useState(true);
   const [autoBondingEnabled, setAutoBondingEnabled] = useState(false);
   const [showPerfOverlay, setShowPerfOverlay] = useState(true);
+  const [controlsCollapsed, setControlsCollapsed] = useState(false);
   const [profilingEnabled, setProfilingEnabled] = useState(false);
   const profilerSamplesRef = useRef<CoreProfilerSample[]>([]);
   const profilerSessionRef = useRef<{ startedAt: number; config: Record<string, unknown> } | null>(null);
@@ -3273,6 +3337,8 @@ export default function Page() {
         startProfiling={startProfiling}
         stopProfiling={stopProfiling}
         profilerStats={profilerStats}
+        collapsed={controlsCollapsed}
+        setCollapsed={setControlsCollapsed}
       />
       
       <Canvas shadows={shadowsEnabled} camera={{ position: [7, 5, 9], fov: 45 }}>
@@ -3323,7 +3389,7 @@ export default function Page() {
           onReset={() => setIteration((v) => v + 1)}
           bodyCountRef={rigidBodyCountRef}
           activeBodyCountRef={activeRigidBodyCountRef}
-        colliderCountRef={colliderCountRef}
+          colliderCountRef={colliderCountRef}
           adaptiveDt={adaptiveDt}
           sleepLinearThreshold={sleepLinearThreshold}
           sleepAngularThreshold={sleepAngularThreshold}
