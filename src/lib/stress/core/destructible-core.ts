@@ -6,12 +6,14 @@ import type {
   ChunkData,
   Vec3,
   ProjectileSpawn,
-  BondRef,
   ProjectileState,
+  BondRef,
   CoreProfilerConfig,
   CoreProfilerSample,
   CoreProfilerPass,
   SingleCollisionMode,
+  SmallBodyDampingOptions,
+  OptimizationMode,
 } from './types';
 import { DestructibleDamageSystem, type DamageOptions, type DamageStateSnapshot } from './damage';
 import { planSplitMigration, type PlannerChild } from './splitMigrator';
@@ -36,6 +38,9 @@ type BuildCoreOptions = {
   skipSingleBodies?: boolean;
   sleepLinearThreshold?: number;
   sleepAngularThreshold?: number;
+  sleepMode?: OptimizationMode;
+  // Small body damping - apply higher damping to bodies with few colliders
+  smallBodyDamping?: SmallBodyDampingOptions;
 };
 
 const isDev = true; //process.env.NODE_ENV !== 'production';
@@ -94,6 +99,8 @@ export async function buildDestructibleCore({
   skipSingleBodies = false,
   sleepLinearThreshold = 0.1,
   sleepAngularThreshold = 0.1,
+  sleepMode = 'off',
+  smallBodyDamping,
 }: BuildCoreOptions): Promise<DestructibleCore> {
   await RAPIER.init();
   const runtime = await loadStressSolver();
@@ -188,17 +195,77 @@ export async function buildDestructibleCore({
   const scaledSettings = { ...settings };
   const skipSingleBodiesEnabled = !!skipSingleBodies;
   let singleCollisionModeSetting: SingleCollisionMode = singleCollisionMode;
-  const sleepThresholds = {
+  // Track bodies that have collided with ground (for conditional optimization modes)
+  const bodiesCollidedWithGround = new Set<number>();
+  // Track small bodies that may need damping applied when they collide with ground
+  const smallBodiesPendingDamping = new Set<number>();
+
+  // Apply small body damping to a specific body (called when ground collision detected if mode is 'afterGroundCollision')
+  function applySmallBodyDampingToBody(bodyHandle: number) {
+    if (smallBodyDampingSettings.mode === 'off') return;
+    if (!smallBodiesPendingDamping.has(bodyHandle)) return;
+
+    const body = world.getRigidBody(bodyHandle);
+    if (!body) return;
+
+    try {
+      const currentLinDamp = typeof body.linearDamping === 'function' ? body.linearDamping() : 0;
+      const currentAngDamp = typeof body.angularDamping === 'function' ? body.angularDamping() : 0;
+      const newLinDamp = Math.max(currentLinDamp, smallBodyDampingSettings.minLinearDamping);
+      const newAngDamp = Math.max(currentAngDamp, smallBodyDampingSettings.minAngularDamping);
+      body.setLinearDamping(newLinDamp);
+      body.setAngularDamping(newAngDamp);
+    } catch {}
+
+    // Remove from pending set once damping is applied
+    smallBodiesPendingDamping.delete(bodyHandle);
+  }
+
+  const sleepSettings = {
+    mode: (sleepMode as OptimizationMode) ?? 'off',
     linear: Math.max(0, sleepLinearThreshold),
     angular: Math.max(0, sleepAngularThreshold),
   };
   function updateSleepThresholds(linear?: number, angular?: number) {
     if (typeof linear === 'number' && Number.isFinite(linear)) {
-      sleepThresholds.linear = Math.max(0, linear);
+      sleepSettings.linear = Math.max(0, linear);
     }
     if (typeof angular === 'number' && Number.isFinite(angular)) {
-      sleepThresholds.angular = Math.max(0, angular);
+      sleepSettings.angular = Math.max(0, angular);
     }
+  }
+  function updateSleepMode(mode: OptimizationMode) {
+    sleepSettings.mode = mode;
+  }
+
+  // Small body damping - apply higher damping to bodies with few colliders to reduce jitter
+  const smallBodyDampingSettings = {
+    mode: (smallBodyDamping?.mode as OptimizationMode) ?? 'off',
+    colliderCountThreshold: smallBodyDamping?.colliderCountThreshold ?? 3,
+    minLinearDamping: smallBodyDamping?.minLinearDamping ?? 2,
+    minAngularDamping: smallBodyDamping?.minAngularDamping ?? 2,
+  };
+  function updateSmallBodyDamping(opts: SmallBodyDampingOptions) {
+    if (opts.mode != null) {
+      smallBodyDampingSettings.mode = opts.mode;
+    }
+    if (typeof opts.colliderCountThreshold === 'number' && Number.isFinite(opts.colliderCountThreshold)) {
+      smallBodyDampingSettings.colliderCountThreshold = Math.max(0, Math.floor(opts.colliderCountThreshold));
+    }
+    if (typeof opts.minLinearDamping === 'number' && Number.isFinite(opts.minLinearDamping)) {
+      smallBodyDampingSettings.minLinearDamping = Math.max(0, opts.minLinearDamping);
+    }
+    if (typeof opts.minAngularDamping === 'number' && Number.isFinite(opts.minAngularDamping)) {
+      smallBodyDampingSettings.minAngularDamping = Math.max(0, opts.minAngularDamping);
+    }
+  }
+
+  // Helper to check if optimization should apply to a body
+  function shouldApplyOptimization(mode: OptimizationMode, bodyHandle: number): boolean {
+    if (mode === 'off') return false;
+    if (mode === 'always') return true;
+    if (mode === 'afterGroundCollision') return bodiesCollidedWithGround.has(bodyHandle);
+    return false;
   }
 
   // Reasonable defaults; caller can adjust later if needed
@@ -566,6 +633,28 @@ export async function buildDestructibleCore({
       try {
         const b1 = getBodyForColliderHandle(h1);
         const b2 = getBodyForColliderHandle(h2);
+
+        // Track ground collisions for optimization modes
+        if (b1 && b2) {
+          const isB1Ground = b1.handle === groundBody.handle;
+          const isB2Ground = b2.handle === groundBody.handle;
+          if (isB1Ground && !isB2Ground && b2.handle !== rootBody.handle) {
+            const wasNew = !bodiesCollidedWithGround.has(b2.handle);
+            bodiesCollidedWithGround.add(b2.handle);
+            // Apply deferred small body damping if mode is afterGroundCollision
+            if (wasNew && smallBodyDampingSettings.mode === 'afterGroundCollision') {
+              applySmallBodyDampingToBody(b2.handle);
+            }
+          } else if (isB2Ground && !isB1Ground && b1.handle !== rootBody.handle) {
+            const wasNew = !bodiesCollidedWithGround.has(b1.handle);
+            bodiesCollidedWithGround.add(b1.handle);
+            // Apply deferred small body damping if mode is afterGroundCollision
+            if (wasNew && smallBodyDampingSettings.mode === 'afterGroundCollision') {
+              applySmallBodyDampingToBody(b1.handle);
+            }
+          }
+        }
+
         const ud1 = (b1 as BodyWithUserData | null)?.userData;
         const ud2 = (b2 as BodyWithUserData | null)?.userData;
         const projBody = (ud1?.projectile ? b1 : (ud2?.projectile ? b2 : null));
@@ -916,11 +1005,18 @@ export async function buildDestructibleCore({
   }
 
   function applySleepThresholdsToBodies() {
-    const linearThreshold = Math.max(0, sleepThresholds.linear);
-    const angularThreshold = Math.max(0, sleepThresholds.angular);
+    // Skip if sleep mode is off
+    if (sleepSettings.mode === 'off') return;
+
+    const linearThreshold = Math.max(0, sleepSettings.linear);
+    const angularThreshold = Math.max(0, sleepSettings.angular);
     for (const [bodyHandle, nodes] of nodesByBodyHandle.entries()) {
       if (!nodes || nodes.size === 0) continue;
       if (bodyHandle === rootBody.handle || bodyHandle === groundBody.handle) continue;
+
+      // Check if this body should have sleep optimization applied based on mode
+      if (!shouldApplyOptimization(sleepSettings.mode, bodyHandle)) continue;
+
       const body = world.getRigidBody(bodyHandle);
       if (!body) continue;
       if (!body.isDynamic?.()) continue;
@@ -1574,6 +1670,26 @@ export async function buildDestructibleCore({
           if (!pb.isSupport) (desc as MaybeCcdBodyDesc).setCcdEnabled?.(true);
         } catch {}
         const body = world.createRigidBody(desc);
+
+        // Apply higher damping to small bodies (few colliders) to reduce jitter
+        // Only apply immediately if mode is 'always'; for 'afterGroundCollision' it will be applied later
+        const colliderCount = pb.nodes.length;
+        const isSmallBody = colliderCount > 0 && colliderCount <= smallBodyDampingSettings.colliderCountThreshold && !pb.isSupport;
+        if (isSmallBody && smallBodyDampingSettings.mode === 'always') {
+          try {
+            const currentLinDamp = typeof body.linearDamping === 'function' ? body.linearDamping() : 0;
+            const currentAngDamp = typeof body.angularDamping === 'function' ? body.angularDamping() : 0;
+            const newLinDamp = Math.max(currentLinDamp, smallBodyDampingSettings.minLinearDamping);
+            const newAngDamp = Math.max(currentAngDamp, smallBodyDampingSettings.minAngularDamping);
+            body.setLinearDamping(newLinDamp);
+            body.setAngularDamping(newAngDamp);
+          } catch {}
+        }
+        // Track small bodies for potential later damping application (afterGroundCollision mode)
+        if (isSmallBody) {
+          smallBodiesPendingDamping.add(body.handle);
+        }
+
         actorMap.set(pb.actorIndex, { bodyHandle: body.handle });
         for (const nodeIndex of pb.nodes) pendingColliderMigrations.push({ nodeIndex, targetBodyHandle: body.handle });
       }
@@ -1913,6 +2029,14 @@ export async function buildDestructibleCore({
     applyExternalForce,
     setSleepThresholds: (linear: number, angular: number) =>
       updateSleepThresholds(linear, angular),
+    setSleepMode: (mode: OptimizationMode) => updateSleepMode(mode),
+    getSleepSettings: () => ({ ...sleepSettings }),
+    // Small body damping API
+    setSmallBodyDamping: (opts: SmallBodyDampingOptions) =>
+      updateSmallBodyDamping(opts),
+    getSmallBodyDampingSettings: () => ({ ...smallBodyDampingSettings }),
+    // Query ground collision status
+    hasBodyCollidedWithGround: (bodyHandle: number) => bodiesCollidedWithGround.has(bodyHandle),
     // Damage API
     applyNodeDamage: damageSystem.isEnabled() ? (nodeIndex: number, amount: number) => { try { damageSystem.applyDirect(nodeIndex, amount); } catch {} } : undefined,
     getNodeHealth: damageSystem.isEnabled() ? (nodeIndex: number) => {

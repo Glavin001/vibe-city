@@ -22,6 +22,7 @@ import type {
   CoreProfilerSample,
   DestructibleCore,
   SingleCollisionMode,
+  OptimizationMode,
 } from "@/lib/stress/core/types";
 import { buildBeamBridgeScenario } from "@/lib/stress/scenarios/beamBridgeScenario";
 import { buildBrickWallScenario } from "@/lib/stress/scenarios/brickWallScenario";
@@ -128,6 +129,11 @@ type SceneProps = {
   adaptiveDt: boolean;
   sleepLinearThreshold: number;
   sleepAngularThreshold: number;
+  sleepMode: OptimizationMode;
+  smallBodyColliderThreshold: number;
+  smallBodyMinLinearDamping: number;
+  smallBodyMinAngularDamping: number;
+  smallBodyDampingMode: OptimizationMode;
   onReset: () => void;
   bodyCountRef?: MutableRefObject<HTMLSpanElement | null>;
   activeBodyCountRef?: MutableRefObject<HTMLSpanElement | null>;
@@ -307,6 +313,11 @@ function Scene({
   adaptiveDt,
   sleepLinearThreshold,
   sleepAngularThreshold,
+  sleepMode,
+  smallBodyColliderThreshold,
+  smallBodyMinLinearDamping,
+  smallBodyMinAngularDamping,
+  smallBodyDampingMode,
   onReset: _onReset,
   bodyCountRef,
   activeBodyCountRef,
@@ -355,6 +366,26 @@ function Scene({
   useEffect(() => {
     sleepAngularThresholdRef.current = sleepAngularThreshold;
   }, [sleepAngularThreshold]);
+  const smallBodyColliderThresholdRef = useRef(smallBodyColliderThreshold);
+  useEffect(() => {
+    smallBodyColliderThresholdRef.current = smallBodyColliderThreshold;
+  }, [smallBodyColliderThreshold]);
+  const smallBodyMinLinearDampingRef = useRef(smallBodyMinLinearDamping);
+  useEffect(() => {
+    smallBodyMinLinearDampingRef.current = smallBodyMinLinearDamping;
+  }, [smallBodyMinLinearDamping]);
+  const smallBodyMinAngularDampingRef = useRef(smallBodyMinAngularDamping);
+  useEffect(() => {
+    smallBodyMinAngularDampingRef.current = smallBodyMinAngularDamping;
+  }, [smallBodyMinAngularDamping]);
+  const sleepModeRef = useRef(sleepMode);
+  useEffect(() => {
+    sleepModeRef.current = sleepMode;
+  }, [sleepMode]);
+  const smallBodyDampingModeRef = useRef(smallBodyDampingMode);
+  useEffect(() => {
+    smallBodyDampingModeRef.current = smallBodyDampingMode;
+  }, [smallBodyDampingMode]);
   const isDev = true; //process.env.NODE_ENV !== 'production';
   useEffect(() => {
     physicsWireframeStateRef.current = physicsWireframe;
@@ -499,6 +530,13 @@ function Scene({
         singleCollisionMode: singleCollisionModeRef.current,
         sleepLinearThreshold: sleepLinearThresholdRef.current,
         sleepAngularThreshold: sleepAngularThresholdRef.current,
+        sleepMode: sleepModeRef.current,
+        smallBodyDamping: {
+          mode: smallBodyDampingModeRef.current,
+          colliderCountThreshold: smallBodyColliderThresholdRef.current,
+          minLinearDamping: smallBodyMinLinearDampingRef.current,
+          minAngularDamping: smallBodyMinAngularDampingRef.current,
+        },
       });
       if (!mounted) {
         core.dispose();
@@ -801,6 +839,25 @@ function Scene({
     if (!core || typeof core.setSleepThresholds !== "function") return;
     core.setSleepThresholds(sleepLinearThreshold, sleepAngularThreshold);
   }, [sleepLinearThreshold, sleepAngularThreshold]);
+
+  // Update small body damping settings dynamically
+  useEffect(() => {
+    const core = coreRef.current;
+    if (!core || typeof core.setSmallBodyDamping !== "function") return;
+    core.setSmallBodyDamping({
+      mode: smallBodyDampingMode,
+      colliderCountThreshold: smallBodyColliderThreshold,
+      minLinearDamping: smallBodyMinLinearDamping,
+      minAngularDamping: smallBodyMinAngularDamping,
+    });
+  }, [smallBodyDampingMode, smallBodyColliderThreshold, smallBodyMinLinearDamping, smallBodyMinAngularDamping]);
+
+  // Update sleep mode dynamically
+  useEffect(() => {
+    const core = coreRef.current;
+    if (!core || typeof core.setSleepMode !== "function") return;
+    core.setSleepMode(sleepMode);
+  }, [sleepMode]);
 
   useEffect(() => {
     const core = coreRef.current;
@@ -1335,6 +1392,16 @@ type HtmlOverlayProps = {
   setSleepLinearThreshold: (v: number) => void;
   sleepAngularThreshold: number;
   setSleepAngularThreshold: (v: number) => void;
+  smallBodyColliderThreshold: number;
+  setSmallBodyColliderThreshold: (v: number) => void;
+  smallBodyMinLinearDamping: number;
+  setSmallBodyMinLinearDamping: (v: number) => void;
+  smallBodyMinAngularDamping: number;
+  setSmallBodyMinAngularDamping: (v: number) => void;
+  sleepMode: OptimizationMode;
+  setSleepMode: (v: OptimizationMode) => void;
+  smallBodyDampingMode: OptimizationMode;
+  setSmallBodyDampingMode: (v: OptimizationMode) => void;
   showPerfOverlay: boolean;
   setShowPerfOverlay: (v: boolean) => void;
 } & ProfilerControlsProps;
@@ -1617,6 +1684,16 @@ function HtmlOverlay(props: HtmlOverlayProps) {
   setSleepLinearThreshold,
   sleepAngularThreshold,
   setSleepAngularThreshold,
+  smallBodyColliderThreshold,
+  setSmallBodyColliderThreshold,
+  smallBodyMinLinearDamping,
+  setSmallBodyMinLinearDamping,
+  smallBodyMinAngularDamping,
+  setSmallBodyMinAngularDamping,
+  sleepMode,
+  setSleepMode,
+  smallBodyDampingMode,
+  setSmallBodyDampingMode,
   showPerfOverlay,
   setShowPerfOverlay,
   profilingEnabled,
@@ -1912,6 +1989,26 @@ function HtmlOverlay(props: HtmlOverlayProps) {
         />
         Adaptive dt (render delta)
       </label>
+      <div style={{ height: 8 }} />
+      <div style={{ color: "#9ca3af", fontSize: 13 }}>Sleep Optimization</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        <span style={{ color: "#d1d5db", fontSize: 14 }}>Mode</span>
+        <select
+          value={sleepMode}
+          onChange={(e) => setSleepMode(e.target.value as OptimizationMode)}
+          style={{
+            background: "#111",
+            color: "#eee",
+            border: "1px solid #333",
+            borderRadius: 6,
+            padding: "8px 10px",
+          }}
+        >
+          <option value="off">Off</option>
+          <option value="always">Always</option>
+          <option value="afterGroundCollision">After ground collision</option>
+        </select>
+      </div>
       <label
         style={{
           display: "flex",
@@ -1919,6 +2016,7 @@ function HtmlOverlay(props: HtmlOverlayProps) {
           gap: 8,
           color: "#d1d5db",
           fontSize: 14,
+          opacity: sleepMode === "off" ? 0.5 : 1,
         }}
       >
         Sleep linear threshold (m/s)
@@ -1974,6 +2072,99 @@ function HtmlOverlay(props: HtmlOverlayProps) {
         />
         <span style={{ color: "#9ca3af", width: 90, textAlign: "right" }}>
           {sleepAngularThreshold.toFixed(2)} rad/s
+        </span>
+      </label>
+      <div style={{ height: 8 }} />
+      <div style={{ color: "#9ca3af", fontSize: 13 }}>Small Body Damping</div>
+      <p style={{ margin: 0, color: "#6b7280", fontSize: 12 }}>
+        Apply higher damping to fractured bodies with few colliders to reduce jitter
+      </p>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        <span style={{ color: "#d1d5db", fontSize: 14 }}>Mode</span>
+        <select
+          value={smallBodyDampingMode}
+          onChange={(e) => setSmallBodyDampingMode(e.target.value as OptimizationMode)}
+          style={{
+            background: "#111",
+            color: "#eee",
+            border: "1px solid #333",
+            borderRadius: 6,
+            padding: "8px 10px",
+          }}
+        >
+          <option value="off">Off</option>
+          <option value="always">Always</option>
+          <option value="afterGroundCollision">After ground collision</option>
+        </select>
+      </div>
+      <label
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          color: "#d1d5db",
+          fontSize: 14,
+          opacity: smallBodyDampingMode === "off" ? 0.5 : 1,
+        }}
+      >
+        Collider count threshold
+        <input
+          type="range"
+          min={1}
+          max={10}
+          step={1}
+          value={smallBodyColliderThreshold}
+          onChange={(e) => setSmallBodyColliderThreshold(parseInt(e.target.value, 10))}
+          style={{ flex: 1 }}
+        />
+        <span style={{ color: "#9ca3af", width: 60, textAlign: "right" }}>
+          ≤{smallBodyColliderThreshold}
+        </span>
+      </label>
+      <label
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          color: "#d1d5db",
+          fontSize: 14,
+        }}
+      >
+        Min linear damping
+        <input
+          type="range"
+          min={0}
+          max={10}
+          step={0.1}
+          value={smallBodyMinLinearDamping}
+          onChange={(e) => setSmallBodyMinLinearDamping(parseFloat(e.target.value))}
+          style={{ flex: 1 }}
+        />
+        <span style={{ color: "#9ca3af", width: 60, textAlign: "right" }}>
+          {smallBodyMinLinearDamping.toFixed(1)}
+        </span>
+      </label>
+      <label
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          color: "#d1d5db",
+          fontSize: 14,
+        }}
+      >
+        Min angular damping
+        <input
+          type="range"
+          min={0}
+          max={10}
+          step={0.1}
+          value={smallBodyMinAngularDamping}
+          onChange={(e) => setSmallBodyMinAngularDamping(parseFloat(e.target.value))}
+          style={{ flex: 1 }}
+        />
+        <span style={{ color: "#9ca3af", width: 60, textAlign: "right" }}>
+          {smallBodyMinAngularDamping.toFixed(1)}
         </span>
       </label>
       <label
@@ -2729,6 +2920,12 @@ export default function Page() {
   const [adaptiveDt, setAdaptiveDt] = useState(true);
   const [sleepLinearThreshold, setSleepLinearThreshold] = useState(0.1);
   const [sleepAngularThreshold, setSleepAngularThreshold] = useState(0.1);
+  const [sleepMode, setSleepMode] = useState<OptimizationMode>('off');
+  // Small body damping - higher damping for bodies with few colliders
+  const [smallBodyColliderThreshold, setSmallBodyColliderThreshold] = useState(3);
+  const [smallBodyMinLinearDamping, setSmallBodyMinLinearDamping] = useState(2);
+  const [smallBodyMinAngularDamping, setSmallBodyMinAngularDamping] = useState(2);
+  const [smallBodyDampingMode, setSmallBodyDampingMode] = useState<OptimizationMode>('off');
   const [singleCollisionMode, setSingleCollisionMode] =
     useState<SingleCollisionMode>("all");
   const [skipSingleBodies, setSkipSingleBodies] = useState(false);
@@ -3060,6 +3257,16 @@ export default function Page() {
         setSleepLinearThreshold={setSleepLinearThreshold}
         sleepAngularThreshold={sleepAngularThreshold}
         setSleepAngularThreshold={setSleepAngularThreshold}
+        smallBodyColliderThreshold={smallBodyColliderThreshold}
+        setSmallBodyColliderThreshold={setSmallBodyColliderThreshold}
+        smallBodyMinLinearDamping={smallBodyMinLinearDamping}
+        setSmallBodyMinLinearDamping={setSmallBodyMinLinearDamping}
+        smallBodyMinAngularDamping={smallBodyMinAngularDamping}
+        setSmallBodyMinAngularDamping={setSmallBodyMinAngularDamping}
+        sleepMode={sleepMode}
+        setSleepMode={setSleepMode}
+        smallBodyDampingMode={smallBodyDampingMode}
+        setSmallBodyDampingMode={setSmallBodyDampingMode}
         showPerfOverlay={showPerfOverlay}
         setShowPerfOverlay={setShowPerfOverlay}
         profilingEnabled={profilingEnabled}
@@ -3120,6 +3327,11 @@ export default function Page() {
           adaptiveDt={adaptiveDt}
           sleepLinearThreshold={sleepLinearThreshold}
           sleepAngularThreshold={sleepAngularThreshold}
+          smallBodyColliderThreshold={smallBodyColliderThreshold}
+          smallBodyMinLinearDamping={smallBodyMinLinearDamping}
+          smallBodyMinAngularDamping={smallBodyMinAngularDamping}
+          sleepMode={sleepMode}
+          smallBodyDampingMode={smallBodyDampingMode}
           profiling={profilingControls}
         />
         {showPerfOverlay ? (

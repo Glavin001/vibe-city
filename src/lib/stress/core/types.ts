@@ -9,6 +9,34 @@ export type SingleCollisionMode =
   | 'singleGround'
   | 'singleNone';
 
+/**
+ * Mode for when optimization features should be applied:
+ * - 'off': Disabled
+ * - 'always': Always enabled
+ * - 'afterGroundCollision': Only enabled after the body has collided with the ground
+ */
+export type OptimizationMode = 'off' | 'always' | 'afterGroundCollision';
+
+export type SmallBodyDampingOptions = {
+  /** When to apply small body damping (default: 'always') */
+  mode?: OptimizationMode;
+  /** Maximum collider count to be considered a "small body" (default: 3) */
+  colliderCountThreshold?: number;
+  /** Minimum linear damping to apply to small bodies (default: 2) */
+  minLinearDamping?: number;
+  /** Minimum angular damping to apply to small bodies (default: 2) */
+  minAngularDamping?: number;
+};
+
+export type SleepThresholdOptions = {
+  /** When to apply sleep thresholds (default: 'always') */
+  mode?: OptimizationMode;
+  /** Linear velocity threshold for sleeping (m/s) */
+  linear?: number;
+  /** Angular velocity threshold for sleeping (rad/s) */
+  angular?: number;
+};
+
 // Builder that returns a Rapier collider descriptor for a node.
 // Static Rapier import is required by callers; this type reuses Rapier's own types.
 export type ColliderDescBuilder = () => ColliderDesc | null;
@@ -189,6 +217,13 @@ export type DestructibleCore = {
   // External force application (non-contact force injection)
   applyExternalForce: (nodeIndex: number, worldPoint: Vec3, worldForce: Vec3) => void;
   setSleepThresholds?: (linear: number, angular: number) => void;
+  setSleepMode?: (mode: OptimizationMode) => void;
+  getSleepSettings?: () => SleepThresholdOptions;
+  // Small body damping API - apply higher damping to bodies with few colliders
+  setSmallBodyDamping?: (opts: SmallBodyDampingOptions) => void;
+  getSmallBodyDampingSettings?: () => SmallBodyDampingOptions & { mode: OptimizationMode };
+  // Query ground collision status for a body
+  hasBodyCollidedWithGround?: (bodyHandle: number) => boolean;
   // Damageable chunks API (present when damage is enabled)
   applyNodeDamage?: (nodeIndex: number, amount: number, reason?: string) => void;
   getNodeHealth?: (nodeIndex: number) => { health: number; maxHealth: number; destroyed: boolean } | null;
