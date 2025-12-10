@@ -27,6 +27,7 @@ import { buildBeamBridgeScenario } from "@/lib/stress/scenarios/beamBridgeScenar
 import { buildBrickWallScenario } from "@/lib/stress/scenarios/brickWallScenario";
 import { buildFracturedGlbScenario } from "@/lib/stress/scenarios/fracturedGlbScenario";
 import { buildFracturedWallScenario } from "@/lib/stress/scenarios/fracturedWallScenario";
+import { buildFracturedWallHutScenario } from "@/lib/stress/scenarios/fracturedWallHutScenario";
 import {
   buildBridgeScenario,
   buildCourtyardHouseScenario,
@@ -264,6 +265,10 @@ const SCENARIO_BUILDERS: Record<StressPresetId, ScenarioBuilder> = {
       height: wallHeight,
       thickness: wallThickness,
       fragmentCount: 200,
+    }),
+  fracturedWallHut: () =>
+    buildFracturedWallHutScenario({
+      fragmentCountPerWall: 100,
     }),
   fracturedGlb: async () =>
     buildFracturedGlbScenario({

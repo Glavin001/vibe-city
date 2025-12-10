@@ -613,6 +613,7 @@ export type StressPresetId =
   | "tower"
   | "fracturedGlb"
   | "fracturedWall"
+  | "fracturedWallHut"
   | "townhouse"
   | "courtyardHouse"
   | "vaultedLoft";
@@ -656,6 +657,11 @@ export const STRESS_PRESET_METADATA: Array<{
     id: "fracturedWall",
     label: "Fractured wall",
     description: "Wall built from irregular fracture pieces (three-pinata) instead of a uniform grid.",
+  },
+  {
+    id: "fracturedWallHut",
+    label: "Fractured wall hut",
+    description: "Hollow hut built from 4 fractured walls with auto-bonded corners and foundation.",
   },
   {
     id: "fracturedGlb",
