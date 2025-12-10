@@ -157,6 +157,12 @@ const demoCategories: DemoCategory[] = [
         title: "Navcat Bunker Dynamics",
         description: "Bunker courtyard rebuilt for Navcat crowds with Rapier debris carving live holes into the navmesh."
       }
+      ,{
+        href: "/ballistic-raylab",
+        icon: "🔫",
+        title: "Ballistic Raylab",
+        description: "Realistic material penetration and refraction simulator. Explore a 3D house and shoot projectiles to observe how they interact with drywall, concrete, wood, glass, and metal using approximate physics equations."
+      }
     ]
   },
   {
