@@ -79,6 +79,12 @@ const demoCategories: DemoCategory[] = [
         icon: "🌫️",
         title: "GPGPU Dust Explosion",
         description: "Volumetric dust plume with collider streaming into GPU computation textures. Control puff size, turbulence, and scene obstacles while the cyan truck stirs up the debris."
+      },
+      {
+        href: "/tornado",
+        icon: "🌪️",
+        title: "Tornado Simulation",
+        description: "Hyper-realistic 3D tornado using WebGPU TSL compute shaders. Features Rankine vortex physics, volumetric funnel rendering, multi-layer debris particles, and atmospheric storm effects."
       }
     ]
   },
