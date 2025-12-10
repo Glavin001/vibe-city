@@ -40,6 +40,7 @@ export const ControlPanel = memo(function ControlPanel(
     bodyCountRef,
     activeBodyCountRef,
     colliderCountRef,
+    bondsCountRef,
     wallSpan,
     setWallSpan,
     wallHeight,
@@ -157,6 +158,7 @@ export const ControlPanel = memo(function ControlPanel(
       bodyCountRef={bodyCountRef}
       activeBodyCountRef={activeBodyCountRef}
       colliderCountRef={colliderCountRef}
+      bondsCountRef={bondsCountRef}
     >
       <TabBar activeTab={activeTab} onTabChange={setActiveTab} />
 

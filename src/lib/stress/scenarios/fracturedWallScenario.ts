@@ -1,11 +1,6 @@
 import { FractureOptions, fracture } from "@dgreenheck/three-pinata";
 import RAPIER from "@dimforge/rapier3d-compat";
 import * as THREE from "three";
-import {
-  type AutoBondChunkInput,
-  type AutoBondingRequest,
-  generateAutoBondsFromChunks,
-} from "@/lib/stress/core/autoBonding";
 import type {
   ColliderDescBuilder,
   ScenarioDesc,
@@ -18,7 +13,6 @@ type FracturedWallOptions = {
   thickness?: number; // Z
   fragmentCount?: number;
   deckMass?: number;
-  autoBonding?: AutoBondingRequest;
 };
 
 type FragmentInfo = {
@@ -256,14 +250,13 @@ function normalizeFractureAreasByAxis(
   });
 }
 
-export async function buildFracturedWallScenario({
+export function buildFracturedWallScenario({
   span = 6.0,
   height = 3.0,
   thickness = 0.32,
   fragmentCount = 120,
   deckMass = 10_000,
-  autoBonding,
-}: FracturedWallOptions = {}): Promise<ScenarioDesc> {
+}: FracturedWallOptions = {}): ScenarioDesc {
   const frags = buildFragments({ span, height, thickness, fragmentCount });
 
   // Approximate per-fragment volume via bbox; supports (mass=0) if bottom touches ground
@@ -337,29 +330,9 @@ export async function buildFracturedWallScenario({
     area: Math.max(b.area, 1e-8),
   }));
 
-  let resolvedBonds = legacyBonds;
-  if (autoBonding?.enabled) {
-    const autoBondChunks: AutoBondChunkInput[] = frags.map((frag) => ({
-      geometry: frag.geometry,
-      isSupport: frag.isSupport,
-      matrix: new THREE.Matrix4().makeTranslation(
-        frag.worldPosition.x,
-        frag.worldPosition.y,
-        frag.worldPosition.z,
-      ),
-    }));
-    const autoBonds = await generateAutoBondsFromChunks(autoBondChunks, {
-      ...autoBonding,
-      label: "FracturedWall",
-    });
-    if (autoBonds?.length) {
-      resolvedBonds = autoBonds;
-    }
-  }
-
   return {
     nodes,
-    bonds: resolvedBonds,
+    bonds: legacyBonds,
     parameters: {
       fragmentSizes,
       fragmentGeometries,

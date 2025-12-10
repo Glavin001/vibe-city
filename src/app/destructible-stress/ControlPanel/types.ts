@@ -68,6 +68,7 @@ export type ControlPanelProps = {
   bodyCountRef: MutableRefObject<HTMLSpanElement | null>;
   activeBodyCountRef: MutableRefObject<HTMLSpanElement | null>;
   colliderCountRef: MutableRefObject<HTMLSpanElement | null>;
+  bondsCountRef: MutableRefObject<HTMLSpanElement | null>;
 
   // Wall dimensions (only for wall presets)
   wallSpan: number;

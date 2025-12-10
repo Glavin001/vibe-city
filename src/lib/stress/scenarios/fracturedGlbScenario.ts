@@ -4,11 +4,6 @@ import * as THREE from "three";
 import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
-import {
-  type AutoBondChunkInput,
-  type AutoBondingRequest,
-  generateAutoBondsFromChunks,
-} from "@/lib/stress/core/autoBonding";
 import type {
   ColliderDescBuilder,
   ScenarioDesc,
@@ -245,12 +240,10 @@ export async function buildFracturedGlbScenario({
   fragmentCount = 120,
   // fragmentCount = 300,
   objectMass = 10_000,
-  autoBonding,
 }: {
   url?: string;
   fragmentCount?: number;
   objectMass?: number;
-  autoBonding?: AutoBondingRequest;
 } = {}): Promise<ScenarioDesc> {
   // 1) Load GLB and merge meshes to a single geometry in world space
   const merged = await (async () => {
@@ -619,29 +612,9 @@ export async function buildFracturedGlbScenario({
     area: Math.max(b.area, 1e-8),
   }));
 
-  let resolvedBonds = legacyBonds;
-  if (autoBonding?.enabled) {
-    const autoBondChunks: AutoBondChunkInput[] = fragments.map((frag) => ({
-      geometry: frag.geometry,
-      isSupport: frag.isSupport,
-      matrix: new THREE.Matrix4().makeTranslation(
-        frag.worldPosition.x,
-        frag.worldPosition.y,
-        frag.worldPosition.z,
-      ),
-    }));
-    const autoBonds = await generateAutoBondsFromChunks(autoBondChunks, {
-      ...autoBonding,
-      label: "FracturedGlb",
-    });
-    if (autoBonds?.length) {
-      resolvedBonds = autoBonds;
-    }
-  }
-
   return {
     nodes,
-    bonds: resolvedBonds,
+    bonds: legacyBonds,
     parameters: {
       fragmentSizes,
       fragmentGeometries,

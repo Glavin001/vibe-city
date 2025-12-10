@@ -3,8 +3,8 @@ import {
   chunksFromBufferGeometries,
   loadStressSolver,
 } from "blast-stress-solver";
-import type * as THREE from "three";
-import type { ScenarioBond } from "./types";
+import * as THREE from "three";
+import type { ScenarioBond, ScenarioDesc } from "./types";
 
 export type AutoBondingRequest = {
   enabled?: boolean;
@@ -33,7 +33,8 @@ export async function generateAutoBondsFromChunks(
       (_geometry, index) => {
         const source = chunks[index];
         return {
-          isSupport: !!source.isSupport,
+          // isSupport: !!source.isSupport,
+          isSupport: true,
           applyMatrix: source.matrix,
           nonIndexed: true,
           cloneGeometry: true,
@@ -62,4 +63,39 @@ export async function generateAutoBondsFromChunks(
     console.error(`[${label}] Failed to generate bonds`, error);
     return null;
   }
+}
+
+/**
+ * Applies auto-bonding to a scenario using fragmentGeometries.
+ * If fragmentGeometries are missing, logs a warning and returns the scenario unchanged.
+ * Only call this function when auto bonding is enabled.
+ */
+export async function applyAutoBondingToScenario(
+  scenario: ScenarioDesc,
+  options?: Omit<AutoBondingRequest, "enabled">,
+): Promise<ScenarioDesc> {
+  const fragmentGeometries = scenario.parameters?.fragmentGeometries as
+    | THREE.BufferGeometry[]
+    | undefined;
+  if (!fragmentGeometries?.length) {
+    console.warn(
+      "[AutoBonding] Enabled but scenario missing fragmentGeometries, using predefined bonds",
+    );
+    return scenario;
+  }
+
+  const chunks: AutoBondChunkInput[] = scenario.nodes.map((node, i) => ({
+    geometry: fragmentGeometries[i],
+    isSupport: node.mass === 0,
+    matrix: new THREE.Matrix4().makeTranslation(
+      node.centroid.x,
+      node.centroid.y,
+      node.centroid.z,
+    ),
+  }));
+
+  const autoBonds = await generateAutoBondsFromChunks(chunks, options);
+  if (!autoBonds?.length) return scenario;
+
+  return { ...scenario, bonds: autoBonds };
 }

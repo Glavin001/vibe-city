@@ -14,7 +14,7 @@ import {
 } from "react";
 import * as THREE from "three";
 import RapierDebugRenderer from "@/lib/rapier/rapier-debug-renderer";
-import type { AutoBondingRequest } from "@/lib/stress/core/autoBonding";
+import { applyAutoBondingToScenario } from "@/lib/stress/core/autoBonding";
 import { buildDestructibleCore } from "@/lib/stress/core/destructible-core";
 import { debugPrintSolver } from "@/lib/stress/core/printSolver";
 import type {
@@ -145,6 +145,7 @@ type SceneProps = {
   bodyCountRef?: MutableRefObject<HTMLSpanElement | null>;
   activeBodyCountRef?: MutableRefObject<HTMLSpanElement | null>;
   colliderCountRef?: MutableRefObject<HTMLSpanElement | null>;
+  bondsCountRef?: MutableRefObject<HTMLSpanElement | null>;
   profiling?: {
     enabled: boolean;
     onSample?: (sample: CoreProfilerSample) => void;
@@ -161,7 +162,6 @@ type ScenarioBuilderParams = {
   bondsXEnabled: boolean;
   bondsYEnabled: boolean;
   bondsZEnabled: boolean;
-  autoBonding?: AutoBondingRequest;
 };
 
 type ScenarioBuilder = (
@@ -228,12 +228,11 @@ const SCENARIO_BUILDERS: Record<StressPresetId, ScenarioBuilder> = {
       bondsY: bondsYEnabled,
       bondsZ: bondsZEnabled,
     }),
-  beamBridge: ({ bondsXEnabled, bondsYEnabled, bondsZEnabled, autoBonding }) =>
+  beamBridge: ({ bondsXEnabled, bondsYEnabled, bondsZEnabled }) =>
     buildBeamBridgeScenario({
       bondsX: bondsXEnabled,
       bondsY: bondsYEnabled,
       bondsZ: bondsZEnabled,
-      autoBonding,
     }),
   tower: ({ bondsXEnabled, bondsYEnabled, bondsZEnabled }) =>
     buildTowerScenario({
@@ -259,18 +258,16 @@ const SCENARIO_BUILDERS: Record<StressPresetId, ScenarioBuilder> = {
       bondsY: bondsYEnabled,
       bondsZ: bondsZEnabled,
     }),
-  fracturedWall: ({ wallSpan, wallHeight, wallThickness, autoBonding }) =>
+  fracturedWall: ({ wallSpan, wallHeight, wallThickness }) =>
     buildFracturedWallScenario({
       span: wallSpan,
       height: wallHeight,
       thickness: wallThickness,
-      fragmentCount: 120,
-      autoBonding,
+      fragmentCount: 200,
     }),
-  fracturedGlb: async ({ autoBonding }) =>
+  fracturedGlb: async () =>
     buildFracturedGlbScenario({
       // fragmentCount: 120, objectMass: 10_000,
-      autoBonding,
     }),
 };
 
@@ -328,6 +325,7 @@ function Scene({
   bodyCountRef,
   activeBodyCountRef,
   colliderCountRef,
+  bondsCountRef,
   profiling,
 }: SceneProps) {
   console.log("Scene render");
@@ -468,7 +466,7 @@ function Scene({
     let mounted = true;
     (async () => {
       const builder = SCENARIO_BUILDERS[structureId] ?? SCENARIO_BUILDERS.wall;
-      const scenario = await builder({
+      let scenario = await builder({
         wallSpan,
         wallHeight,
         wallThickness,
@@ -478,8 +476,11 @@ function Scene({
         bondsXEnabled,
         bondsYEnabled,
         bondsZEnabled,
-        autoBonding: autoBondingEnabled ? { enabled: true } : undefined,
       });
+      // Apply auto bonding if enabled (centralized)
+      if (autoBondingEnabled) {
+        scenario = await applyAutoBondingToScenario(scenario);
+      }
       const core = await buildDestructibleCore({
         scenario,
         nodeSize: (index, scen) => {
@@ -1138,6 +1139,7 @@ function Scene({
   const lastBodyCountRef = useRef<number | null>(null);
   const lastActiveBodyCountRef = useRef<number | null>(null);
   const lastColliderCountRef = useRef<number | null>(null);
+  const lastBondsCountRef = useRef<number | null>(null);
   const accumulatorRef = useRef(0);
   const FIXED_STEP_DT = 1 / 60;
   const MIN_STEP_DT = 1 / 240;
@@ -1220,11 +1222,13 @@ function Scene({
     if (
       bodyCountRef?.current ||
       activeBodyCountRef?.current ||
-      colliderCountRef?.current
+      colliderCountRef?.current ||
+      bondsCountRef?.current
     ) {
       let liveCount = 0;
       let activeCount = 0;
       let colliderCount = 0;
+      let bondsCount = 0;
       try {
         core.world.forEachRigidBody(() => {
           liveCount += 1;
@@ -1244,6 +1248,11 @@ function Scene({
       } catch {
         colliderCount = 0;
       }
+      try {
+        bondsCount = core.getActiveBondsCount();
+      } catch {
+        bondsCount = 0;
+      }
       if (bodyCountRef?.current && lastBodyCountRef.current !== liveCount) {
         bodyCountRef.current.textContent = liveCount.toString();
         lastBodyCountRef.current = liveCount;
@@ -1261,6 +1270,13 @@ function Scene({
       ) {
         colliderCountRef.current.textContent = colliderCount.toString();
         lastColliderCountRef.current = colliderCount;
+      }
+      if (
+        bondsCountRef?.current &&
+        lastBondsCountRef.current !== bondsCount
+      ) {
+        bondsCountRef.current.textContent = bondsCount.toString();
+        lastBondsCountRef.current = bondsCount;
       }
     }
 
@@ -1505,6 +1521,7 @@ export default function Page() {
   const rigidBodyCountRef = useRef<HTMLSpanElement | null>(null);
   const activeRigidBodyCountRef = useRef<HTMLSpanElement | null>(null);
   const colliderCountRef = useRef<HTMLSpanElement | null>(null);
+  const bondsCountRef = useRef<HTMLSpanElement | null>(null);
   const structures = STRESS_PRESET_METADATA;
   const currentStructure =
     structures.find((item) => item.id === structureId) ?? structures[0];
@@ -1653,6 +1670,7 @@ export default function Page() {
         bodyCountRef={rigidBodyCountRef}
         activeBodyCountRef={activeRigidBodyCountRef}
         colliderCountRef={colliderCountRef}
+        bondsCountRef={bondsCountRef}
         adaptiveDt={adaptiveDt}
         setAdaptiveDt={setAdaptiveDt}
         sleepLinearThreshold={sleepLinearThreshold}
@@ -1730,6 +1748,7 @@ export default function Page() {
           bodyCountRef={rigidBodyCountRef}
           activeBodyCountRef={activeRigidBodyCountRef}
           colliderCountRef={colliderCountRef}
+          bondsCountRef={bondsCountRef}
           adaptiveDt={adaptiveDt}
           sleepLinearThreshold={sleepLinearThreshold}
           sleepAngularThreshold={sleepAngularThreshold}

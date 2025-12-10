@@ -1,9 +1,4 @@
 import * as THREE from "three";
-import {
-  type AutoBondChunkInput,
-  type AutoBondingRequest,
-  generateAutoBondsFromChunks,
-} from "@/lib/stress/core/autoBonding";
 import type { ScenarioDesc, Vec3 } from "@/lib/stress/core/types";
 
 const EPS = 1e-8;
@@ -33,7 +28,6 @@ export type BeamBridgeOptions = {
   bondsX?: boolean;
   bondsY?: boolean;
   bondsZ?: boolean;
-  autoBonding?: AutoBondingRequest;
 };
 
 function v(x: number, y: number, z: number): Vec3 {
@@ -48,7 +42,7 @@ function nrm(p: Vec3): Vec3 {
   return v(p.x / L, p.y / L, p.z / L);
 }
 
-export async function buildBeamBridgeScenario({
+export function buildBeamBridgeScenario({
   // Deck
   span = 18.0,
   deckWidth = 5.0,
@@ -71,8 +65,7 @@ export async function buildBeamBridgeScenario({
   bondsX = true,
   bondsY = true,
   bondsZ = true,
-  autoBonding,
-}: BeamBridgeOptions = {}): Promise<ScenarioDesc> {
+}: BeamBridgeOptions = {}): ScenarioDesc {
   const segX = Math.max(1, Math.floor(spanSegments));
   const segY = Math.max(1, Math.floor(thicknessLayers));
   const segZ = Math.max(1, Math.floor(widthSegments));
@@ -99,30 +92,16 @@ export async function buildBeamBridgeScenario({
 
   const nodes: ScenarioDesc["nodes"] = [];
   const fragmentSizes: Array<{ x: number; y: number; z: number }> = [];
+  const fragmentGeometries: THREE.BufferGeometry[] = [];
   const gridCoordinates: Array<{ ix: number; iy: number; iz: number }> = [];
-  const autoChunkInputs: Array<AutoBondChunkInput | null> = [];
 
-  const registerAutoChunk = (
-    nodeIndex: number,
-    size: Vec3,
-    centroid: Vec3,
-    isSupport: boolean,
-  ) => {
-    if (!autoBonding?.enabled) return;
+  const registerNode = (nodeIndex: number, size: Vec3) => {
     const geom = new THREE.BoxGeometry(
       Math.max(size.x, EPS),
       Math.max(size.y, EPS),
       Math.max(size.z, EPS),
     );
-    autoChunkInputs[nodeIndex] = {
-      geometry: geom,
-      isSupport,
-      matrix: new THREE.Matrix4().makeTranslation(
-        centroid.x,
-        centroid.y,
-        centroid.z,
-      ),
-    };
+    fragmentGeometries[nodeIndex] = geom;
   };
 
   // Build deck nodes
@@ -146,7 +125,7 @@ export async function buildBeamBridgeScenario({
         gridDeck[ix][iy][iz] = idx;
         gridCoordinates[idx] = { ix, iy, iz };
         deckTotalVolume += deckCellVolume;
-        registerAutoChunk(idx, { x: cellX, y: cellY, z: cellZ }, p, false);
+        registerNode(idx, { x: cellX, y: cellY, z: cellZ });
       }
     }
   }
@@ -278,7 +257,7 @@ export async function buildBeamBridgeScenario({
             const gy = -1 - py;
             gridCoordinates[idx] = { ix: ixp, iy: gy, iz };
             postMap.set(key(ixp, py, iz), idx);
-            registerAutoChunk(idx, { x: cellX, y: cellY, z: cellZ }, p, false);
+            registerNode(idx, { x: cellX, y: cellY, z: cellZ });
 
             if (py > 0) {
               const prevIdx = postMap.get(key(ixp, py - 1, iz));
@@ -307,12 +286,11 @@ export async function buildBeamBridgeScenario({
           gridCoordinates[fIdx] = { ix: ixp, iy: -1 - postLayers, iz };
           const lowestPostIdx = postMap.get(key(ixp, postLayers - 1, iz));
           if (lowestPostIdx != null) addBond(fIdx, lowestPostIdx, areaY);
-          registerAutoChunk(
-            fIdx,
-            { x: cellX, y: Math.max(footingThickness, EPS), z: cellZ },
-            fPos,
-            true,
-          );
+          registerNode(fIdx, {
+            x: cellX,
+            y: Math.max(footingThickness, EPS),
+            z: cellZ,
+          });
         }
       }
 
@@ -366,30 +344,9 @@ export async function buildBeamBridgeScenario({
     for (const b of bonds) b.area *= scale[pick(b.normal)];
   }
 
-  let resolvedBonds = bonds;
-  if (autoBonding?.enabled) {
-    const inputsReady =
-      nodes.length === autoChunkInputs.length &&
-      autoChunkInputs.every((entry) => entry);
-    if (inputsReady) {
-      const generated = await generateAutoBondsFromChunks(
-        autoChunkInputs as AutoBondChunkInput[],
-        { ...autoBonding, label: "BeamBridge" },
-      );
-      if (generated?.length) {
-        resolvedBonds = generated;
-      }
-    } else {
-      console.warn(
-        "[BeamBridge] Auto bonding requested but chunk inputs missing",
-        { nodes: nodes.length, inputs: autoChunkInputs.length },
-      );
-    }
-  }
-
   return {
     nodes,
-    bonds: resolvedBonds,
+    bonds,
     gridCoordinates,
     spacing: v(cellX, cellY, cellZ),
     parameters: {
@@ -406,6 +363,7 @@ export async function buildBeamBridgeScenario({
       addDiagonals,
       diagScale,
       fragmentSizes,
+      fragmentGeometries,
     },
   } satisfies ScenarioDesc;
 }

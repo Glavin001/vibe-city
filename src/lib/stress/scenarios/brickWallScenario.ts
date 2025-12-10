@@ -1,5 +1,10 @@
-import type { ScenarioDesc, Vec3, ColliderDescBuilder } from "@/lib/stress/core/types";
-import RAPIER from '@dimforge/rapier3d-compat';
+import RAPIER from "@dimforge/rapier3d-compat";
+import * as THREE from "three";
+import type {
+  ColliderDescBuilder,
+  ScenarioDesc,
+  Vec3,
+} from "@/lib/stress/core/types";
 
 const EPSILON = 1e-8;
 
@@ -98,6 +103,7 @@ export function buildBrickWallScenario({
   const colliderDescForNode: (ColliderDescBuilder | null)[] = [];
   const gridCoordinates: Array<{ ix: number; iy: number; iz: number }> = [];
   const fragmentSizes: Array<{ x: number; y: number; z: number }> = [];
+  const fragmentGeometries: THREE.BufferGeometry[] = [];
 
   // Per-layer, per-course row bricks for connectivity
   const rows: Array<Array<RowBrick[]>> = Array.from({ length: layers }, () => Array.from({ length: courses }, () => []));
@@ -124,10 +130,19 @@ export function buildBrickWallScenario({
         rows[iz][iy].push({ index: nodeIndex, x0, x1, len });
         gridCoordinates[nodeIndex] = { ix: ixInRow, iy, iz };
         fragmentSizes[nodeIndex] = { x: len, y: H, z: D };
-        const hx = (len * 0.5) - mortarGap * 0.5;
-        const hy = (H * 0.5) - mortarGap * 0.5;
-        const hz = (D * 0.5) - mortarGap * 0.5;
-        colliderDescForNode.push(() => RAPIER.ColliderDesc.cuboid(Math.max(hx, EPSILON) * (isSupport ? 0.999 : 1), Math.max(hy, EPSILON) * (isSupport ? 0.999 : 1), Math.max(hz, EPSILON) * (isSupport ? 0.999 : 1)));
+        const hx = len * 0.5 - mortarGap * 0.5;
+        const hy = H * 0.5 - mortarGap * 0.5;
+        const hz = D * 0.5 - mortarGap * 0.5;
+        colliderDescForNode.push(() =>
+          RAPIER.ColliderDesc.cuboid(
+            Math.max(hx, EPSILON) * (isSupport ? 0.999 : 1),
+            Math.max(hy, EPSILON) * (isSupport ? 0.999 : 1),
+            Math.max(hz, EPSILON) * (isSupport ? 0.999 : 1),
+          ),
+        );
+        // Create geometry for autoBonding (geometry is centered at origin; world position handled via matrix)
+        const geom = new THREE.BoxGeometry(len, H, D);
+        fragmentGeometries[nodeIndex] = geom;
         xCursor = x1;
       };
 
@@ -230,7 +245,10 @@ export function buildBrickWallScenario({
       for (let i = 0; i < centers.length; i += 1) {
         const c = centers[i];
         const d = Math.hypot(px - c.x, py - c.y);
-        if (d < bestD) { bestD = d; s = c.scale; }
+        if (d < bestD) {
+          bestD = d;
+          s = c.scale;
+        }
       }
       const t = Math.max(0, 1 - bestD / localClumpRadius);
       const w = smoothstep01(t);
@@ -244,7 +262,17 @@ export function buildBrickWallScenario({
     bonds,
     gridCoordinates,
     spacing: vec(L, H, D),
-    parameters: { span, height, thickness, spanBricks, courses, layers, areaScale, fragmentSizes },
+    parameters: {
+      span,
+      height,
+      thickness,
+      spanBricks,
+      courses,
+      layers,
+      areaScale,
+      fragmentSizes,
+      fragmentGeometries,
+    },
     colliderDescForNode,
   } satisfies ScenarioDesc;
 }
