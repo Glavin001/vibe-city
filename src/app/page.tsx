@@ -157,6 +157,12 @@ const demoCategories: DemoCategory[] = [
         title: "Navcat Bunker Dynamics",
         description: "Bunker courtyard rebuilt for Navcat crowds with Rapier debris carving live holes into the navmesh."
       }
+      ,{
+        href: "/fire-propagation",
+        icon: "🔥",
+        title: "Fire Propagation",
+        description: "Dynamic fire simulation inspired by Far Cry 2. Features temperature and moisture dual-axis state system, wind-affected propagation, and multiple material types (grass, wood, water, lava). Click to ignite or extinguish."
+      }
     ]
   },
   {
