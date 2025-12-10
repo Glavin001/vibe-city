@@ -157,6 +157,12 @@ const demoCategories: DemoCategory[] = [
         title: "Navcat Bunker Dynamics",
         description: "Bunker courtyard rebuilt for Navcat crowds with Rapier debris carving live holes into the navmesh."
       }
+      ,{
+        href: "/sdf-physics",
+        icon: "⚛️",
+        title: "WebGPU SDF Physics",
+        description: "GPU-accelerated rigid body physics with SDF collision detection. Spawn tens of thousands of balls and boxes that collide against a signed distance field environment using WebGPU compute shaders."
+      }
     ]
   },
   {
