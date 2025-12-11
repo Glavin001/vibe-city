@@ -436,6 +436,7 @@ export const PanelContainer = memo(function PanelContainer({
 
   return (
     <div
+      id="control-panel"
       className="absolute left-2 right-2 bottom-4 z-10 flex flex-col max-w-[360px] bg-neutral-950/95 p-3 rounded-lg border border-neutral-700"
       style={{ top: panelTop }}
     >

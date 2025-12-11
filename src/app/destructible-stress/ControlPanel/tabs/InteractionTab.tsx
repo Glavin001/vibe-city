@@ -16,6 +16,11 @@ const PROJECTILE_TYPE_OPTIONS = [
   { value: "box" as const, label: "Box" },
 ];
 
+const VIEW_MODE_OPTIONS = [
+  { value: "orbit" as const, label: "Orbit" },
+  { value: "fps" as const, label: "First Person" },
+];
+
 const MODE_DESCRIPTIONS: Record<string, string> = {
   projectile: "Click to fire projectiles at the structure.",
   cutter: "Click on chunks to cut their bonds.",
@@ -29,6 +34,8 @@ export const InteractionTab = memo(function InteractionTab(
   const {
     mode,
     setMode,
+    viewMode,
+    setViewMode,
     projType,
     setProjType,
     projectileRadius,
@@ -43,9 +50,24 @@ export const InteractionTab = memo(function InteractionTab(
 
   return (
     <TabContent>
-      {/* Mode Selection */}
+      {/* View Mode Selection */}
+      <Select<"orbit" | "fps">
+        label="View Mode"
+        value={viewMode}
+        onChange={setViewMode}
+        options={VIEW_MODE_OPTIONS}
+      />
+      <p className="mt-1 mb-0 text-gray-400 text-[13px] leading-snug">
+        {viewMode === "fps"
+          ? "WASD move, Space/Shift fly, mouse look. Click canvas to lock."
+          : "Click and drag to orbit camera."}
+      </p>
+
+      <Separator />
+
+      {/* Interaction Mode Selection */}
       <Select
-        label="Mode"
+        label="Action Mode"
         value={mode}
         onChange={setMode}
         options={MODE_OPTIONS}

@@ -1,6 +1,6 @@
 "use client";
 
-import { OrbitControls } from "@react-three/drei";
+import { KeyboardControls, OrbitControls, PointerLockControls, useKeyboardControls } from "@react-three/drei";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Perf as R3FPerf } from "r3f-perf";
 import {
@@ -94,6 +94,95 @@ function Ground() {
   );
 }
 
+// FPS Controls types
+type FPSControlsName = "forward" | "backward" | "left" | "right" | "jump" | "descend";
+
+const FPS_EYE_HEIGHT = 1.65;
+const FPS_MOVE_SPEED = 8;
+const FPS_VERTICAL_SPEED = 6; // Jetpack speed
+
+// Reusable vectors for FPS movement (avoid allocations per frame)
+const _fpsForward = new THREE.Vector3();
+const _fpsRight = new THREE.Vector3();
+const _fpsDirection = new THREE.Vector3();
+const _fpsUp = new THREE.Vector3(0, 1, 0);
+
+function FPSControls({
+  onLock,
+  onUnlock,
+  selector,
+}: {
+  onLock?: () => void;
+  onUnlock?: () => void;
+  selector?: string;
+}) {
+  const [, get] = useKeyboardControls<FPSControlsName>();
+  const camera = useThree((state) => state.camera);
+  const initializedRef = useRef(false);
+
+  // Set initial camera position on first mount
+  useEffect(() => {
+    if (!initializedRef.current) {
+      camera.position.set(7, FPS_EYE_HEIGHT, 9);
+      initializedRef.current = true;
+    }
+  }, [camera]);
+
+  useFrame((_, delta) => {
+    const { forward, backward, left, right, jump, descend } = get();
+    const speed = FPS_MOVE_SPEED * delta;
+    const verticalSpeed = FPS_VERTICAL_SPEED * delta;
+
+    // Compute camera-relative directions projected onto ground (ignore pitch)
+    camera.getWorldDirection(_fpsForward);
+    _fpsForward.y = 0;
+    if (_fpsForward.lengthSq() > 0) _fpsForward.normalize();
+    _fpsRight.copy(_fpsForward).cross(_fpsUp).normalize();
+
+    // Compose horizontal movement
+    _fpsDirection.set(0, 0, 0);
+    const forwardMove = Number(forward) - Number(backward);
+    const rightMove = Number(right) - Number(left);
+    if (forwardMove !== 0) _fpsDirection.addScaledVector(_fpsForward, forwardMove * speed);
+    if (rightMove !== 0) _fpsDirection.addScaledVector(_fpsRight, rightMove * speed);
+
+    // Jetpack vertical movement (space = up, shift = down)
+    const verticalMove = Number(jump) - Number(descend);
+    if (verticalMove !== 0) _fpsDirection.y += verticalMove * verticalSpeed;
+
+    camera.position.add(_fpsDirection);
+    // Clamp minimum height to prevent going below ground
+    if (camera.position.y < FPS_EYE_HEIGHT) {
+      camera.position.y = FPS_EYE_HEIGHT;
+    }
+  });
+
+  return <PointerLockControls makeDefault onLock={onLock} onUnlock={onUnlock} selector={selector} />;
+}
+
+// Camera-attached light for FPS mode (headlamp effect)
+function CameraLight() {
+  const lightRef = useRef<THREE.PointLight>(null);
+  const camera = useThree((state) => state.camera);
+
+  useFrame(() => {
+    if (lightRef.current) {
+      // Position light at camera location
+      lightRef.current.position.copy(camera.position);
+    }
+  });
+
+  return (
+    <pointLight
+      ref={lightRef}
+      intensity={1.5}
+      distance={50}
+      decay={2}
+      color="#ffffff"
+    />
+  );
+}
+
 type SceneProps = {
   debug: boolean;
   physicsWireframe: boolean;
@@ -153,6 +242,9 @@ type SceneProps = {
     enabled: boolean;
     onSample?: (sample: CoreProfilerSample) => void;
   };
+  viewMode: "orbit" | "fps";
+  onPointerLock?: () => void;
+  onPointerUnlock?: () => void;
 };
 
 type ScenarioBuilderParams = {
@@ -344,6 +436,9 @@ function Scene({
   colliderCountRef,
   bondsCountRef,
   profiling,
+  viewMode,
+  onPointerLock,
+  onPointerUnlock,
 }: SceneProps) {
   console.log("Scene render");
 
@@ -922,25 +1017,69 @@ function Scene({
 
   // Click: spawn projectile, cut bonds, or push chunk depending on mode
   useEffect(() => {
-    const canvas = document.querySelector("canvas") as HTMLCanvasElement | null;
-    if (!canvas) return;
+    // Use document to capture all clicks, even when pointer is locked or retargeted
+    const target = document;
 
-    const handle = (ev: MouseEvent) => {
+    const handle = (ev: MouseEvent | PointerEvent) => {
+      // Ignore if clicking on UI controls
+      if (
+        ev.target instanceof Element &&
+        (ev.target.closest("#control-panel") || ev.target.closest("button") || ev.target.closest("input") || ev.target.closest("select"))
+      ) {
+        return;
+      }
+
       const core = coreRef.current;
       if (!core) return;
-      const rect = (ev.target as HTMLElement).getBoundingClientRect();
-      const ndc = new THREE.Vector2(
-        ((ev.clientX - rect.left) / rect.width) * 2 - 1,
-        -((ev.clientY - rect.top) / rect.height) * 2 + 1,
-      );
       const cam = camera;
       if (!cam) {
         console.error("[Page] Missing camera in click handler");
         if (isDev) throw new Error("Missing camera");
         return;
       }
+
+      // FPS mode projectile: fire straight from camera, no raycasting needed
+      if (viewMode === "fps" && mode === "projectile") {
+        const camPos = new THREE.Vector3();
+        cam.getWorldPosition(camPos);
+        const camDir = new THREE.Vector3();
+        cam.getWorldDirection(camDir);
+        // Start projectile slightly in front of camera to avoid self-collision
+        const start = camPos.clone().addScaledVector(camDir, projectileRadius + 0.5);
+        const linvel = camDir.clone().multiplyScalar(projectileSpeed);
+        
+        core.enqueueProjectile({
+          start: { x: start.x, y: start.y, z: start.z },
+          linvel: { x: linvel.x, y: linvel.y, z: linvel.z },
+          x: start.x + camDir.x * 10,
+          z: start.z + camDir.z * 10,
+          type: projType,
+          radius: projectileRadius,
+          mass: projectileMass,
+          friction: 0.6,
+          restitution: 0.2,
+        });
+        return;
+      }
+
       const raycaster = new THREE.Raycaster();
-      raycaster.setFromCamera(ndc, cam);
+      
+      if (viewMode === "fps") {
+        // FPS mode: raycast from center of screen (camera direction)
+        const camPos = new THREE.Vector3();
+        cam.getWorldPosition(camPos);
+        const camDir = new THREE.Vector3();
+        cam.getWorldDirection(camDir);
+        raycaster.set(camPos, camDir);
+      } else {
+        // Orbit mode: raycast from mouse position
+        const rect = (ev.target as HTMLElement).getBoundingClientRect();
+        const ndc = new THREE.Vector2(
+          ((ev.clientX - rect.left) / rect.width) * 2 - 1,
+          -((ev.clientY - rect.top) / rect.height) * 2 + 1,
+        );
+        raycaster.setFromCamera(ndc, cam);
+      }
       if (!groupRef.current) {
         console.error("[Page] groupRef is null");
         if (isDev) throw new Error("Missing scene group");
@@ -997,7 +1136,8 @@ function Scene({
       placeClickMarker(target);
 
       if (mode === "projectile") {
-        // Spawn above and behind camera toward target
+        // Orbit mode: Spawn above and behind camera toward target
+        // (FPS projectile mode is handled above with early return)
         const camPos = new THREE.Vector3();
         cam.getWorldPosition(camPos);
         const dir = new THREE.Vector3().subVectors(target, camPos).normalize();
@@ -1009,6 +1149,7 @@ function Scene({
           .subVectors(target, start)
           .normalize()
           .multiplyScalar(projectileSpeed);
+        
         // if (isDev) console.debug('[Page] Click fire', { target, start, linvel, projType });
         core.enqueueProjectile({
           start: { x: start.x, y: start.y, z: start.z },
@@ -1137,10 +1278,11 @@ function Scene({
           console.debug("[Page] Damage: applied", { nodeIndex, amount });
       }
     };
-    canvas.addEventListener("pointerdown", handle);
-    return () => canvas.removeEventListener("pointerdown", handle);
+    target.addEventListener("pointerdown", handle);
+    return () => target.removeEventListener("pointerdown", handle);
   }, [
     mode,
+    viewMode,
     pushForce,
     projType,
     camera,
@@ -1334,7 +1476,18 @@ function Scene({
         shadow-mapSize-height={2048}
       />
       <Ground />
-      <OrbitControls makeDefault enableDamping dampingFactor={0.15} />
+      {viewMode === "orbit" ? (
+        <OrbitControls makeDefault enableDamping dampingFactor={0.15} />
+      ) : (
+        <>
+          <FPSControls
+            onLock={onPointerLock}
+            onUnlock={onPointerUnlock}
+            selector="#fps-start-overlay"
+          />
+          <CameraLight />
+        </>
+      )}
     </>
   );
 }
@@ -1363,11 +1516,13 @@ export default function Page() {
   const [singleCollisionMode, setSingleCollisionMode] =
     useState<SingleCollisionMode>("all");
   const [skipSingleBodies, setSkipSingleBodies] = useState(false);
-  const [damageEnabled, setDamageEnabled] = useState(true);
+  const [damageEnabled, setDamageEnabled] = useState(false);
   const [iteration, setIteration] = useState(0);
   const [mode, setMode] = useState<"projectile" | "cutter" | "push" | "damage">(
     "projectile",
   );
+  const [viewMode, setViewMode] = useState<"orbit" | "fps">("orbit");
+  const [isPointerLocked, setIsPointerLocked] = useState(false);
   const [damageClickRatio, setDamageClickRatio] = useState(0.5);
   const [contactDamageScale, setContactDamageScale] = useState(100.0);
   const [minImpulseThreshold, setMinImpulseThreshold] = useState(0);
@@ -1617,6 +1772,8 @@ export default function Page() {
         setDamageClickRatio={setDamageClickRatio}
         mode={mode}
         setMode={setMode}
+        viewMode={viewMode}
+        setViewMode={setViewMode}
         damageEnabled={damageEnabled}
         setDamageEnabled={setDamageEnabled}
         pushForce={pushForce}
@@ -1714,12 +1871,22 @@ export default function Page() {
         setCollapsed={setControlsCollapsed}
       />
 
-      <Canvas
-        shadows={shadowsEnabled}
-        camera={{ position: [7, 5, 9], fov: 45 }}
+      <KeyboardControls
+        map={[
+          { name: "forward" as FPSControlsName, keys: ["ArrowUp", "w", "W"] },
+          { name: "backward" as FPSControlsName, keys: ["ArrowDown", "s", "S"] },
+          { name: "left" as FPSControlsName, keys: ["ArrowLeft", "a", "A"] },
+          { name: "right" as FPSControlsName, keys: ["ArrowRight", "d", "D"] },
+          { name: "jump" as FPSControlsName, keys: ["Space"] },
+          { name: "descend" as FPSControlsName, keys: ["ShiftLeft", "ShiftRight"] },
+        ]}
       >
-        <color attach="background" args={["#0e0e12"]} />
-        <Scene
+        <Canvas
+          shadows={shadowsEnabled}
+          camera={{ position: [7, 5, 9], fov: 45 }}
+        >
+          <color attach="background" args={["#0e0e12"]} />
+          <Scene
           debug={debug}
           physicsWireframe={physicsWireframe}
           gravity={gravity}
@@ -1775,15 +1942,72 @@ export default function Page() {
           sleepMode={sleepMode}
           smallBodyDampingMode={smallBodyDampingMode}
           profiling={profilingControls}
+          viewMode={viewMode}
+          onPointerLock={() => setIsPointerLocked(true)}
+          onPointerUnlock={() => setIsPointerLocked(false)}
         />
-        {showPerfOverlay ? (
-          <R3FPerf
-            // matrixUpdate deepAnalyze overClock
-            position="top-left"
-          />
-        ) : null}
-        {/* <StatsGl className="absolute top-2 left-2" trackGPU={true} horizontal={true} /> */}
-      </Canvas>
+          {showPerfOverlay ? (
+            <R3FPerf
+              // matrixUpdate deepAnalyze overClock
+              position="top-left"
+            />
+          ) : null}
+          {/* <StatsGl className="absolute top-2 left-2" trackGPU={true} horizontal={true} /> */}
+        </Canvas>
+      </KeyboardControls>
+
+      {/* FPS mode pointer lock overlay */}
+      {viewMode === "fps" && !isPointerLocked && (
+        <div
+          id="fps-start-overlay"
+          style={{
+            position: "absolute",
+            inset: 0,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            cursor: "pointer",
+            pointerEvents: "auto",
+          }}
+        >
+          <div
+            style={{
+              background: "rgba(0, 0, 0, 0.7)",
+              color: "#fff",
+              padding: "16px 32px",
+              borderRadius: "8px",
+              fontSize: "14px",
+              textAlign: "center",
+            }}
+          >
+            <div style={{ fontWeight: 600, marginBottom: "4px" }}>
+              Click to start
+            </div>
+            <div style={{ fontSize: "12px", opacity: 0.7 }}>
+              WASD move · Space/Shift fly · Mouse look · Esc unlock
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* FPS mode controls hint */}
+      {viewMode === "fps" && isPointerLocked && (
+        <div
+          style={{
+            position: "absolute",
+            bottom: 12,
+            left: 12,
+            background: "rgba(0, 0, 0, 0.5)",
+            color: "#fff",
+            padding: "6px 12px",
+            borderRadius: "4px",
+            fontSize: "11px",
+            pointerEvents: "none",
+          }}
+        >
+          WASD move · Space up · Shift down · Click fire · Esc unlock
+        </div>
+      )}
     </div>
   );
 }

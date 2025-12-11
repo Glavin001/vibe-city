@@ -47,6 +47,9 @@ export type ProjectileType = "ball" | "box";
 // Snapshot mode type
 export type SnapshotMode = "perBody" | "world";
 
+// View mode type (orbit vs first-person)
+export type ViewMode = "orbit" | "fps";
+
 // Main control panel props - organized by section
 export type ControlPanelProps = {
   // Panel visibility
@@ -62,6 +65,8 @@ export type ControlPanelProps = {
   structureDescription?: string;
   mode: InteractionMode;
   setMode: (v: InteractionMode) => void;
+  viewMode: ViewMode;
+  setViewMode: (v: ViewMode) => void;
   reset: () => void;
 
   // Stats refs
@@ -261,6 +266,8 @@ export type InteractionTabProps = Pick<
   ControlPanelProps,
   | "mode"
   | "setMode"
+  | "viewMode"
+  | "setViewMode"
   | "projType"
   | "setProjType"
   | "projectileRadius"

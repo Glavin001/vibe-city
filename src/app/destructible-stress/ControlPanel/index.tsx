@@ -17,6 +17,7 @@ export type {
   InteractionMode,
   ProjectileType,
   SnapshotMode,
+  ViewMode,
 } from "./types";
 
 export { EMPTY_PROFILER_STATS } from "./types";
@@ -36,6 +37,8 @@ export const ControlPanel = memo(function ControlPanel(
     structureDescription,
     mode,
     setMode,
+    viewMode,
+    setViewMode,
     reset,
     bodyCountRef,
     activeBodyCountRef,
@@ -233,6 +236,8 @@ export const ControlPanel = memo(function ControlPanel(
         <InteractionTab
           mode={mode}
           setMode={setMode}
+          viewMode={viewMode}
+          setViewMode={setViewMode}
           projType={projType}
           setProjType={setProjType}
           projectileRadius={projectileRadius}
