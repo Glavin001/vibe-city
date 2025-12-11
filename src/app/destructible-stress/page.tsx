@@ -28,6 +28,8 @@ import { buildBrickWallScenario } from "@/lib/stress/scenarios/brickWallScenario
 import { buildFracturedGlbScenario } from "@/lib/stress/scenarios/fracturedGlbScenario";
 import { buildFracturedWallScenario } from "@/lib/stress/scenarios/fracturedWallScenario";
 import { buildFracturedWallHutScenario } from "@/lib/stress/scenarios/fracturedWallHutScenario";
+import { buildFracturedTowerScenario } from "@/lib/stress/scenarios/fracturedTowerScenario";
+import { buildFracturedBridgeScenario } from "@/lib/stress/scenarios/fracturedBridgeScenario";
 import {
   buildBridgeScenario,
   buildCourtyardHouseScenario,
@@ -269,6 +271,16 @@ const SCENARIO_BUILDERS: Record<StressPresetId, ScenarioBuilder> = {
   fracturedWallHut: () =>
     buildFracturedWallHutScenario({
       fragmentCountPerWall: 100,
+    }),
+  fracturedTower: () =>
+    buildFracturedTowerScenario({
+      fragmentCountPerWall: 15,
+      fragmentCountPerFloor: 10,
+    }),
+  fracturedBridge: () =>
+    buildFracturedBridgeScenario({
+      fragmentCountPerDeck: 200,
+      fragmentCountPerPost: 10,
     }),
   fracturedGlb: async () =>
     buildFracturedGlbScenario({

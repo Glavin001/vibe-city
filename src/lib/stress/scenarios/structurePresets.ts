@@ -614,6 +614,8 @@ export type StressPresetId =
   | "fracturedGlb"
   | "fracturedWall"
   | "fracturedWallHut"
+  | "fracturedTower"
+  | "fracturedBridge"
   | "townhouse"
   | "courtyardHouse"
   | "vaultedLoft";
@@ -667,6 +669,16 @@ export const STRESS_PRESET_METADATA: Array<{
     id: "fracturedGlb",
     label: "Fractured GLB",
     description: "Fractures a GLB and simulates destruction with a foundation plate.",
+  },
+  {
+    id: "fracturedTower",
+    label: "Fractured tower",
+    description: "Multi-floor tower built from fractured walls and floor plates with auto-bonded joints.",
+  },
+  {
+    id: "fracturedBridge",
+    label: "Fractured bridge",
+    description: "Beam bridge built from fractured deck and support posts with auto-bonded joints.",
   },
   {
     id: "townhouse",
