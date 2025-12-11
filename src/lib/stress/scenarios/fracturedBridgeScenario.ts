@@ -34,7 +34,7 @@ type FracturedBridgeOptions = {
  * Builds a beam bridge structure from fractured deck and support posts.
  * Similar to buildBeamBridgeScenario but uses three-pinata fracturing for each component.
  */
-export function buildFracturedBridgeScenario({
+export async function buildFracturedBridgeScenario({
   span = 18.0,
   deckWidth = 5.0,
   deckThickness = 0.6,
@@ -45,7 +45,7 @@ export function buildFracturedBridgeScenario({
   fragmentCountPerDeck = 40,
   fragmentCountPerPost = 5,
   deckMass = 60_000,
-}: FracturedBridgeOptions = {}): ScenarioDesc {
+}: FracturedBridgeOptions = {}): Promise<ScenarioDesc> {
   // Foundation and deck positioning
   const groundClearance = 0.001;
   const deckBottomY = groundClearance + footingThickness + pierHeight;
@@ -117,7 +117,7 @@ export function buildFracturedBridgeScenario({
   }
 
   // Build the scenario from all fragments
-  return buildScenarioFromFragments(
+  return await buildScenarioFromFragments(
     allFragments,
     { width: span, depth: deckWidth, height: deckThickness + pierHeight + footingThickness },
     deckMass,

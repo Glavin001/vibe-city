@@ -59,7 +59,7 @@ export const InteractionTab = memo(function InteractionTab(
       />
       <p className="mt-1 mb-0 text-gray-400 text-[13px] leading-snug">
         {viewMode === "fps"
-          ? "WASD move, Space/Shift fly, mouse look. Click canvas to lock."
+          ? "WASD move, Space jump, Shift run. Click canvas to lock."
           : "Click and drag to orbit camera."}
       </p>
 

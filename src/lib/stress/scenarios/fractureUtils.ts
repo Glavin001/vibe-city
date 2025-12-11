@@ -6,6 +6,15 @@ import type {
   ScenarioDesc,
   Vec3,
 } from "@/lib/stress/core/types";
+import {
+  generateAutoBondsFromChunks,
+  type AutoBondChunkInput,
+} from "@/lib/stress/core/autoBonding";
+
+/**
+ * Fragment types for bond strength calculation.
+ */
+export type FragmentType = "column" | "floor" | "wall" | "foundation";
 
 /**
  * Represents a single fragment piece with its world position, extents, geometry, and support status.
@@ -15,6 +24,8 @@ export type FragmentInfo = {
   halfExtents: THREE.Vector3;
   geometry: THREE.BufferGeometry;
   isSupport: boolean;
+  /** Fragment type for bond strength calculation */
+  fragmentType?: FragmentType;
 };
 
 /**
@@ -102,6 +113,7 @@ export function buildWallFragments(
       ),
       geometry: g,
       isSupport: false,
+      fragmentType: "wall" as const,
     };
   });
 
@@ -165,6 +177,7 @@ export function buildFloorFragments(
       ),
       geometry: g,
       isSupport: false,
+      fragmentType: "floor" as const,
     };
   });
 
@@ -228,6 +241,7 @@ export function buildColumnFragments(
       ),
       geometry: g,
       isSupport: false,
+      fragmentType: "column" as const,
     };
   });
 
@@ -398,18 +412,72 @@ export function normalizeFractureAreasByAxis(
   });
 }
 
+export type BuildScenarioOptions = {
+  /**
+   * Use auto bonding instead of legacy bond computation.
+   * When true, uses the optimized WASM-based auto bonding for better accuracy and performance.
+   */
+  useAutoBonding?: boolean;
+};
+
+/**
+ * Calculate bond strength multiplier based on the two fragment types.
+ * Order of strength:
+ * 1. Column-column: very strong (4x)
+ * 2. Column-anything: strong (2.5x)
+ * 3. Floor-floor: strong (2x)
+ * 4. Floor-wall: medium (1.5x)
+ * 5. Wall-wall: baseline (1x)
+ */
+function getBondStrengthMultiplier(
+  type0: FragmentType | undefined,
+  type1: FragmentType | undefined,
+): number {
+  // Column-column is strongest
+  if (type0 === "column" && type1 === "column") {
+    return 4.0;
+  }
+  // Column-anything is strong
+  if (type0 === "column" || type1 === "column") {
+    return 2.5;
+  }
+  // Floor-floor is strong
+  if (type0 === "floor" && type1 === "floor") {
+    return 2.0;
+  }
+  // Floor-wall is medium
+  if (
+    (type0 === "floor" && type1 === "wall") ||
+    (type0 === "wall" && type1 === "floor")
+  ) {
+    return 1.5;
+  }
+  // Wall-wall is baseline
+  return 1.0;
+}
+
 /**
  * Builds the scenario description (nodes, bonds, colliders) from a list of fragments.
+ * 
+ * @param allFragments - Array of fragment pieces with positions and geometries
+ * @param dims - Structure dimensions for bond normalization
+ * @param deckMass - Total mass to distribute across fragments
+ * @param extraParams - Additional parameters to include in scenario
+ * @param options - Build options (e.g., useAutoBonding for optimized bonding)
  */
-export function buildScenarioFromFragments(
+export async function buildScenarioFromFragments(
   allFragments: FragmentInfo[],
   dims: { width: number; depth: number; height: number },
   deckMass: number,
   extraParams: Record<string, unknown> = {},
-): ScenarioDesc {
+  options: BuildScenarioOptions = {},
+): Promise<ScenarioDesc> {
+  const { useAutoBonding = false } = options;
+
   const nodes: ScenarioDesc["nodes"] = [];
   const fragmentSizes: Vec3[] = [];
   const fragmentGeometries: THREE.BufferGeometry[] = [];
+  const fragmentTypes: (FragmentType | undefined)[] = [];
   const colliderDescForNode: (ColliderDescBuilder | null)[] = [];
   let totalVolume = 0;
 
@@ -434,6 +502,7 @@ export function buildScenarioFromFragments(
     });
     fragmentSizes.push(size);
     fragmentGeometries.push(f.geometry);
+    fragmentTypes.push(f.fragmentType);
 
     if (isSupport) {
       colliderDescForNode[i] = () => RAPIER.ColliderDesc.cuboid(hx, hy, hz);
@@ -458,23 +527,57 @@ export function buildScenarioFromFragments(
     for (const n of nodes) n.mass = 0;
   }
 
-  // Compute bonds from all fragments
-  const rawBonds = computeBondsFromFragments(allFragments);
-  const normBonds = normalizeFractureAreasByAxis(rawBonds, dims);
-  const legacyBonds: ScenarioDesc["bonds"] = normBonds.map((b) => ({
-    node0: (b as { a: number }).a,
-    node1: (b as { b: number }).b,
-    centroid: b.centroid,
-    normal: b.normal,
-    area: Math.max(b.area, 1e-8),
-  }));
+  // Compute bonds using either auto bonding (optimized) or legacy method
+  let bonds: ScenarioDesc["bonds"] = [];
+  if (useAutoBonding) {
+    // Use optimized WASM-based auto bonding
+    const chunks: AutoBondChunkInput[] = allFragments.map((f) => ({
+      geometry: f.geometry,
+      isSupport: f.isSupport,
+      matrix: new THREE.Matrix4().makeTranslation(
+        f.worldPosition.x,
+        f.worldPosition.y,
+        f.worldPosition.z,
+      ),
+    }));
+    const autoBonds = await generateAutoBondsFromChunks(chunks, {
+      label: "buildScenarioFromFragments",
+    });
+    if (autoBonds?.length) {
+      bonds = autoBonds;
+    }
+  } else {
+    // Use legacy bond computation
+    const rawBonds = computeBondsFromFragments(allFragments);
+    const normBonds = normalizeFractureAreasByAxis(rawBonds, dims);
+    bonds = normBonds.map((b) => ({
+      node0: (b as { a: number }).a,
+      node1: (b as { b: number }).b,
+      centroid: b.centroid,
+      normal: b.normal,
+      area: Math.max(b.area, 1e-8),
+    }));
+  }
+
+  // Apply bond strength multipliers based on fragment types
+  // Order of strength: column-column (4x) > column-anything (2x) > floor-floor (2x) > wall-wall (1x)
+  bonds = bonds.map((bond) => {
+    const type0 = fragmentTypes[bond.node0];
+    const type1 = fragmentTypes[bond.node1];
+    const multiplier = getBondStrengthMultiplier(type0, type1);
+    return {
+      ...bond,
+      area: bond.area * multiplier,
+    };
+  });
 
   return {
     nodes,
-    bonds: legacyBonds,
+    bonds,
     parameters: {
       fragmentSizes,
       fragmentGeometries,
+      fragmentTypes,
       ...dims,
       ...extraParams,
     },
@@ -494,8 +597,10 @@ export function addFoundationFragments(
 ): void {
   const halfWidth = width * 0.5;
   const halfDepth = depth * 0.5;
-  const foundationSegmentsX = Math.max(4, Math.round(width / 1.0));
-  const foundationSegmentsZ = Math.max(4, Math.round(depth / 1.0));
+  // Target tile size scales with structure size - aim for roughly 6-8 tiles per side
+  const tileSize = Math.max(1.0, Math.min(width, depth) / 6);
+  const foundationSegmentsX = Math.max(4, Math.round(width / tileSize));
+  const foundationSegmentsZ = Math.max(4, Math.round(depth / tileSize));
   const cellW = width / foundationSegmentsX;
   const cellD = depth / foundationSegmentsZ;
 
@@ -515,6 +620,7 @@ export function addFoundationFragments(
         ),
         geometry: g,
         isSupport: true,
+        fragmentType: "foundation" as const,
       });
     }
   }

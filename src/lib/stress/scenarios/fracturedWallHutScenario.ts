@@ -25,14 +25,14 @@ type FracturedWallHutOptions = {
  * Builds a hut structure from 4 fractured walls (front, back, left, right).
  * Returns fragmentGeometries for auto-bonding support.
  */
-export function buildFracturedWallHutScenario({
+export async function buildFracturedWallHutScenario({
   width = 6.5,
   depth = 5.2,
   height = 3.4,
   thickness = 0.32,
   fragmentCountPerWall = 30,
   deckMass = 19_000,
-}: FracturedWallHutOptions = {}): ScenarioDesc {
+}: FracturedWallHutOptions = {}): Promise<ScenarioDesc> {
   // Foundation dimensions
   const foundationHeight = Math.min(0.08, height * 0.06);
   const groundClearance = Math.max(0.001, foundationHeight * 0.05);
@@ -109,7 +109,7 @@ export function buildFracturedWallHutScenario({
   );
 
   // Build the scenario from all fragments
-  return buildScenarioFromFragments(
+  return await buildScenarioFromFragments(
     allFragments,
     { width, depth, height },
     deckMass,

@@ -34,7 +34,7 @@ export async function generateAutoBondsFromChunks(
         const source = chunks[index];
         return {
           // isSupport: !!source.isSupport,
-          isSupport: true,
+          isSupport: true, // isSupport actually means should have bonds connected to it
           applyMatrix: source.matrix,
           nonIndexed: true,
           cloneGeometry: true,

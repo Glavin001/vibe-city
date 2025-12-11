@@ -1,7 +1,12 @@
 "use client";
 
-import { KeyboardControls, OrbitControls, PointerLockControls, useKeyboardControls } from "@react-three/drei";
+import { KeyboardControls, OrbitControls, PointerLockControls } from "@react-three/drei";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
+import {
+  FPSPlayerMovement,
+  CameraLight,
+  FPS_KEYBOARD_MAP,
+} from "@/components/fps/FPSPlayerMovement";
 import { Perf as R3FPerf } from "r3f-perf";
 import {
   startTransition,
@@ -91,95 +96,6 @@ function Ground() {
         <meshStandardMaterial color="#3d3d3d" />
       </mesh>
     </group>
-  );
-}
-
-// FPS Controls types
-type FPSControlsName = "forward" | "backward" | "left" | "right" | "jump" | "descend";
-
-const FPS_EYE_HEIGHT = 1.65;
-const FPS_MOVE_SPEED = 8;
-const FPS_VERTICAL_SPEED = 6; // Jetpack speed
-
-// Reusable vectors for FPS movement (avoid allocations per frame)
-const _fpsForward = new THREE.Vector3();
-const _fpsRight = new THREE.Vector3();
-const _fpsDirection = new THREE.Vector3();
-const _fpsUp = new THREE.Vector3(0, 1, 0);
-
-function FPSControls({
-  onLock,
-  onUnlock,
-  selector,
-}: {
-  onLock?: () => void;
-  onUnlock?: () => void;
-  selector?: string;
-}) {
-  const [, get] = useKeyboardControls<FPSControlsName>();
-  const camera = useThree((state) => state.camera);
-  const initializedRef = useRef(false);
-
-  // Set initial camera position on first mount
-  useEffect(() => {
-    if (!initializedRef.current) {
-      camera.position.set(7, FPS_EYE_HEIGHT, 9);
-      initializedRef.current = true;
-    }
-  }, [camera]);
-
-  useFrame((_, delta) => {
-    const { forward, backward, left, right, jump, descend } = get();
-    const speed = FPS_MOVE_SPEED * delta;
-    const verticalSpeed = FPS_VERTICAL_SPEED * delta;
-
-    // Compute camera-relative directions projected onto ground (ignore pitch)
-    camera.getWorldDirection(_fpsForward);
-    _fpsForward.y = 0;
-    if (_fpsForward.lengthSq() > 0) _fpsForward.normalize();
-    _fpsRight.copy(_fpsForward).cross(_fpsUp).normalize();
-
-    // Compose horizontal movement
-    _fpsDirection.set(0, 0, 0);
-    const forwardMove = Number(forward) - Number(backward);
-    const rightMove = Number(right) - Number(left);
-    if (forwardMove !== 0) _fpsDirection.addScaledVector(_fpsForward, forwardMove * speed);
-    if (rightMove !== 0) _fpsDirection.addScaledVector(_fpsRight, rightMove * speed);
-
-    // Jetpack vertical movement (space = up, shift = down)
-    const verticalMove = Number(jump) - Number(descend);
-    if (verticalMove !== 0) _fpsDirection.y += verticalMove * verticalSpeed;
-
-    camera.position.add(_fpsDirection);
-    // Clamp minimum height to prevent going below ground
-    if (camera.position.y < FPS_EYE_HEIGHT) {
-      camera.position.y = FPS_EYE_HEIGHT;
-    }
-  });
-
-  return <PointerLockControls makeDefault onLock={onLock} onUnlock={onUnlock} selector={selector} />;
-}
-
-// Camera-attached light for FPS mode (headlamp effect)
-function CameraLight() {
-  const lightRef = useRef<THREE.PointLight>(null);
-  const camera = useThree((state) => state.camera);
-
-  useFrame(() => {
-    if (lightRef.current) {
-      // Position light at camera location
-      lightRef.current.position.copy(camera.position);
-    }
-  });
-
-  return (
-    <pointLight
-      ref={lightRef}
-      intensity={1.5}
-      distance={50}
-      decay={2}
-      color="#ffffff"
-    />
   );
 }
 
@@ -366,8 +282,27 @@ const SCENARIO_BUILDERS: Record<StressPresetId, ScenarioBuilder> = {
     }),
   fracturedTower: () =>
     buildFracturedTowerScenario({
+      // Realistic mid-rise office tower
+      width: 45, // 45m × 45m footprint
+      depth: 45,
+      floorCount: 15, // 15 stories
+      floorHeight: 4, // 4m floor-to-floor (commercial standard)
+      // Total height: 60m (~197 ft)
+      
+      // Column grid configuration
+      columnSize: 1.5, // 1.5m square columns
+      columnSpacing: 9, // ~9m between columns (typical office grid)
+      // columnsX: 4, // Or specify exact grid: 4x4 = 16 columns per floor
+      // columnsZ: 4,
+      columnInset: 0.12, // 12% inset from walls
+      
+      // Fragment counts
       fragmentCountPerWall: 15,
-      fragmentCountPerFloor: 10,
+      fragmentCountPerFloor: 40,
+      fragmentCountPerColumn: 5,
+      
+      // Use auto bonding for better accuracy and performance
+      useAutoBonding: true,
     }),
   fracturedBridge: () =>
     buildFracturedBridgeScenario({
@@ -1480,10 +1415,15 @@ function Scene({
         <OrbitControls makeDefault enableDamping dampingFactor={0.15} />
       ) : (
         <>
-          <FPSControls
+          <PointerLockControls
+            makeDefault
             onLock={onPointerLock}
             onUnlock={onPointerUnlock}
             selector="#fps-start-overlay"
+          />
+          <FPSPlayerMovement
+            world={coreRef.current?.world ?? null}
+            spawn={[7, 2, 9]}
           />
           <CameraLight />
         </>
@@ -1602,6 +1542,20 @@ export default function Page() {
       }
     };
   }, []);
+
+  // Press "R" to reset scene
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Ignore if typing in an input field
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (e.key === "r" || e.key === "R") {
+        setIteration((prev) => prev + 1);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
   const captureProfilerConfig = useCallback(
     () => ({
       structureId,
@@ -1871,16 +1825,7 @@ export default function Page() {
         setCollapsed={setControlsCollapsed}
       />
 
-      <KeyboardControls
-        map={[
-          { name: "forward" as FPSControlsName, keys: ["ArrowUp", "w", "W"] },
-          { name: "backward" as FPSControlsName, keys: ["ArrowDown", "s", "S"] },
-          { name: "left" as FPSControlsName, keys: ["ArrowLeft", "a", "A"] },
-          { name: "right" as FPSControlsName, keys: ["ArrowRight", "d", "D"] },
-          { name: "jump" as FPSControlsName, keys: ["Space"] },
-          { name: "descend" as FPSControlsName, keys: ["ShiftLeft", "ShiftRight"] },
-        ]}
-      >
+      <KeyboardControls map={FPS_KEYBOARD_MAP}>
         <Canvas
           shadows={shadowsEnabled}
           camera={{ position: [7, 5, 9], fov: 45 }}
@@ -1984,7 +1929,7 @@ export default function Page() {
               Click to start
             </div>
             <div style={{ fontSize: "12px", opacity: 0.7 }}>
-              WASD move · Space/Shift fly · Mouse look · Esc unlock
+              WASD move · Space jump · Shift run · R reset · Mouse look · Esc unlock
             </div>
           </div>
         </div>
@@ -2005,7 +1950,7 @@ export default function Page() {
             pointerEvents: "none",
           }}
         >
-          WASD move · Space up · Shift down · Click fire · Esc unlock
+          WASD move · Space jump · Shift run · Click fire · R reset · Esc unlock
         </div>
       )}
     </div>
