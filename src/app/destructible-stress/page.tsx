@@ -298,7 +298,7 @@ const SCENARIO_BUILDERS: Record<StressPresetId, ScenarioBuilder> = {
       
       // Fragment counts
       fragmentCountPerWall: 15,
-      fragmentCountPerFloor: 40,
+      fragmentCountPerFloor: 60,
       fragmentCountPerColumn: 5,
       
       // Use auto bonding for better accuracy and performance
@@ -1402,13 +1402,21 @@ function Scene({
   return (
     <>
       <group ref={groupRef} />
-      <ambientLight intensity={0.35} />
+      <ambientLight intensity={0.5} />
+      <hemisphereLight args={["#87ceeb", "#3d3d3d", 0.4]} />
       <directionalLight
         castShadow={shadowsEnabled}
-        position={[6, 8, 6]}
-        intensity={1.2}
-        shadow-mapSize-width={2048}
-        shadow-mapSize-height={2048}
+        position={[30, 50, 30]}
+        intensity={1.5}
+        shadow-mapSize-width={4096}
+        shadow-mapSize-height={4096}
+        shadow-camera-left={-100}
+        shadow-camera-right={100}
+        shadow-camera-top={100}
+        shadow-camera-bottom={-100}
+        shadow-camera-near={0.5}
+        shadow-camera-far={200}
+        shadow-bias={-0.0001}
       />
       <Ground />
       {viewMode === "orbit" ? (
