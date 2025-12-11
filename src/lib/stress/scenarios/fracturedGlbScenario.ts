@@ -1,4 +1,4 @@
-import { FractureOptions, fracture } from "@dgreenheck/three-pinata";
+import { DestructibleMesh, FractureOptions } from "@dgreenheck/three-pinata";
 import RAPIER from "@dimforge/rapier3d-compat";
 import * as THREE from "three";
 import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
@@ -381,8 +381,9 @@ export async function buildFracturedGlbScenario({
 
   // 2) Fracture the merged geometry
   const opts = new FractureOptions({
+    fractureMethod: "voronoi",
     fragmentCount: fragmentCount,
-    fractureMode: "Non-Convex" as const,
+    voronoiOptions: { mode: "3D" },
   });
   // three-pinata expects BufferGeometry with a non-null Float32Array position
   // Some pipelines produce interleaved attributes; ensure plain arrays on a clone
@@ -412,8 +413,9 @@ export async function buildFracturedGlbScenario({
       if (!g.getAttribute("normal")) g.computeVertexNormals();
     } catch {}
   })(fractureInput);
-  const pieces = fracture(fractureInput, opts);
-  console.log("Fractured pieces", pieces.length);
+  const destructibleMesh = new DestructibleMesh(fractureInput);
+  const pieceMeshes = destructibleMesh.fracture(opts);
+  console.log("Fractured pieces", pieceMeshes.length);
 
   // Placement above foundation
   const foundationHeight = Math.min(0.08, size.y * 0.06);
@@ -429,7 +431,8 @@ export async function buildFracturedGlbScenario({
   );
 
   // 3) Build fragments list (recenter each geom to its own COM, compute world placement)
-  const fragments: FragmentInfo[] = pieces.map((g) => {
+  const fragments: FragmentInfo[] = pieceMeshes.map((m) => {
+    const g = m.geometry;
     // Ensure fractured piece has plain attributes for later convexHull
     (function ensureAttrs(geom: THREE.BufferGeometry) {
       const pos = geom.getAttribute("position") as THREE.BufferAttribute | null;
@@ -459,9 +462,9 @@ export async function buildFracturedGlbScenario({
     const gsize = new THREE.Vector3();
     gb.getSize(gsize);
     const worldPosition = new THREE.Vector3(
-      modelCenter.x + localCenter.x,
-      modelCenter.y + localCenter.y,
-      modelCenter.z + localCenter.z,
+      modelCenter.x + m.position.x + localCenter.x,
+      modelCenter.y + m.position.y + localCenter.y,
+      modelCenter.z + m.position.z + localCenter.z,
     );
     return {
       worldPosition,

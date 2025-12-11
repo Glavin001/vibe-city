@@ -1,4 +1,4 @@
-import { FractureOptions, fracture } from "@dgreenheck/three-pinata";
+import { DestructibleMesh, FractureOptions } from "@dgreenheck/three-pinata";
 import RAPIER from "@dimforge/rapier3d-compat";
 import * as THREE from "three";
 import type {
@@ -36,10 +36,14 @@ function buildFragments({
   fragmentCount,
 }: FragmentBuildOptions): FragmentInfo[] {
   const geom = new THREE.BoxGeometry(span, height, thickness, 2, 3, 1);
-  const opts = new FractureOptions();
-  opts.fragmentCount = fragmentCount;
+  const opts = new FractureOptions({
+    fractureMethod: "voronoi",
+    fragmentCount: fragmentCount,
+    voronoiOptions: { mode: "3D" },
+  });
 
-  const pieces = fracture(geom, opts);
+  const destructibleMesh = new DestructibleMesh(geom);
+  const pieceMeshes = destructibleMesh.fracture(opts);
   geom.dispose();
 
   // Place foundation slightly above the ground and lift the wall so it sits above the foundation with a tiny gap.
@@ -50,7 +54,8 @@ function buildFragments({
 
   const center = new THREE.Vector3(0, height * 0.5 + wallLiftY, 0); // bottom at y>0
 
-  const fragments: FragmentInfo[] = pieces.map((g) => {
+  const fragments: FragmentInfo[] = pieceMeshes.map((m) => {
+    const g = m.geometry;
     g.computeBoundingBox();
     const bbox = g.boundingBox as THREE.Box3;
     const localCenter = new THREE.Vector3();
@@ -60,9 +65,9 @@ function buildFragments({
     const size = new THREE.Vector3();
     bbox.getSize(size);
     const worldPosition = new THREE.Vector3(
-      center.x + localCenter.x,
-      center.y + localCenter.y,
-      center.z + localCenter.z,
+      center.x + m.position.x + localCenter.x,
+      center.y + m.position.y + localCenter.y,
+      center.z + m.position.z + localCenter.z,
     );
     return {
       worldPosition,

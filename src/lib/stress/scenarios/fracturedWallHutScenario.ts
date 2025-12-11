@@ -1,11 +1,10 @@
-import { FractureOptions, fracture } from "@dgreenheck/three-pinata";
-import RAPIER from "@dimforge/rapier3d-compat";
-import * as THREE from "three";
-import type {
-  ColliderDescBuilder,
-  ScenarioDesc,
-  Vec3,
-} from "@/lib/stress/core/types";
+import type { ScenarioDesc } from "@/lib/stress/core/types";
+import {
+  type FragmentInfo,
+  buildWallFragments,
+  addFoundationFragments,
+  buildScenarioFromFragments,
+} from "./fractureUtils";
 
 type FracturedWallHutOptions = {
   /** Width of the hut (X dimension) */
@@ -21,242 +20,6 @@ type FracturedWallHutOptions = {
   /** Total mass of the structure */
   deckMass?: number;
 };
-
-type FragmentInfo = {
-  worldPosition: THREE.Vector3;
-  halfExtents: THREE.Vector3;
-  geometry: THREE.BufferGeometry;
-  isSupport: boolean;
-};
-
-/**
- * Creates fractured wall fragments for a single wall panel, then transforms them
- * to the specified world position and rotation.
- */
-function buildWallFragments(
-  span: number,
-  height: number,
-  thickness: number,
-  fragmentCount: number,
-  wallCenterX: number,
-  wallCenterZ: number,
-  rotationY: number,
-  wallLiftY: number,
-): FragmentInfo[] {
-  // Create wall geometry aligned along X axis (span in X, height in Y, thickness in Z)
-  const geom = new THREE.BoxGeometry(span, height, thickness, 2, 3, 1);
-  const opts = new FractureOptions();
-  opts.fragmentCount = fragmentCount;
-
-  const pieces = fracture(geom, opts);
-  geom.dispose();
-
-  // Wall center position (bottom of wall at wallLiftY)
-  const center = new THREE.Vector3(wallCenterX, height * 0.5 + wallLiftY, wallCenterZ);
-
-  // Rotation matrix for the wall
-  const rotMatrix = new THREE.Matrix4().makeRotationY(rotationY);
-
-  const fragments: FragmentInfo[] = pieces.map((g) => {
-    g.computeBoundingBox();
-    const bbox = g.boundingBox as THREE.Box3;
-    const localCenter = new THREE.Vector3();
-    bbox.getCenter(localCenter);
-    
-    // Re-center geometry around its own COM
-    g.translate(-localCenter.x, -localCenter.y, -localCenter.z);
-    
-    const size = new THREE.Vector3();
-    bbox.getSize(size);
-
-    // Apply rotation to local offset
-    const rotatedOffset = localCenter.clone().applyMatrix4(rotMatrix);
-    
-    const worldPosition = new THREE.Vector3(
-      center.x + rotatedOffset.x,
-      center.y + localCenter.y, // Y doesn't rotate
-      center.z + rotatedOffset.z,
-    );
-
-    // Rotate the geometry to match wall orientation
-    g.applyMatrix4(rotMatrix);
-
-    // Compute rotated half extents (for bounding box after rotation)
-    const rotatedSize = new THREE.Vector3(size.x, size.y, size.z);
-    if (Math.abs(rotationY) > 0.01) {
-      // For 90 degree rotations, swap X and Z
-      const cos = Math.abs(Math.cos(rotationY));
-      const sin = Math.abs(Math.sin(rotationY));
-      rotatedSize.x = size.x * cos + size.z * sin;
-      rotatedSize.z = size.x * sin + size.z * cos;
-    }
-
-    return {
-      worldPosition,
-      halfExtents: new THREE.Vector3(
-        Math.max(0.05, rotatedSize.x * 0.5),
-        Math.max(0.05, size.y * 0.5),
-        Math.max(0.05, rotatedSize.z * 0.5),
-      ),
-      geometry: g,
-      isSupport: false,
-    };
-  });
-
-  return fragments;
-}
-
-function projectExtentsOnAxisWorld(
-  geometry: THREE.BufferGeometry,
-  worldPos: THREE.Vector3,
-  axis: THREE.Vector3,
-): { min: number; max: number } {
-  const pos = geometry.getAttribute("position") as THREE.BufferAttribute;
-  const ax = axis;
-  let min = Infinity;
-  let max = -Infinity;
-  for (let i = 0; i < pos.count; i += 1) {
-    const x = (pos.getX(i) as number) + worldPos.x;
-    const y = (pos.getY(i) as number) + worldPos.y;
-    const z = (pos.getZ(i) as number) + worldPos.z;
-    const p = x * ax.x + y * ax.y + z * ax.z;
-    if (p < min) min = p;
-    if (p > max) max = p;
-  }
-  return { min, max };
-}
-
-function overlap1D(
-  a: { min: number; max: number },
-  b: { min: number; max: number },
-) {
-  return Math.max(0, Math.min(a.max, b.max) - Math.max(a.min, b.min));
-}
-
-function computeBondsFromFragments(
-  fragments: FragmentInfo[],
-): Array<{ a: number; b: number; centroid: Vec3; normal: Vec3; area: number }> {
-  const bonds: Array<{
-    a: number;
-    b: number;
-    centroid: Vec3;
-    normal: Vec3;
-    area: number;
-  }> = [];
-  if (fragments.length === 0) return bonds;
-
-  // Global tolerance baseline; refined per-pair below
-  const globalTol =
-    0.12 *
-    Math.min(
-      ...fragments.map((f) => Math.min(f.halfExtents.x, f.halfExtents.z)),
-    );
-
-  for (let i = 0; i < fragments.length; i += 1) {
-    for (let j = i + 1; j < fragments.length; j += 1) {
-      const A = fragments[i];
-      const B = fragments[j];
-
-      // Skip bonds between two supports; treat foundation as a single anchored slab
-      if (A.isSupport && B.isSupport) continue;
-
-      const n = B.worldPosition.clone().sub(A.worldPosition).normalize();
-      if (
-        !Number.isFinite(n.x) ||
-        !Number.isFinite(n.y) ||
-        !Number.isFinite(n.z)
-      )
-        continue;
-
-      // Require small separation along the normal direction (nearly touching)
-      const aN = projectExtentsOnAxisWorld(A.geometry, A.worldPosition, n);
-      const bN = projectExtentsOnAxisWorld(B.geometry, B.worldPosition, n);
-      const separation = bN.min - aN.max; // positive if B is in +n direction away from A
-
-      // Use two tangents for overlap area test
-      const up =
-        Math.abs(n.y) < 0.9
-          ? new THREE.Vector3(0, 1, 0)
-          : new THREE.Vector3(1, 0, 0);
-      const t1 = new THREE.Vector3().crossVectors(n, up).normalize();
-      const t2 = new THREE.Vector3().crossVectors(n, t1).normalize();
-
-      const a1 = projectExtentsOnAxisWorld(A.geometry, A.worldPosition, t1);
-      const b1 = projectExtentsOnAxisWorld(B.geometry, B.worldPosition, t1);
-      const a2 = projectExtentsOnAxisWorld(A.geometry, A.worldPosition, t2);
-      const b2 = projectExtentsOnAxisWorld(B.geometry, B.worldPosition, t2);
-
-      const o1 = overlap1D(a1, b1);
-      const o2 = overlap1D(a2, b2);
-      const size1 = Math.min(a1.max - a1.min, b1.max - b1.min);
-      const size2 = Math.min(a2.max - a2.min, b2.max - b2.min);
-
-      // Pair-relative gap threshold to avoid long-range bonds across thin gaps
-      const pairMin = Math.max(1e-6, Math.min(size1, size2));
-      const epsGap = Math.max(0.006, Math.min(globalTol, pairMin * 0.15));
-      if (separation > epsGap) continue;
-
-      if (o1 < size1 * 0.22 || o2 < size2 * 0.22) continue;
-
-      const contactArea = o1 * o2;
-      if (!(contactArea > 0)) continue;
-
-      // Contact centroid: the center of the overlap rectangle in the (n, t1, t2) basis
-      const cN = 0.5 * (Math.max(aN.min, bN.min) + Math.min(aN.max, bN.max));
-      const c1 = 0.5 * (Math.max(a1.min, b1.min) + Math.min(a1.max, b1.max));
-      const c2 = 0.5 * (Math.max(a2.min, b2.min) + Math.min(a2.max, b2.max));
-      const mid = new THREE.Vector3()
-        .addScaledVector(n, cN)
-        .addScaledVector(t1, c1)
-        .addScaledVector(t2, c2);
-
-      bonds.push({
-        a: i,
-        b: j,
-        centroid: { x: mid.x, y: mid.y, z: mid.z },
-        normal: { x: n.x, y: n.y, z: n.z },
-        area: contactArea,
-      });
-    }
-  }
-  return bonds;
-}
-
-function normalizeFractureAreasByAxis(
-  list: Array<{
-    a?: number;
-    b?: number;
-    centroid: Vec3;
-    normal: Vec3;
-    area: number;
-  }>,
-  dims: { width: number; depth: number; height: number },
-) {
-  // Target areas based on cross-sectional areas
-  const target = {
-    x: dims.height * dims.depth,
-    y: dims.width * dims.depth,
-    z: dims.width * dims.height,
-  };
-  const sum = { x: 0, y: 0, z: 0 };
-  const pick = (n: Vec3): "x" | "y" | "z" => {
-    const ax = Math.abs(n.x),
-      ay = Math.abs(n.y),
-      az = Math.abs(n.z);
-    return ax >= ay && ax >= az ? "x" : ay >= az ? "y" : "z";
-  };
-  for (const b of list) sum[pick(b.normal)] += b.area;
-  const scale = {
-    x: sum.x > 0 ? target.x / sum.x : 1,
-    y: sum.y > 0 ? target.y / sum.y : 1,
-    z: sum.z > 0 ? target.z / sum.z : 1,
-  } as const;
-  return list.map((b) => {
-    const axis = pick(b.normal);
-    const area = Math.max(b.area * scale[axis], 1e-8);
-    return { ...b, area };
-  });
-}
 
 /**
  * Builds a hut structure from 4 fractured walls (front, back, left, right).
@@ -337,110 +100,22 @@ export function buildFracturedWallHutScenario({
   allFragments.push(...rightWallFrags);
 
   // Add rectangular foundation under the entire hut footprint
-  const foundationSegmentsX = Math.max(4, Math.round(width / 1.0));
-  const foundationSegmentsZ = Math.max(4, Math.round(depth / 1.0));
-  const cellW = width / foundationSegmentsX;
-  const cellD = depth / foundationSegmentsZ;
-
-  for (let ix = 0; ix < foundationSegmentsX; ix += 1) {
-    for (let iz = 0; iz < foundationSegmentsZ; iz += 1) {
-      const cx = -halfWidth + cellW * (ix + 0.5);
-      const cz = -halfDepth + cellD * (iz + 0.5);
-      const cy = groundClearance + foundationHeight * 0.5;
-      const g = new THREE.BoxGeometry(cellW, foundationHeight, cellD);
-      const worldPosition = new THREE.Vector3(cx, cy, cz);
-      allFragments.push({
-        worldPosition,
-        halfExtents: new THREE.Vector3(
-          cellW * 0.5,
-          foundationHeight * 0.5,
-          cellD * 0.5,
-        ),
-        geometry: g,
-        isSupport: true,
-      });
-    }
-  }
-
-  // Build nodes, sizes, geometries, and colliders
-  const nodes: ScenarioDesc["nodes"] = [];
-  const fragmentSizes: Vec3[] = [];
-  const fragmentGeometries: THREE.BufferGeometry[] = [];
-  const colliderDescForNode: (ColliderDescBuilder | null)[] = [];
-  let totalVolume = 0;
-
-  allFragments.forEach((f, i) => {
-    const hx = f.halfExtents.x;
-    const hy = f.halfExtents.y;
-    const hz = f.halfExtents.z;
-    const size = { x: hx * 2, y: hy * 2, z: hz * 2 } satisfies Vec3;
-    const volume = size.x * size.y * size.z;
-    const isSupport = f.isSupport;
-    const mass = isSupport ? 0 : volume;
-    if (!isSupport) totalVolume += volume;
-
-    nodes.push({
-      centroid: {
-        x: f.worldPosition.x,
-        y: f.worldPosition.y,
-        z: f.worldPosition.z,
-      },
-      mass,
-      volume,
-    });
-    fragmentSizes.push(size);
-    fragmentGeometries.push(f.geometry);
-
-    if (isSupport) {
-      colliderDescForNode[i] = () => RAPIER.ColliderDesc.cuboid(hx, hy, hz);
-    } else {
-      const pos = f.geometry.getAttribute("position") as THREE.BufferAttribute;
-      const points =
-        pos?.array instanceof Float32Array
-          ? pos.array
-          : new Float32Array((pos?.array ?? []) as ArrayLike<number>);
-      colliderDescForNode[i] = () => RAPIER.ColliderDesc.convexHull(points);
-    }
-  });
-
-  // Scale masses so total matches deckMass
-  const scale = totalVolume > 0 ? deckMass / totalVolume : 0;
-  if (scale > 0) {
-    for (const n of nodes) {
-      if (n.mass === 0) continue;
-      n.mass = n.volume > 0 ? n.volume * scale : 0;
-    }
-  } else {
-    for (const n of nodes) n.mass = 0;
-  }
-
-  // Compute bonds from all fragments (includes intra-wall, corner, and foundation bonds)
-  const rawBonds = computeBondsFromFragments(allFragments);
-  const normBonds = normalizeFractureAreasByAxis(rawBonds, {
+  addFoundationFragments(
+    allFragments,
     width,
     depth,
-    height,
-  });
-  const legacyBonds: ScenarioDesc["bonds"] = normBonds.map((b) => ({
-    node0: (b as { a: number }).a,
-    node1: (b as { b: number }).b,
-    centroid: b.centroid,
-    normal: b.normal,
-    area: Math.max(b.area, 1e-8),
-  }));
+    foundationHeight,
+    groundClearance,
+  );
 
-  return {
-    nodes,
-    bonds: legacyBonds,
-    parameters: {
-      fragmentSizes,
-      fragmentGeometries,
-      width,
-      depth,
-      height,
+  // Build the scenario from all fragments
+  return buildScenarioFromFragments(
+    allFragments,
+    { width, depth, height },
+    deckMass,
+    {
       thickness,
       fragmentCountPerWall,
     },
-    colliderDescForNode,
-  } satisfies ScenarioDesc;
+  );
 }
