@@ -185,6 +185,30 @@ export async function buildDestructibleCore({
     const timerStart = startTiming();
     const result = solver.applyFractureCommands(commands);
     stopTiming(timerStart, 'fractureApplyMs');
+    // Track removed bonds from fracture commands (for cutBond API and other manual tracking)
+    for (const cmd of commands) {
+      if (!cmd.fractures) continue;
+      for (const frac of cmd.fractures) {
+        // If userdata is set (manual fractures), use it directly
+        if (typeof frac.userdata === 'number') {
+          removedBondIndices.add(frac.userdata);
+        } else if (typeof frac.nodeIndex0 === 'number' && typeof frac.nodeIndex1 === 'number') {
+          // For solver-generated fractures, look up bond index from node pair
+          const bonds0 = bondsByNode.get(frac.nodeIndex0);
+          if (bonds0) {
+            for (const bi of bonds0) {
+              const b = bondTable[bi];
+              if (!b) continue;
+              if ((b.node0 === frac.nodeIndex0 && b.node1 === frac.nodeIndex1) ||
+                  (b.node0 === frac.nodeIndex1 && b.node1 === frac.nodeIndex0)) {
+                removedBondIndices.add(bi);
+                break;
+              }
+            }
+          }
+        }
+      }
+    }
     return result;
   };
   const recordProjectileCleanupDurationInternal = (durationMs: number) => {
@@ -897,6 +921,17 @@ export async function buildDestructibleCore({
       });
     } catch {}
     return count;
+  }
+
+  function getActiveBondsCount(): number {
+    // Get active bonds count directly from solver's debug lines
+    // Each debug line represents one active bond
+    try {
+      const lines = solver.fillDebugRender({ mode: runtime.ExtDebugMode.Max, scale: 1.0 });
+      return lines?.length ?? (bondTable.length - removedBondIndices.size);
+    } catch {
+      return bondTable.length - removedBondIndices.size;
+    }
   }
 
   function addForceForCollider(handle: number, direction: number, totalForce: { x:number; y:number; z:number }, worldPoint: { x:number; y:number; z:number }) {
@@ -1988,6 +2023,7 @@ export async function buildDestructibleCore({
     setGravity,
     setSolverGravityEnabled,
     getRigidBodyCount,
+    getActiveBondsCount,
     setSingleCollisionMode: (mode: SingleCollisionMode) => {
       if (mode === singleCollisionModeSetting) return;
       singleCollisionModeSetting = mode;

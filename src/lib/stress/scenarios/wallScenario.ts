@@ -1,6 +1,13 @@
-import type { ScenarioDesc, Vec3, ColliderDescBuilder } from '@/lib/stress/core/types';
-import RAPIER from '@dimforge/rapier3d-compat';
-import { vec3 } from 'blast-stress-solver';
+import RAPIER from "@dimforge/rapier3d-compat";
+import { vec3 } from "blast-stress-solver";
+import * as THREE from "three";
+import type {
+  ColliderDescBuilder,
+  ScenarioBond,
+  ScenarioDesc,
+  ScenarioNode,
+  Vec3,
+} from "@/lib/stress/core/types";
 
 type WallScenarioOptions = {
   span?: number; // X
@@ -37,9 +44,10 @@ export function buildWallScenario({
   bondsY = true,
   bondsZ = true,
 }: WallScenarioOptions = {}): ScenarioDesc {
-  const nodes: Array<{ centroid: Vec3; mass: number; volume: number }> = [];
-  const bonds: Array<{ node0: number; node1: number; centroid: Vec3; normal: Vec3; area: number }> = [];
+  const nodes: ScenarioNode[] = [];
+  const bonds: ScenarioBond[] = [];
   const colliderDescForNode: (ColliderDescBuilder | null)[] = [];
+  const fragmentGeometries: THREE.BufferGeometry[] = [];
 
   const cellX = span / Math.max(spanSegments, 1);
   const cellY = height / Math.max(heightSegments, 1);
@@ -79,7 +87,15 @@ export function buildWallScenario({
         const hx = cellX * 0.5;
         const hy = cellY * 0.5;
         const hz = cellZ * 0.5;
-        colliderDescForNode.push(() => RAPIER.ColliderDesc.cuboid(hx * (isSupport ? 0.999 : 1), hy * (isSupport ? 0.999 : 1), hz * (isSupport ? 0.999 : 1)));
+        colliderDescForNode.push(() =>
+          RAPIER.ColliderDesc.cuboid(
+            hx * (isSupport ? 0.999 : 1),
+            hy * (isSupport ? 0.999 : 1),
+            hz * (isSupport ? 0.999 : 1),
+          ),
+        );
+        // Create geometry for auto bonding support
+        fragmentGeometries.push(new THREE.BoxGeometry(cellX, cellY, cellZ));
       }
     }
   }
@@ -139,7 +155,17 @@ export function buildWallScenario({
     bonds,
     gridCoordinates,
     spacing: { x: cellX, y: cellY, z: cellZ },
-    parameters: { span, height, thickness, spanSegments, heightSegments, layers, deckMass, areaScale },
+    parameters: {
+      span,
+      height,
+      thickness,
+      spanSegments,
+      heightSegments,
+      layers,
+      deckMass,
+      areaScale,
+      fragmentGeometries,
+    },
     colliderDescForNode,
   } satisfies ScenarioDesc;
 }

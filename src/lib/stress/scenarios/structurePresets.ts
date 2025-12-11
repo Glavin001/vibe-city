@@ -1,5 +1,10 @@
-import type { ScenarioDesc, Vec3, ColliderDescBuilder } from "@/lib/stress/core/types";
-import RAPIER from '@dimforge/rapier3d-compat';
+import RAPIER from "@dimforge/rapier3d-compat";
+import * as THREE from "three";
+import type {
+  ColliderDescBuilder,
+  ScenarioDesc,
+  Vec3,
+} from "@/lib/stress/core/types";
 
 const EPSILON = 1e-8;
 
@@ -83,6 +88,7 @@ export function buildRectilinearScenario({
   const nodes: ScenarioDesc["nodes"] = [];
   const gridCoordinates: Array<{ ix: number; iy: number; iz: number }> = [];
   const colliderDescForNode: (ColliderDescBuilder | null)[] = [];
+  const fragmentGeometries: THREE.BufferGeometry[] = [];
 
   const include = includeNode ?? (() => true);
   const support = supportPredicate ?? (({ iy }) => iy === 0);
@@ -107,7 +113,15 @@ export function buildRectilinearScenario({
         const hx = cellX * 0.5;
         const hy = cellY * 0.5;
         const hz = cellZ * 0.5;
-        colliderDescForNode.push(() => RAPIER.ColliderDesc.cuboid(hx * (isSupport ? 0.999 : 1), hy * (isSupport ? 0.999 : 1), hz * (isSupport ? 0.999 : 1)));
+        colliderDescForNode.push(() =>
+          RAPIER.ColliderDesc.cuboid(
+            hx * (isSupport ? 0.999 : 1),
+            hy * (isSupport ? 0.999 : 1),
+            hz * (isSupport ? 0.999 : 1),
+          ),
+        );
+        // Create geometry for auto bonding support
+        fragmentGeometries.push(new THREE.BoxGeometry(cellX, cellY, cellZ));
       }
     }
   }
@@ -192,7 +206,7 @@ export function buildRectilinearScenario({
     bonds,
     gridCoordinates,
     spacing: makeVec(cellX, cellY, cellZ),
-    parameters: { size, segments, deckMass, areaScale, addDiagonals },
+    parameters: { size, segments, deckMass, areaScale, addDiagonals, fragmentGeometries },
     colliderDescForNode,
   } satisfies ScenarioDesc;
 }
@@ -599,6 +613,9 @@ export type StressPresetId =
   | "tower"
   | "fracturedGlb"
   | "fracturedWall"
+  | "fracturedWallHut"
+  | "fracturedTower"
+  | "fracturedBridge"
   | "townhouse"
   | "courtyardHouse"
   | "vaultedLoft";
@@ -644,9 +661,24 @@ export const STRESS_PRESET_METADATA: Array<{
     description: "Wall built from irregular fracture pieces (three-pinata) instead of a uniform grid.",
   },
   {
+    id: "fracturedWallHut",
+    label: "Fractured wall hut",
+    description: "Hollow hut built from 4 fractured walls with auto-bonded corners and foundation.",
+  },
+  {
     id: "fracturedGlb",
     label: "Fractured GLB",
     description: "Fractures a GLB and simulates destruction with a foundation plate.",
+  },
+  {
+    id: "fracturedTower",
+    label: "Fractured tower",
+    description: "Multi-floor tower built from fractured walls and floor plates with auto-bonded joints.",
+  },
+  {
+    id: "fracturedBridge",
+    label: "Fractured bridge",
+    description: "Beam bridge built from fractured deck and support posts with auto-bonded joints.",
   },
   {
     id: "townhouse",
