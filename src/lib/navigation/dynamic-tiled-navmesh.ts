@@ -14,7 +14,10 @@ import {
 import { dtIlog2, dtNextPow2 } from 'recast-navigation/generators';
 import type * as THREE from 'three';
 import type { BuildTileMeshProps } from './build-tile';
-import DynamicTiledNavMeshWorker from './dynamic-tiled-navmesh.worker?worker';
+const createDynamicTiledNavMeshWorker = () =>
+  new Worker(new URL('./dynamic-tiled-navmesh.worker.ts', import.meta.url), {
+    type: 'module',
+  });
 
 export type DynamicTiledNavMeshProps = {
   navMeshBounds: THREE.Box3;
@@ -39,7 +42,7 @@ export class DynamicTiledNavMesh {
 
   recastConfig: RecastConfig;
 
-  workers: InstanceType<typeof DynamicTiledNavMeshWorker>[];
+  workers: Worker[];
   workerRoundRobin = 0;
 
   constructor(props: DynamicTiledNavMeshProps) {
@@ -99,7 +102,7 @@ export class DynamicTiledNavMesh {
 
     this.workers = [];
     for (let i = 0; i < props.workers; i++) {
-      const worker = new DynamicTiledNavMeshWorker();
+      const worker = createDynamicTiledNavMeshWorker();
 
       worker.onmessage = (e) => {
         const {
