@@ -25,7 +25,7 @@ import { debugPrintSolver } from "@/lib/stress/core/printSolver";
 import type {
   CoreProfilerSample,
   DestructibleCore,
-  SingleCollisionMode,
+  DebrisCollisionMode,
   OptimizationMode,
 } from "@/lib/stress/core/types";
 import { buildBeamBridgeScenario } from "@/lib/stress/scenarios/beamBridgeScenario";
@@ -104,8 +104,11 @@ type SceneProps = {
   physicsWireframe: boolean;
   gravity: number;
   solverGravityEnabled: boolean;
-  singleCollisionMode: SingleCollisionMode;
-  skipSingleBodies: boolean;
+  debrisCollisionMode: DebrisCollisionMode;
+  skipDebrisBodies: boolean;
+  maxCollidersForDebris: number;
+  debrisTtlMs: number;
+  debrisCleanupMode: OptimizationMode;
   damageEnabled: boolean;
   damageClickRatio: number;
   contactDamageScale: number;
@@ -320,8 +323,11 @@ function Scene({
   physicsWireframe,
   gravity,
   solverGravityEnabled,
-  singleCollisionMode,
-  skipSingleBodies,
+  debrisCollisionMode,
+  skipDebrisBodies,
+  maxCollidersForDebris,
+  debrisTtlMs,
+  debrisCleanupMode,
   damageEnabled,
   damageClickRatio,
   contactDamageScale,
@@ -403,11 +409,23 @@ function Scene({
   useEffect(() => {
     solverGravityRef.current = solverGravityEnabled;
   }, [solverGravityEnabled]);
-  const singleCollisionModeRef =
-    useRef<SingleCollisionMode>(singleCollisionMode);
+  const debrisCollisionModeRef =
+    useRef<DebrisCollisionMode>(debrisCollisionMode);
   useEffect(() => {
-    singleCollisionModeRef.current = singleCollisionMode;
-  }, [singleCollisionMode]);
+    debrisCollisionModeRef.current = debrisCollisionMode;
+  }, [debrisCollisionMode]);
+  const maxCollidersForDebrisRef = useRef(maxCollidersForDebris);
+  useEffect(() => {
+    maxCollidersForDebrisRef.current = maxCollidersForDebris;
+  }, [maxCollidersForDebris]);
+  const debrisTtlMsRef = useRef(debrisTtlMs);
+  useEffect(() => {
+    debrisTtlMsRef.current = debrisTtlMs;
+  }, [debrisTtlMs]);
+  const debrisCleanupModeRef = useRef<OptimizationMode>(debrisCleanupMode);
+  useEffect(() => {
+    debrisCleanupModeRef.current = debrisCleanupMode;
+  }, [debrisCleanupMode]);
   const sleepLinearThresholdRef = useRef(sleepLinearThreshold);
   useEffect(() => {
     sleepLinearThresholdRef.current = sleepLinearThreshold;
@@ -543,7 +561,7 @@ function Scene({
         },
         gravity: buildGravityRef.current,
         materialScale: materialScale,
-        skipSingleBodies,
+        skipSingleBodies: skipDebrisBodies,
         damage: {
           enabled: damageEnabled,
           autoDetachOnDestroy: true,
@@ -584,7 +602,7 @@ function Scene({
         maxResimulationPasses,
         snapshotMode,
         resimulateOnDamageDestroy,
-        singleCollisionMode: singleCollisionModeRef.current,
+        debrisCollisionMode: debrisCollisionModeRef.current,
         sleepLinearThreshold: sleepLinearThresholdRef.current,
         sleepAngularThreshold: sleepAngularThresholdRef.current,
         sleepMode: sleepModeRef.current,
@@ -593,6 +611,11 @@ function Scene({
           colliderCountThreshold: smallBodyColliderThresholdRef.current,
           minLinearDamping: smallBodyMinLinearDampingRef.current,
           minAngularDamping: smallBodyMinAngularDampingRef.current,
+        },
+        debrisCleanup: {
+          mode: debrisCleanupModeRef.current,
+          debrisTtlMs: debrisTtlMsRef.current,
+          maxCollidersForDebris: maxCollidersForDebrisRef.current,
         },
       });
       if (!mounted) {
@@ -622,7 +645,7 @@ function Scene({
         core.setSolverGravityEnabled(solverGravityRef.current);
       } catch {}
       try {
-        core.setSingleCollisionMode(singleCollisionModeRef.current);
+        core.setDebrisCollisionMode(debrisCollisionModeRef.current);
       } catch {}
 
       const params = scenario.parameters as unknown as
@@ -761,7 +784,7 @@ function Scene({
     autoBondingEnabled,
     scene,
     materialScale,
-    skipSingleBodies,
+    skipDebrisBodies,
     damageEnabled,
     contactDamageScale,
     minImpulseThreshold,
@@ -830,14 +853,27 @@ function Scene({
     } catch {}
   }, [physicsWireframe, scene]);
 
-  // Apply single-collision policy when toggled
+  // Apply debris collision policy when toggled
   useEffect(() => {
     const core = coreRef.current;
     if (!core) return;
     try {
-      core.setSingleCollisionMode(singleCollisionMode);
+      core.setDebrisCollisionMode(debrisCollisionMode);
     } catch {}
-  }, [singleCollisionMode]);
+  }, [debrisCollisionMode]);
+
+  // Apply debris cleanup settings when changed
+  useEffect(() => {
+    const core = coreRef.current;
+    if (!core) return;
+    try {
+      core.setDebrisCleanup?.({
+        mode: debrisCleanupMode,
+        debrisTtlMs,
+        maxCollidersForDebris,
+      });
+    } catch {}
+  }, [debrisCleanupMode, debrisTtlMs, maxCollidersForDebris]);
 
   // Apply material scale to solver anytime it changes
   useEffect(() => {
@@ -1461,9 +1497,13 @@ export default function Page() {
     useState(2);
   const [smallBodyDampingMode, setSmallBodyDampingMode] =
     useState<OptimizationMode>("off");
-  const [singleCollisionMode, setSingleCollisionMode] =
-    useState<SingleCollisionMode>("all");
-  const [skipSingleBodies, setSkipSingleBodies] = useState(false);
+  const [debrisCollisionMode, setDebrisCollisionMode] =
+    useState<DebrisCollisionMode>("all");
+  const [skipDebrisBodies, setSkipDebrisBodies] = useState(false);
+  const [maxCollidersForDebris, setMaxCollidersForDebris] = useState(2);
+  const [debrisTtlMs, setDebrisTtlMs] = useState(10000);
+  const [debrisCleanupMode, setDebrisCleanupMode] =
+    useState<OptimizationMode>("always");
   const [damageEnabled, setDamageEnabled] = useState(false);
   const [iteration, setIteration] = useState(0);
   const [mode, setMode] = useState<"projectile" | "cutter" | "push" | "damage">(
@@ -1573,8 +1613,11 @@ export default function Page() {
       adaptiveDt,
       sleepLinearThreshold,
       sleepAngularThreshold,
-      singleCollisionMode,
-      skipSingleBodies,
+      debrisCollisionMode,
+      skipDebrisBodies,
+      maxCollidersForDebris,
+      debrisTtlMs,
+      debrisCleanupMode,
       damageEnabled,
       damageClickRatio,
       contactDamageScale,
@@ -1616,8 +1659,11 @@ export default function Page() {
       adaptiveDt,
       sleepLinearThreshold,
       sleepAngularThreshold,
-      singleCollisionMode,
-      skipSingleBodies,
+      debrisCollisionMode,
+      skipDebrisBodies,
+      maxCollidersForDebris,
+      debrisTtlMs,
+      debrisCleanupMode,
       damageEnabled,
       damageClickRatio,
       contactDamageScale,
@@ -1726,10 +1772,16 @@ export default function Page() {
         setGravity={setGravity}
         solverGravityEnabled={solverGravityEnabled}
         setSolverGravityEnabled={setSolverGravityEnabled}
-        singleCollisionMode={singleCollisionMode}
-        setSingleCollisionMode={setSingleCollisionMode}
-        skipSingleBodies={skipSingleBodies}
-        setSkipSingleBodies={setSkipSingleBodies}
+        debrisCollisionMode={debrisCollisionMode}
+        setDebrisCollisionMode={setDebrisCollisionMode}
+        skipDebrisBodies={skipDebrisBodies}
+        setSkipDebrisBodies={setSkipDebrisBodies}
+        maxCollidersForDebris={maxCollidersForDebris}
+        setMaxCollidersForDebris={setMaxCollidersForDebris}
+        debrisTtlMs={debrisTtlMs}
+        setDebrisTtlMs={setDebrisTtlMs}
+        debrisCleanupMode={debrisCleanupMode}
+        setDebrisCleanupMode={setDebrisCleanupMode}
         damageClickRatio={damageClickRatio}
         setDamageClickRatio={setDamageClickRatio}
         mode={mode}
@@ -1844,8 +1896,11 @@ export default function Page() {
           physicsWireframe={physicsWireframe}
           gravity={gravity}
           solverGravityEnabled={solverGravityEnabled}
-          singleCollisionMode={singleCollisionMode}
-          skipSingleBodies={skipSingleBodies}
+          debrisCollisionMode={debrisCollisionMode}
+          skipDebrisBodies={skipDebrisBodies}
+          maxCollidersForDebris={maxCollidersForDebris}
+          debrisTtlMs={debrisTtlMs}
+          debrisCleanupMode={debrisCleanupMode}
           iteration={iteration}
           structureId={structureId}
           mode={mode}

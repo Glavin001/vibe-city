@@ -85,10 +85,16 @@ export const ControlPanel = memo(function ControlPanel(
     setMaxResimulationPasses,
     snapshotMode,
     setSnapshotMode,
-    singleCollisionMode,
-    setSingleCollisionMode,
-    skipSingleBodies,
-    setSkipSingleBodies,
+    debrisCollisionMode,
+    setDebrisCollisionMode,
+    skipDebrisBodies,
+    setSkipDebrisBodies,
+    maxCollidersForDebris,
+    setMaxCollidersForDebris,
+    debrisTtlMs,
+    setDebrisTtlMs,
+    debrisCleanupMode,
+    setDebrisCleanupMode,
     // Projectile props
     projType,
     setProjType,
@@ -224,10 +230,16 @@ export const ControlPanel = memo(function ControlPanel(
           setMaxResimulationPasses={setMaxResimulationPasses}
           snapshotMode={snapshotMode}
           setSnapshotMode={setSnapshotMode}
-          singleCollisionMode={singleCollisionMode}
-          setSingleCollisionMode={setSingleCollisionMode}
-          skipSingleBodies={skipSingleBodies}
-          setSkipSingleBodies={setSkipSingleBodies}
+          debrisCollisionMode={debrisCollisionMode}
+          setDebrisCollisionMode={setDebrisCollisionMode}
+          skipDebrisBodies={skipDebrisBodies}
+          setSkipDebrisBodies={setSkipDebrisBodies}
+          maxCollidersForDebris={maxCollidersForDebris}
+          setMaxCollidersForDebris={setMaxCollidersForDebris}
+          debrisTtlMs={debrisTtlMs}
+          setDebrisTtlMs={setDebrisTtlMs}
+          debrisCleanupMode={debrisCleanupMode}
+          setDebrisCleanupMode={setDebrisCleanupMode}
           damageEnabled={damageEnabled}
         />
       )}

@@ -1,7 +1,7 @@
 "use client";
 
 import { memo } from "react";
-import type { OptimizationMode, SingleCollisionMode } from "@/lib/stress/core/types";
+import type { OptimizationMode, DebrisCollisionMode } from "@/lib/stress/core/types";
 import type { PhysicsTabProps } from "../types";
 import {
   NumberInput,
@@ -19,11 +19,11 @@ const OPTIMIZATION_MODE_OPTIONS = [
   { value: "afterGroundCollision" as const, label: "After ground collision" },
 ];
 
-const COLLISION_MODE_OPTIONS = [
+const DEBRIS_COLLISION_MODE_OPTIONS = [
   { value: "all" as const, label: "All collisions allowed" },
-  { value: "noSinglePairs" as const, label: "Block single ↔ single" },
-  { value: "singleGround" as const, label: "Singles vs ground only" },
-  { value: "singleNone" as const, label: "Singles have no collisions" },
+  { value: "noDebrisPairs" as const, label: "Block debris ↔ debris" },
+  { value: "debrisGroundOnly" as const, label: "Debris vs ground only" },
+  { value: "debrisNone" as const, label: "Debris has no collisions" },
 ];
 
 const SNAPSHOT_MODE_OPTIONS = [
@@ -61,10 +61,16 @@ export const PhysicsTab = memo(function PhysicsTab(props: PhysicsTabProps) {
     setMaxResimulationPasses,
     snapshotMode,
     setSnapshotMode,
-    singleCollisionMode,
-    setSingleCollisionMode,
-    skipSingleBodies,
-    setSkipSingleBodies,
+    debrisCollisionMode,
+    setDebrisCollisionMode,
+    skipDebrisBodies,
+    setSkipDebrisBodies,
+    maxCollidersForDebris,
+    setMaxCollidersForDebris,
+    debrisTtlMs,
+    setDebrisTtlMs,
+    debrisCleanupMode,
+    setDebrisCleanupMode,
     damageEnabled,
   } = props;
 
@@ -195,18 +201,48 @@ export const PhysicsTab = memo(function PhysicsTab(props: PhysicsTabProps) {
         />
       </Section>
 
-      {/* Collision Settings */}
-      <Section title="Collision Settings" defaultOpen>
-        <Select<SingleCollisionMode>
-          label="Single collision mode"
-          value={singleCollisionMode}
-          onChange={setSingleCollisionMode}
-          options={COLLISION_MODE_OPTIONS}
+      {/* Debris Settings */}
+      <Section
+        title="Debris Settings"
+        defaultOpen
+        description="Configure how small fragment bodies (debris) are handled."
+      >
+        <Slider
+          label="Max colliders for debris"
+          value={maxCollidersForDebris}
+          onChange={(v) => setMaxCollidersForDebris(Math.round(v))}
+          min={1}
+          max={10}
+          step={1}
+          formatValue={(v) => `≤${Math.round(v)}`}
+        />
+        <Select<DebrisCollisionMode>
+          label="Debris collision mode"
+          value={debrisCollisionMode}
+          onChange={setDebrisCollisionMode}
+          options={DEBRIS_COLLISION_MODE_OPTIONS}
         />
         <Toggle
-          label="Destroy single fragment bodies"
-          checked={skipSingleBodies}
-          onChange={setSkipSingleBodies}
+          label="Skip debris bodies on fracture"
+          checked={skipDebrisBodies}
+          onChange={setSkipDebrisBodies}
+        />
+        <Separator />
+        <Select<OptimizationMode>
+          label="Debris cleanup mode"
+          value={debrisCleanupMode}
+          onChange={setDebrisCleanupMode}
+          options={OPTIMIZATION_MODE_OPTIONS}
+        />
+        <Slider
+          label="Debris TTL"
+          value={debrisTtlMs}
+          onChange={setDebrisTtlMs}
+          min={0}
+          max={60000}
+          step={1000}
+          formatValue={(v) => v === 0 ? "Disabled" : `${(v / 1000).toFixed(0)}s`}
+          disabled={debrisCleanupMode === "off"}
         />
       </Section>
     </TabContent>
