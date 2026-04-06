@@ -4,7 +4,7 @@ import React, { Ref, useCallback, useEffect, useMemo, useRef, useState } from 'r
 import * as THREE from 'three'
 import { RigidBody, useRapier } from '@react-three/rapier'
 import type { CollisionEnterPayload, ContactForcePayload, RapierRigidBody } from '@react-three/rapier'
-import { fracture, FractureOptions } from '@dgreenheck/three-pinata'
+import { DestructibleMesh, FractureOptions } from '@dgreenheck/three-pinata'
 import {
   loadStressSolver,
   ExtForceMode,
@@ -146,12 +146,17 @@ function buildFragments(spec: WallSpec): FragmentData[] {
     3,
     1,
   )
-  const fractureOptions = new FractureOptions()
-  fractureOptions.fragmentCount = spec.fragmentCount
+  const fractureOptions = new FractureOptions({
+    fractureMethod: "voronoi",
+    fragmentCount: spec.fragmentCount,
+    voronoiOptions: { mode: "3D" },
+  })
 
-  const pieces = fracture(geometry, fractureOptions)
+  const destructibleMesh = new DestructibleMesh(geometry)
+  const pieceMeshes = destructibleMesh.fracture(fractureOptions)
   geometry.dispose()
-  const fragments: FragmentData[] = pieces.map((geom, index) => {
+  const fragments: FragmentData[] = pieceMeshes.map((mesh, index) => {
+    const geom = mesh.geometry
     geom.computeBoundingBox()
     const bbox = geom.boundingBox
     const center = new THREE.Vector3()
@@ -163,7 +168,11 @@ function buildFragments(spec: WallSpec): FragmentData[] {
     return {
       id: `${spec.id}-${index}`,
       geometry: geom,
-      worldPosition: [spec.center[0] + center.x, spec.center[1] + center.y, spec.center[2] + center.z],
+      worldPosition: [
+        spec.center[0] + mesh.position.x + center.x,
+        spec.center[1] + mesh.position.y + center.y,
+        spec.center[2] + mesh.position.z + center.z
+      ],
       localCenter: [center.x, center.y, center.z],
       halfExtents: [sizeVec.x / 2, sizeVec.y / 2, sizeVec.z / 2],
     }

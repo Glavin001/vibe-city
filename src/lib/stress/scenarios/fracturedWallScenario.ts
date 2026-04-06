@@ -1,11 +1,6 @@
-import { FractureOptions, fracture } from "@dgreenheck/three-pinata";
+import { DestructibleMesh, FractureOptions } from "@dgreenheck/three-pinata";
 import RAPIER from "@dimforge/rapier3d-compat";
 import * as THREE from "three";
-import {
-  type AutoBondChunkInput,
-  type AutoBondingRequest,
-  generateAutoBondsFromChunks,
-} from "@/lib/stress/core/autoBonding";
 import type {
   ColliderDescBuilder,
   ScenarioDesc,
@@ -18,7 +13,6 @@ type FracturedWallOptions = {
   thickness?: number; // Z
   fragmentCount?: number;
   deckMass?: number;
-  autoBonding?: AutoBondingRequest;
 };
 
 type FragmentInfo = {
@@ -42,10 +36,14 @@ function buildFragments({
   fragmentCount,
 }: FragmentBuildOptions): FragmentInfo[] {
   const geom = new THREE.BoxGeometry(span, height, thickness, 2, 3, 1);
-  const opts = new FractureOptions();
-  opts.fragmentCount = fragmentCount;
+  const opts = new FractureOptions({
+    fractureMethod: "voronoi",
+    fragmentCount: fragmentCount,
+    voronoiOptions: { mode: "3D" },
+  });
 
-  const pieces = fracture(geom, opts);
+  const destructibleMesh = new DestructibleMesh(geom);
+  const pieceMeshes = destructibleMesh.fracture(opts);
   geom.dispose();
 
   // Place foundation slightly above the ground and lift the wall so it sits above the foundation with a tiny gap.
@@ -56,7 +54,8 @@ function buildFragments({
 
   const center = new THREE.Vector3(0, height * 0.5 + wallLiftY, 0); // bottom at y>0
 
-  const fragments: FragmentInfo[] = pieces.map((g) => {
+  const fragments: FragmentInfo[] = pieceMeshes.map((m) => {
+    const g = m.geometry;
     g.computeBoundingBox();
     const bbox = g.boundingBox as THREE.Box3;
     const localCenter = new THREE.Vector3();
@@ -66,9 +65,9 @@ function buildFragments({
     const size = new THREE.Vector3();
     bbox.getSize(size);
     const worldPosition = new THREE.Vector3(
-      center.x + localCenter.x,
-      center.y + localCenter.y,
-      center.z + localCenter.z,
+      center.x + m.position.x + localCenter.x,
+      center.y + m.position.y + localCenter.y,
+      center.z + m.position.z + localCenter.z,
     );
     return {
       worldPosition,
@@ -256,14 +255,13 @@ function normalizeFractureAreasByAxis(
   });
 }
 
-export async function buildFracturedWallScenario({
+export function buildFracturedWallScenario({
   span = 6.0,
   height = 3.0,
   thickness = 0.32,
   fragmentCount = 120,
   deckMass = 10_000,
-  autoBonding,
-}: FracturedWallOptions = {}): Promise<ScenarioDesc> {
+}: FracturedWallOptions = {}): ScenarioDesc {
   const frags = buildFragments({ span, height, thickness, fragmentCount });
 
   // Approximate per-fragment volume via bbox; supports (mass=0) if bottom touches ground
@@ -337,29 +335,9 @@ export async function buildFracturedWallScenario({
     area: Math.max(b.area, 1e-8),
   }));
 
-  let resolvedBonds = legacyBonds;
-  if (autoBonding?.enabled) {
-    const autoBondChunks: AutoBondChunkInput[] = frags.map((frag) => ({
-      geometry: frag.geometry,
-      isSupport: frag.isSupport,
-      matrix: new THREE.Matrix4().makeTranslation(
-        frag.worldPosition.x,
-        frag.worldPosition.y,
-        frag.worldPosition.z,
-      ),
-    }));
-    const autoBonds = await generateAutoBondsFromChunks(autoBondChunks, {
-      ...autoBonding,
-      label: "FracturedWall",
-    });
-    if (autoBonds?.length) {
-      resolvedBonds = autoBonds;
-    }
-  }
-
   return {
     nodes,
-    bonds: resolvedBonds,
+    bonds: legacyBonds,
     parameters: {
       fragmentSizes,
       fragmentGeometries,

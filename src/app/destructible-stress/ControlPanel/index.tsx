@@ -17,6 +17,7 @@ export type {
   InteractionMode,
   ProjectileType,
   SnapshotMode,
+  ViewMode,
 } from "./types";
 
 export { EMPTY_PROFILER_STATS } from "./types";
@@ -36,10 +37,13 @@ export const ControlPanel = memo(function ControlPanel(
     structureDescription,
     mode,
     setMode,
+    viewMode,
+    setViewMode,
     reset,
     bodyCountRef,
     activeBodyCountRef,
     colliderCountRef,
+    bondsCountRef,
     wallSpan,
     setWallSpan,
     wallHeight,
@@ -81,10 +85,16 @@ export const ControlPanel = memo(function ControlPanel(
     setMaxResimulationPasses,
     snapshotMode,
     setSnapshotMode,
-    singleCollisionMode,
-    setSingleCollisionMode,
-    skipSingleBodies,
-    setSkipSingleBodies,
+    debrisCollisionMode,
+    setDebrisCollisionMode,
+    skipDebrisBodies,
+    setSkipDebrisBodies,
+    maxCollidersForDebris,
+    setMaxCollidersForDebris,
+    debrisTtlMs,
+    setDebrisTtlMs,
+    debrisCleanupMode,
+    setDebrisCleanupMode,
     // Projectile props
     projType,
     setProjType,
@@ -157,6 +167,7 @@ export const ControlPanel = memo(function ControlPanel(
       bodyCountRef={bodyCountRef}
       activeBodyCountRef={activeBodyCountRef}
       colliderCountRef={colliderCountRef}
+      bondsCountRef={bondsCountRef}
     >
       <TabBar activeTab={activeTab} onTabChange={setActiveTab} />
 
@@ -219,10 +230,16 @@ export const ControlPanel = memo(function ControlPanel(
           setMaxResimulationPasses={setMaxResimulationPasses}
           snapshotMode={snapshotMode}
           setSnapshotMode={setSnapshotMode}
-          singleCollisionMode={singleCollisionMode}
-          setSingleCollisionMode={setSingleCollisionMode}
-          skipSingleBodies={skipSingleBodies}
-          setSkipSingleBodies={setSkipSingleBodies}
+          debrisCollisionMode={debrisCollisionMode}
+          setDebrisCollisionMode={setDebrisCollisionMode}
+          skipDebrisBodies={skipDebrisBodies}
+          setSkipDebrisBodies={setSkipDebrisBodies}
+          maxCollidersForDebris={maxCollidersForDebris}
+          setMaxCollidersForDebris={setMaxCollidersForDebris}
+          debrisTtlMs={debrisTtlMs}
+          setDebrisTtlMs={setDebrisTtlMs}
+          debrisCleanupMode={debrisCleanupMode}
+          setDebrisCleanupMode={setDebrisCleanupMode}
           damageEnabled={damageEnabled}
         />
       )}
@@ -231,6 +248,8 @@ export const ControlPanel = memo(function ControlPanel(
         <InteractionTab
           mode={mode}
           setMode={setMode}
+          viewMode={viewMode}
+          setViewMode={setViewMode}
           projType={projType}
           setProjType={setProjType}
           projectileRadius={projectileRadius}

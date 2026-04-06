@@ -5,7 +5,7 @@ import * as THREE from 'three';
 import { Canvas } from '@react-three/fiber';
 import { OrbitControls, StatsGl } from '@react-three/drei';
 import { Physics, RigidBody, CuboidCollider } from '@react-three/rapier';
-import { fracture, FractureOptions } from '@dgreenheck/three-pinata';
+import { DestructibleMesh, FractureOptions } from '@dgreenheck/three-pinata';
 
 type FragmentData = {
   geometry: THREE.BufferGeometry;
@@ -75,9 +75,11 @@ function ShatterCube({ config }: { config: BlockConfig }) {
     [config.size],
   );
   const fractureOptions = useMemo(() => {
-    const opts = new FractureOptions();
-    opts.fragmentCount = config.fragmentCount;
-    return opts;
+    return new FractureOptions({
+      fractureMethod: "voronoi",
+      fragmentCount: config.fragmentCount,
+      voronoiOptions: { mode: "3D" },
+    });
   }, [config.fragmentCount]);
 
   const outerMaterial = useMemo(
@@ -102,8 +104,10 @@ function ShatterCube({ config }: { config: BlockConfig }) {
   const shatterNow = useCallback(() => {
     if (shattered) return;
 
-    const result = fracture(boxGeometry, fractureOptions);
-    const fragmentData: FragmentData[] = result.map((geom) => {
+    const destructibleMesh = new DestructibleMesh(boxGeometry, outerMaterial, innerMaterial);
+    const result = destructibleMesh.fracture(fractureOptions);
+    const fragmentData: FragmentData[] = result.map((fragment) => {
+      const geom = fragment.geometry;
       geom.computeBoundingBox();
       const center = new THREE.Vector3();
       geom.boundingBox?.getCenter(center);
@@ -112,15 +116,15 @@ function ShatterCube({ config }: { config: BlockConfig }) {
       return {
         geometry: geom,
         position: [
-          cubePosition[0] + center.x,
-          cubePosition[1] + center.y,
-          cubePosition[2] + center.z,
+          cubePosition[0] + fragment.position.x + center.x,
+          cubePosition[1] + fragment.position.y + center.y,
+          cubePosition[2] + fragment.position.z + center.z,
         ],
       };
     });
     setFragments(fragmentData);
     setShattered(true);
-  }, [shattered, boxGeometry, fractureOptions, cubePosition]);
+  }, [shattered, boxGeometry, fractureOptions, cubePosition, outerMaterial, innerMaterial]);
 
   const handleCollisionEnter = useCallback((/* _e: any */) => {
     shatterNow();

@@ -12,7 +12,9 @@ import type {
   CoreProfilerSample,
   CoreProfilerPass,
   SingleCollisionMode,
+  DebrisCollisionMode,
   SmallBodyDampingOptions,
+  DebrisCleanupOptions,
   OptimizationMode,
 } from './types';
 import { DestructibleDamageSystem, type DamageOptions, type DamageStateSnapshot } from './damage';
@@ -26,7 +28,9 @@ type BuildCoreOptions = {
   friction?: number;
   restitution?: number;
   materialScale?: number;
+  /** @deprecated Use debrisCollisionMode instead */
   singleCollisionMode?: SingleCollisionMode;
+  debrisCollisionMode?: DebrisCollisionMode;
   damage?: DamageOptions & { autoDetachOnDestroy?: boolean; autoCleanupPhysics?: boolean };
   onNodeDestroyed?: (e: { nodeIndex: number; actorIndex: number; reason: 'impact'|'manual' }) => void;
   // Fracture rollback/resimulation controls
@@ -41,6 +45,8 @@ type BuildCoreOptions = {
   sleepMode?: OptimizationMode;
   // Small body damping - apply higher damping to bodies with few colliders
   smallBodyDamping?: SmallBodyDampingOptions;
+  // Debris cleanup - automatically remove small bodies after TTL
+  debrisCleanup?: DebrisCleanupOptions;
 };
 
 const isDev = true; //process.env.NODE_ENV !== 'production';
@@ -89,6 +95,7 @@ export async function buildDestructibleCore({
   restitution = 0.0,
   materialScale = 1.0,
   singleCollisionMode = 'all',
+  debrisCollisionMode,
   damage,
   onNodeDestroyed,
   resimulateOnFracture = true,
@@ -101,6 +108,7 @@ export async function buildDestructibleCore({
   sleepAngularThreshold = 0.1,
   sleepMode = 'off',
   smallBodyDamping,
+  debrisCleanup,
 }: BuildCoreOptions): Promise<DestructibleCore> {
   await RAPIER.init();
   const runtime = await loadStressSolver();
@@ -185,6 +193,30 @@ export async function buildDestructibleCore({
     const timerStart = startTiming();
     const result = solver.applyFractureCommands(commands);
     stopTiming(timerStart, 'fractureApplyMs');
+    // Track removed bonds from fracture commands (for cutBond API and other manual tracking)
+    for (const cmd of commands) {
+      if (!cmd.fractures) continue;
+      for (const frac of cmd.fractures) {
+        // If userdata is set (manual fractures), use it directly
+        if (typeof frac.userdata === 'number') {
+          removedBondIndices.add(frac.userdata);
+        } else if (typeof frac.nodeIndex0 === 'number' && typeof frac.nodeIndex1 === 'number') {
+          // For solver-generated fractures, look up bond index from node pair
+          const bonds0 = bondsByNode.get(frac.nodeIndex0);
+          if (bonds0) {
+            for (const bi of bonds0) {
+              const b = bondTable[bi];
+              if (!b) continue;
+              if ((b.node0 === frac.nodeIndex0 && b.node1 === frac.nodeIndex1) ||
+                  (b.node0 === frac.nodeIndex1 && b.node1 === frac.nodeIndex0)) {
+                removedBondIndices.add(bi);
+                break;
+              }
+            }
+          }
+        }
+      }
+    }
     return result;
   };
   const recordProjectileCleanupDurationInternal = (durationMs: number) => {
@@ -194,7 +226,6 @@ export async function buildDestructibleCore({
   const settings = runtime.defaultExtSettings();
   const scaledSettings = { ...settings };
   const skipSingleBodiesEnabled = !!skipSingleBodies;
-  let singleCollisionModeSetting: SingleCollisionMode = singleCollisionMode;
   // Track bodies that have collided with ground (for conditional optimization modes)
   const bodiesCollidedWithGround = new Set<number>();
   // Track small bodies that may need damping applied when they collide with ground
@@ -267,6 +298,42 @@ export async function buildDestructibleCore({
     if (mode === 'afterGroundCollision') return bodiesCollidedWithGround.has(bodyHandle);
     return false;
   }
+
+  // Debris cleanup - automatically remove small bodies after TTL
+  const debrisCleanupSettings = {
+    mode: (debrisCleanup?.mode as OptimizationMode) ?? 'always',
+    debrisTtlMs: debrisCleanup?.debrisTtlMs ?? 10000,
+    maxCollidersForDebris: debrisCleanup?.maxCollidersForDebris ?? 2,
+  };
+  // Track debris creation times: bodyHandle → timestamp (ms)
+  const debrisCreationTimes = new Map<number, number>();
+
+  function updateDebrisCleanup(opts: DebrisCleanupOptions) {
+    if (opts.mode != null) {
+      debrisCleanupSettings.mode = opts.mode;
+    }
+    if (typeof opts.debrisTtlMs === 'number' && Number.isFinite(opts.debrisTtlMs)) {
+      debrisCleanupSettings.debrisTtlMs = Math.max(0, opts.debrisTtlMs);
+    }
+    if (typeof opts.maxCollidersForDebris === 'number' && Number.isFinite(opts.maxCollidersForDebris)) {
+      debrisCleanupSettings.maxCollidersForDebris = Math.max(1, Math.floor(opts.maxCollidersForDebris));
+    }
+  }
+
+  // Convert old SingleCollisionMode to DebrisCollisionMode
+  function toDebrisCollisionMode(mode: SingleCollisionMode | DebrisCollisionMode): DebrisCollisionMode {
+    switch (mode) {
+      case 'noSinglePairs': return 'noDebrisPairs';
+      case 'singleGround': return 'debrisGroundOnly';
+      case 'singleNone': return 'debrisNone';
+      default: return mode as DebrisCollisionMode;
+    }
+  }
+
+  // Initialize debris collision mode from new or old option
+  let debrisCollisionModeSetting: DebrisCollisionMode = debrisCollisionMode
+    ? toDebrisCollisionMode(debrisCollisionMode)
+    : toDebrisCollisionMode(singleCollisionMode);
 
   // Reasonable defaults; caller can adjust later if needed
   // settings.maxSolverIterationsPerFrame = 64;
@@ -824,14 +891,16 @@ export async function buildDestructibleCore({
   // Now that options are ready, apply initial collision groups
   try {
     applyCollisionGroupsForBody(rootBody, {
-      mode: singleCollisionModeSetting,
+      mode: debrisCollisionModeSetting,
       groundBodyHandle: groundBody.handle,
+      maxCollidersForDebris: debrisCleanupSettings.maxCollidersForDebris,
     });
   } catch {}
   try {
     applyCollisionGroupsForBody(groundBody, {
-      mode: singleCollisionModeSetting,
+      mode: debrisCollisionModeSetting,
       groundBodyHandle: groundBody.handle,
+      maxCollidersForDebris: debrisCleanupSettings.maxCollidersForDebris,
     });
   } catch {}
 
@@ -897,6 +966,17 @@ export async function buildDestructibleCore({
       });
     } catch {}
     return count;
+  }
+
+  function getActiveBondsCount(): number {
+    // Get active bonds count directly from solver's debug lines
+    // Each debug line represents one active bond
+    try {
+      const lines = solver.fillDebugRender({ mode: runtime.ExtDebugMode.Max, scale: 1.0 });
+      return lines?.length ?? (bondTable.length - removedBondIndices.size);
+    } catch {
+      return bondTable.length - removedBondIndices.size;
+    }
   }
 
   function addForceForCollider(handle: number, direction: number, totalForce: { x:number; y:number; z:number }, worldPoint: { x:number; y:number; z:number }) {
@@ -1225,6 +1305,7 @@ export async function buildDestructibleCore({
           }
         }
         preStepSweep();
+        sweepDebris();
         const rapierStart = profilerSample ? perfNow() : 0;
         const stepped = stepWorld((error) => console.error('world.step', error));
         if (profilerSample) {
@@ -1624,8 +1705,9 @@ export async function buildDestructibleCore({
     // Apply collision-group policy for projectiles
     try {
       applyCollisionGroupsForBody(body, {
-        mode: singleCollisionModeSetting,
+        mode: debrisCollisionModeSetting,
         groundBodyHandle: groundBody.handle,
+        maxCollidersForDebris: debrisCleanupSettings.maxCollidersForDebris,
       });
     } catch {}
     if (process.env.NODE_ENV !== 'production') console.debug('[Core] spawnProjectile', { body: body.handle, collider: collider.handle, start, params });
@@ -1690,6 +1772,12 @@ export async function buildDestructibleCore({
           smallBodiesPendingDamping.add(body.handle);
         }
 
+        // Track debris creation time for TTL cleanup
+        const isDebris = colliderCount > 0 && colliderCount <= debrisCleanupSettings.maxCollidersForDebris && !pb.isSupport;
+        if (isDebris && debrisCleanupSettings.mode !== 'off') {
+          debrisCreationTimes.set(body.handle, perfNow());
+        }
+
         actorMap.set(pb.actorIndex, { bodyHandle: body.handle });
         for (const nodeIndex of pb.nodes) pendingColliderMigrations.push({ nodeIndex, targetBodyHandle: body.handle });
       }
@@ -1747,8 +1835,9 @@ export async function buildDestructibleCore({
         // Update groups after migration; collider count may be 1
         try {
           applyCollisionGroupsForBody(body, {
-            mode: singleCollisionModeSetting,
+            mode: debrisCollisionModeSetting,
             groundBodyHandle: groundBody.handle,
+            maxCollidersForDebris: debrisCleanupSettings.maxCollidersForDebris,
           });
         } catch {}
       }
@@ -1797,6 +1886,58 @@ export async function buildDestructibleCore({
       } catch {}
     });
     stopTiming(timerStart, 'preStepSweepMs');
+  }
+
+  function sweepDebris() {
+    if (debrisCleanupSettings.mode === 'off') return;
+    if (debrisCleanupSettings.debrisTtlMs <= 0) return;
+    if (debrisCreationTimes.size === 0) return;
+
+    const timerStart = startTiming();
+    const now = perfNow();
+    const ttl = debrisCleanupSettings.debrisTtlMs;
+
+    for (const [bodyHandle, createdAt] of Array.from(debrisCreationTimes.entries())) {
+      // Check if optimization mode allows cleanup for this body
+      if (!shouldApplyOptimization(debrisCleanupSettings.mode, bodyHandle)) continue;
+
+      // Check if TTL has expired
+      const age = now - createdAt;
+      if (age < ttl) continue;
+
+      // Remove debris body
+      const body = world.getRigidBody(bodyHandle);
+      if (!body) {
+        debrisCreationTimes.delete(bodyHandle);
+        continue;
+      }
+
+      // Get all nodes associated with this body and mark them destroyed
+      const nodes = nodesByBodyHandle.get(bodyHandle);
+      if (nodes) {
+        for (const nodeIndex of Array.from(nodes)) {
+          const seg = chunks[nodeIndex];
+          if (!seg) continue;
+          seg.destroyed = true;
+          if (seg.colliderHandle != null) {
+            const col = world.getCollider(seg.colliderHandle);
+            if (col) col.setEnabled(false);
+            colliderToNode.delete(seg.colliderHandle);
+            disabledCollidersToRemove.add(seg.colliderHandle);
+            seg.colliderHandle = null;
+          }
+        }
+      }
+
+      // Mark body for removal
+      bodiesToRemove.add(bodyHandle);
+      debrisCreationTimes.delete(bodyHandle);
+      nodesByBodyHandle.delete(bodyHandle);
+      bodiesCollidedWithGround.delete(bodyHandle);
+      smallBodiesPendingDamping.delete(bodyHandle);
+    }
+
+    stopTiming(timerStart, 'preStepSweepMs'); // Reuse existing profiler field
   }
 
   function getSolverDebugLines() {
@@ -1920,6 +2061,43 @@ export async function buildDestructibleCore({
     stopTiming(timerStart, 'damageFlushMs');
   }
 
+  function applyCollisionGroupsToAllBodies() {
+    try {
+      world.forEachRigidBody((b) =>
+        applyCollisionGroupsForBody(b, {
+          mode: debrisCollisionModeSetting,
+          groundBodyHandle: groundBody.handle,
+          maxCollidersForDebris: debrisCleanupSettings.maxCollidersForDebris,
+        }),
+      );
+    } catch {
+      try {
+        applyCollisionGroupsForBody(rootBody, {
+          mode: debrisCollisionModeSetting,
+          groundBodyHandle: groundBody.handle,
+          maxCollidersForDebris: debrisCleanupSettings.maxCollidersForDebris,
+        });
+      } catch {}
+      try {
+        applyCollisionGroupsForBody(groundBody, {
+          mode: debrisCollisionModeSetting,
+          groundBodyHandle: groundBody.handle,
+          maxCollidersForDebris: debrisCleanupSettings.maxCollidersForDebris,
+        });
+      } catch {}
+      for (const { bodyHandle } of Array.from(actorMap.values())) {
+        const b = world.getRigidBody(bodyHandle);
+        if (b) {
+          applyCollisionGroupsForBody(b, {
+            mode: debrisCollisionModeSetting,
+            groundBodyHandle: groundBody.handle,
+            maxCollidersForDebris: debrisCleanupSettings.maxCollidersForDebris,
+          });
+        }
+      }
+    }
+  }
+
   function dispose() {
     try { solver.destroy?.(); } catch {}
   }
@@ -1988,39 +2166,17 @@ export async function buildDestructibleCore({
     setGravity,
     setSolverGravityEnabled,
     getRigidBodyCount,
+    getActiveBondsCount,
     setSingleCollisionMode: (mode: SingleCollisionMode) => {
-      if (mode === singleCollisionModeSetting) return;
-      singleCollisionModeSetting = mode;
-      try {
-        world.forEachRigidBody((b) =>
-          applyCollisionGroupsForBody(b, {
-            mode: singleCollisionModeSetting,
-            groundBodyHandle: groundBody.handle,
-          }),
-        );
-      } catch {
-        try {
-          applyCollisionGroupsForBody(rootBody, {
-            mode: singleCollisionModeSetting,
-            groundBodyHandle: groundBody.handle,
-          });
-        } catch {}
-        try {
-          applyCollisionGroupsForBody(groundBody, {
-            mode: singleCollisionModeSetting,
-            groundBodyHandle: groundBody.handle,
-          });
-        } catch {}
-        for (const { bodyHandle } of Array.from(actorMap.values())) {
-          const b = world.getRigidBody(bodyHandle);
-          if (b) {
-            applyCollisionGroupsForBody(b, {
-              mode: singleCollisionModeSetting,
-              groundBodyHandle: groundBody.handle,
-            });
-          }
-        }
-      }
+      const converted = toDebrisCollisionMode(mode);
+      if (converted === debrisCollisionModeSetting) return;
+      debrisCollisionModeSetting = converted;
+      applyCollisionGroupsToAllBodies();
+    },
+    setDebrisCollisionMode: (mode: DebrisCollisionMode) => {
+      if (mode === debrisCollisionModeSetting) return;
+      debrisCollisionModeSetting = mode;
+      applyCollisionGroupsToAllBodies();
     },
     getSolverDebugLines,
     getNodeBonds,
@@ -2035,6 +2191,21 @@ export async function buildDestructibleCore({
     setSmallBodyDamping: (opts: SmallBodyDampingOptions) =>
       updateSmallBodyDamping(opts),
     getSmallBodyDampingSettings: () => ({ ...smallBodyDampingSettings }),
+    // Debris cleanup API
+    setDebrisCleanup: (opts: DebrisCleanupOptions) => {
+      updateDebrisCleanup(opts);
+      // If maxCollidersForDebris changed, re-apply collision groups to all bodies
+      if (opts.maxCollidersForDebris != null) {
+        applyCollisionGroupsToAllBodies();
+      }
+    },
+    getDebrisCleanupSettings: () => ({ ...debrisCleanupSettings }),
+    setMaxCollidersForDebris: (n: number) => {
+      if (typeof n === 'number' && Number.isFinite(n) && n >= 1) {
+        debrisCleanupSettings.maxCollidersForDebris = Math.floor(n);
+        applyCollisionGroupsToAllBodies();
+      }
+    },
     // Query ground collision status
     hasBodyCollidedWithGround: (bodyHandle: number) => bodiesCollidedWithGround.has(bodyHandle),
     // Damage API
@@ -2099,26 +2270,29 @@ function applyGroupsForCollider(c: RAPIER.Collider, groups: number) {
 
 function applyCollisionGroupsForBody(
   body: RAPIER.RigidBody,
-  opts: { mode: SingleCollisionMode; groundBodyHandle: number },
+  opts: { mode: SingleCollisionMode | DebrisCollisionMode; groundBodyHandle: number; maxCollidersForDebris?: number },
 ) {
   if (!body) return;
   const n = body?.numColliders?.() ?? 0;
   const ud = (body as BodyWithUserData | undefined)?.userData;
   let memberships = 0xffff;
   let filters = 0xffff;
+  // Use configurable threshold for debris classification (default: 2)
+  const debrisThreshold = opts.maxCollidersForDebris ?? 2;
 
   if (ud?.projectile) {
     memberships = 0xffff;
     filters = 0xffff;
-  } else if (opts.mode === 'noSinglePairs' || opts.mode === 'singleGround') {
+  } else if (opts.mode === 'noSinglePairs' || opts.mode === 'noDebrisPairs' ||
+             opts.mode === 'singleGround' || opts.mode === 'debrisGroundOnly') {
     if (body.handle === opts.groundBodyHandle) {
       memberships = GROUP_GROUND;
       filters = GROUP_GROUND | GROUP_SINGLE | GROUP_MULTI;
     } else {
       const isDynamicLike = body.isDynamic() || body.isKinematic();
-      const isSingle = isDynamicLike && n === 1;
-      if (opts.mode === 'noSinglePairs') {
-        if (isSingle) {
+      const isDebris = isDynamicLike && n <= debrisThreshold;
+      if (opts.mode === 'noSinglePairs' || opts.mode === 'noDebrisPairs') {
+        if (isDebris) {
           memberships = GROUP_SINGLE;
           filters = GROUP_GROUND | GROUP_MULTI;
         } else {
@@ -2126,7 +2300,7 @@ function applyCollisionGroupsForBody(
           filters = GROUP_GROUND | GROUP_MULTI | GROUP_SINGLE;
         }
       } else {
-        if (isSingle) {
+        if (isDebris) {
           memberships = GROUP_SINGLE;
           filters = GROUP_GROUND;
         } else {
@@ -2135,10 +2309,10 @@ function applyCollisionGroupsForBody(
         }
       }
     }
-  } else if (opts.mode === 'singleNone') {
+  } else if (opts.mode === 'singleNone' || opts.mode === 'debrisNone') {
     const isDynamicLike = body.isDynamic() || body.isKinematic();
-    const isSingle = isDynamicLike && n === 1;
-    if (isSingle) {
+    const isDebris = isDynamicLike && n <= debrisThreshold;
+    if (isDebris) {
       memberships = 0;
       filters = 0;
     } else if (body.handle === opts.groundBodyHandle) {

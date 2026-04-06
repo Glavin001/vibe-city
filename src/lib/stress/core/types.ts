@@ -3,11 +3,25 @@ import type { ColliderDesc } from '@dimforge/rapier3d-compat';
 import type { ExtStressSolver, StressRuntime } from 'blast-stress-solver';
 export type Vec3 = { x: number; y: number; z: number };
 
+/** @deprecated Use DebrisCollisionMode instead */
 export type SingleCollisionMode =
   | 'all'
   | 'noSinglePairs'
   | 'singleGround'
   | 'singleNone';
+
+/**
+ * Debris collision mode - controls how debris bodies (bodies with few colliders) collide:
+ * - 'all': All collisions allowed
+ * - 'noDebrisPairs': Debris bodies don't collide with each other
+ * - 'debrisGroundOnly': Debris only collides with the ground
+ * - 'debrisNone': Debris has no collisions at all
+ */
+export type DebrisCollisionMode =
+  | 'all'
+  | 'noDebrisPairs'
+  | 'debrisGroundOnly'
+  | 'debrisNone';
 
 /**
  * Mode for when optimization features should be applied:
@@ -35,6 +49,19 @@ export type SleepThresholdOptions = {
   linear?: number;
   /** Angular velocity threshold for sleeping (rad/s) */
   angular?: number;
+};
+
+/**
+ * Options for automatic debris cleanup.
+ * Debris = rigid bodies with few colliders (small fragments).
+ */
+export type DebrisCleanupOptions = {
+  /** When to apply debris cleanup (default: 'always') */
+  mode?: OptimizationMode;
+  /** Time-to-live for debris in milliseconds (default: 10000 = 10s) */
+  debrisTtlMs?: number;
+  /** Maximum collider count for a body to be considered debris (default: 2) */
+  maxCollidersForDebris?: number;
 };
 
 // Builder that returns a Rapier collider descriptor for a node.
@@ -207,8 +234,11 @@ export type DestructibleCore = {
   stepSafe: (dtOverride?: number) => void;
   setGravity: (g: number) => void;
   setSolverGravityEnabled: (v: boolean) => void;
+  /** @deprecated Use setDebrisCollisionMode instead */
   setSingleCollisionMode: (mode: SingleCollisionMode) => void;
+  setDebrisCollisionMode: (mode: DebrisCollisionMode) => void;
   getRigidBodyCount: () => number;
+  getActiveBondsCount: () => number;
   getSolverDebugLines: () => Array<{ p0: Vec3; p1: Vec3; color0: number; color1: number }>;
   // Bond interaction helpers
   getNodeBonds: (nodeIndex: number) => BondRef[];
@@ -224,6 +254,10 @@ export type DestructibleCore = {
   getSmallBodyDampingSettings?: () => SmallBodyDampingOptions & { mode: OptimizationMode };
   // Query ground collision status for a body
   hasBodyCollidedWithGround?: (bodyHandle: number) => boolean;
+  // Debris cleanup API - automatically remove small bodies after TTL
+  setDebrisCleanup?: (opts: DebrisCleanupOptions) => void;
+  getDebrisCleanupSettings?: () => DebrisCleanupOptions & { mode: OptimizationMode };
+  setMaxCollidersForDebris?: (n: number) => void;
   // Damageable chunks API (present when damage is enabled)
   applyNodeDamage?: (nodeIndex: number, amount: number, reason?: string) => void;
   getNodeHealth?: (nodeIndex: number) => { health: number; maxHealth: number; destroyed: boolean } | null;

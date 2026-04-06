@@ -1,7 +1,12 @@
 "use client";
 
-import { OrbitControls } from "@react-three/drei";
+import { KeyboardControls, OrbitControls, PointerLockControls } from "@react-three/drei";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
+import {
+  FPSPlayerMovement,
+  CameraLight,
+  FPS_KEYBOARD_MAP,
+} from "@/components/fps/FPSPlayerMovement";
 import { Perf as R3FPerf } from "r3f-perf";
 import {
   startTransition,
@@ -14,19 +19,22 @@ import {
 } from "react";
 import * as THREE from "three";
 import RapierDebugRenderer from "@/lib/rapier/rapier-debug-renderer";
-import type { AutoBondingRequest } from "@/lib/stress/core/autoBonding";
+import { applyAutoBondingToScenario } from "@/lib/stress/core/autoBonding";
 import { buildDestructibleCore } from "@/lib/stress/core/destructible-core";
 import { debugPrintSolver } from "@/lib/stress/core/printSolver";
 import type {
   CoreProfilerSample,
   DestructibleCore,
-  SingleCollisionMode,
+  DebrisCollisionMode,
   OptimizationMode,
 } from "@/lib/stress/core/types";
 import { buildBeamBridgeScenario } from "@/lib/stress/scenarios/beamBridgeScenario";
 import { buildBrickWallScenario } from "@/lib/stress/scenarios/brickWallScenario";
 import { buildFracturedGlbScenario } from "@/lib/stress/scenarios/fracturedGlbScenario";
 import { buildFracturedWallScenario } from "@/lib/stress/scenarios/fracturedWallScenario";
+import { buildFracturedWallHutScenario } from "@/lib/stress/scenarios/fracturedWallHutScenario";
+import { buildFracturedTowerScenario } from "@/lib/stress/scenarios/fracturedTowerScenario";
+import { buildFracturedBridgeScenario } from "@/lib/stress/scenarios/fracturedBridgeScenario";
 import {
   buildBridgeScenario,
   buildCourtyardHouseScenario,
@@ -96,8 +104,11 @@ type SceneProps = {
   physicsWireframe: boolean;
   gravity: number;
   solverGravityEnabled: boolean;
-  singleCollisionMode: SingleCollisionMode;
-  skipSingleBodies: boolean;
+  debrisCollisionMode: DebrisCollisionMode;
+  skipDebrisBodies: boolean;
+  maxCollidersForDebris: number;
+  debrisTtlMs: number;
+  debrisCleanupMode: OptimizationMode;
   damageEnabled: boolean;
   damageClickRatio: number;
   contactDamageScale: number;
@@ -145,10 +156,14 @@ type SceneProps = {
   bodyCountRef?: MutableRefObject<HTMLSpanElement | null>;
   activeBodyCountRef?: MutableRefObject<HTMLSpanElement | null>;
   colliderCountRef?: MutableRefObject<HTMLSpanElement | null>;
+  bondsCountRef?: MutableRefObject<HTMLSpanElement | null>;
   profiling?: {
     enabled: boolean;
     onSample?: (sample: CoreProfilerSample) => void;
   };
+  viewMode: "orbit" | "fps";
+  onPointerLock?: () => void;
+  onPointerUnlock?: () => void;
 };
 
 type ScenarioBuilderParams = {
@@ -161,7 +176,6 @@ type ScenarioBuilderParams = {
   bondsXEnabled: boolean;
   bondsYEnabled: boolean;
   bondsZEnabled: boolean;
-  autoBonding?: AutoBondingRequest;
 };
 
 type ScenarioBuilder = (
@@ -228,12 +242,11 @@ const SCENARIO_BUILDERS: Record<StressPresetId, ScenarioBuilder> = {
       bondsY: bondsYEnabled,
       bondsZ: bondsZEnabled,
     }),
-  beamBridge: ({ bondsXEnabled, bondsYEnabled, bondsZEnabled, autoBonding }) =>
+  beamBridge: ({ bondsXEnabled, bondsYEnabled, bondsZEnabled }) =>
     buildBeamBridgeScenario({
       bondsX: bondsXEnabled,
       bondsY: bondsYEnabled,
       bondsZ: bondsZEnabled,
-      autoBonding,
     }),
   tower: ({ bondsXEnabled, bondsYEnabled, bondsZEnabled }) =>
     buildTowerScenario({
@@ -259,18 +272,49 @@ const SCENARIO_BUILDERS: Record<StressPresetId, ScenarioBuilder> = {
       bondsY: bondsYEnabled,
       bondsZ: bondsZEnabled,
     }),
-  fracturedWall: ({ wallSpan, wallHeight, wallThickness, autoBonding }) =>
+  fracturedWall: ({ wallSpan, wallHeight, wallThickness }) =>
     buildFracturedWallScenario({
       span: wallSpan,
       height: wallHeight,
       thickness: wallThickness,
-      fragmentCount: 120,
-      autoBonding,
+      fragmentCount: 200,
     }),
-  fracturedGlb: async ({ autoBonding }) =>
+  fracturedWallHut: () =>
+    buildFracturedWallHutScenario({
+      fragmentCountPerWall: 100,
+    }),
+  fracturedTower: () =>
+    buildFracturedTowerScenario({
+      // Realistic mid-rise office tower
+      width: 45, // 45m × 45m footprint
+      depth: 45,
+      floorCount: 15, // 15 stories
+      floorHeight: 4, // 4m floor-to-floor (commercial standard)
+      // Total height: 60m (~197 ft)
+      
+      // Column grid configuration
+      columnSize: 1.5, // 1.5m square columns
+      columnSpacing: 9, // ~9m between columns (typical office grid)
+      // columnsX: 4, // Or specify exact grid: 4x4 = 16 columns per floor
+      // columnsZ: 4,
+      columnInset: 0.12, // 12% inset from walls
+      
+      // Fragment counts
+      fragmentCountPerWall: 15,
+      fragmentCountPerFloor: 60,
+      fragmentCountPerColumn: 5,
+      
+      // Use auto bonding for better accuracy and performance
+      useAutoBonding: true,
+    }),
+  fracturedBridge: () =>
+    buildFracturedBridgeScenario({
+      fragmentCountPerDeck: 200,
+      fragmentCountPerPost: 10,
+    }),
+  fracturedGlb: async () =>
     buildFracturedGlbScenario({
       // fragmentCount: 120, objectMass: 10_000,
-      autoBonding,
     }),
 };
 
@@ -279,8 +323,11 @@ function Scene({
   physicsWireframe,
   gravity,
   solverGravityEnabled,
-  singleCollisionMode,
-  skipSingleBodies,
+  debrisCollisionMode,
+  skipDebrisBodies,
+  maxCollidersForDebris,
+  debrisTtlMs,
+  debrisCleanupMode,
   damageEnabled,
   damageClickRatio,
   contactDamageScale,
@@ -328,7 +375,11 @@ function Scene({
   bodyCountRef,
   activeBodyCountRef,
   colliderCountRef,
+  bondsCountRef,
   profiling,
+  viewMode,
+  onPointerLock,
+  onPointerUnlock,
 }: SceneProps) {
   console.log("Scene render");
 
@@ -358,11 +409,23 @@ function Scene({
   useEffect(() => {
     solverGravityRef.current = solverGravityEnabled;
   }, [solverGravityEnabled]);
-  const singleCollisionModeRef =
-    useRef<SingleCollisionMode>(singleCollisionMode);
+  const debrisCollisionModeRef =
+    useRef<DebrisCollisionMode>(debrisCollisionMode);
   useEffect(() => {
-    singleCollisionModeRef.current = singleCollisionMode;
-  }, [singleCollisionMode]);
+    debrisCollisionModeRef.current = debrisCollisionMode;
+  }, [debrisCollisionMode]);
+  const maxCollidersForDebrisRef = useRef(maxCollidersForDebris);
+  useEffect(() => {
+    maxCollidersForDebrisRef.current = maxCollidersForDebris;
+  }, [maxCollidersForDebris]);
+  const debrisTtlMsRef = useRef(debrisTtlMs);
+  useEffect(() => {
+    debrisTtlMsRef.current = debrisTtlMs;
+  }, [debrisTtlMs]);
+  const debrisCleanupModeRef = useRef<OptimizationMode>(debrisCleanupMode);
+  useEffect(() => {
+    debrisCleanupModeRef.current = debrisCleanupMode;
+  }, [debrisCleanupMode]);
   const sleepLinearThresholdRef = useRef(sleepLinearThreshold);
   useEffect(() => {
     sleepLinearThresholdRef.current = sleepLinearThreshold;
@@ -468,7 +531,7 @@ function Scene({
     let mounted = true;
     (async () => {
       const builder = SCENARIO_BUILDERS[structureId] ?? SCENARIO_BUILDERS.wall;
-      const scenario = await builder({
+      let scenario = await builder({
         wallSpan,
         wallHeight,
         wallThickness,
@@ -478,8 +541,11 @@ function Scene({
         bondsXEnabled,
         bondsYEnabled,
         bondsZEnabled,
-        autoBonding: autoBondingEnabled ? { enabled: true } : undefined,
       });
+      // Apply auto bonding if enabled (centralized)
+      if (autoBondingEnabled) {
+        scenario = await applyAutoBondingToScenario(scenario);
+      }
       const core = await buildDestructibleCore({
         scenario,
         nodeSize: (index, scen) => {
@@ -495,7 +561,7 @@ function Scene({
         },
         gravity: buildGravityRef.current,
         materialScale: materialScale,
-        skipSingleBodies,
+        skipSingleBodies: skipDebrisBodies,
         damage: {
           enabled: damageEnabled,
           autoDetachOnDestroy: true,
@@ -536,7 +602,7 @@ function Scene({
         maxResimulationPasses,
         snapshotMode,
         resimulateOnDamageDestroy,
-        singleCollisionMode: singleCollisionModeRef.current,
+        debrisCollisionMode: debrisCollisionModeRef.current,
         sleepLinearThreshold: sleepLinearThresholdRef.current,
         sleepAngularThreshold: sleepAngularThresholdRef.current,
         sleepMode: sleepModeRef.current,
@@ -545,6 +611,11 @@ function Scene({
           colliderCountThreshold: smallBodyColliderThresholdRef.current,
           minLinearDamping: smallBodyMinLinearDampingRef.current,
           minAngularDamping: smallBodyMinAngularDampingRef.current,
+        },
+        debrisCleanup: {
+          mode: debrisCleanupModeRef.current,
+          debrisTtlMs: debrisTtlMsRef.current,
+          maxCollidersForDebris: maxCollidersForDebrisRef.current,
         },
       });
       if (!mounted) {
@@ -574,7 +645,7 @@ function Scene({
         core.setSolverGravityEnabled(solverGravityRef.current);
       } catch {}
       try {
-        core.setSingleCollisionMode(singleCollisionModeRef.current);
+        core.setDebrisCollisionMode(debrisCollisionModeRef.current);
       } catch {}
 
       const params = scenario.parameters as unknown as
@@ -713,7 +784,7 @@ function Scene({
     autoBondingEnabled,
     scene,
     materialScale,
-    skipSingleBodies,
+    skipDebrisBodies,
     damageEnabled,
     contactDamageScale,
     minImpulseThreshold,
@@ -782,14 +853,27 @@ function Scene({
     } catch {}
   }, [physicsWireframe, scene]);
 
-  // Apply single-collision policy when toggled
+  // Apply debris collision policy when toggled
   useEffect(() => {
     const core = coreRef.current;
     if (!core) return;
     try {
-      core.setSingleCollisionMode(singleCollisionMode);
+      core.setDebrisCollisionMode(debrisCollisionMode);
     } catch {}
-  }, [singleCollisionMode]);
+  }, [debrisCollisionMode]);
+
+  // Apply debris cleanup settings when changed
+  useEffect(() => {
+    const core = coreRef.current;
+    if (!core) return;
+    try {
+      core.setDebrisCleanup?.({
+        mode: debrisCleanupMode,
+        debrisTtlMs,
+        maxCollidersForDebris,
+      });
+    } catch {}
+  }, [debrisCleanupMode, debrisTtlMs, maxCollidersForDebris]);
 
   // Apply material scale to solver anytime it changes
   useEffect(() => {
@@ -904,25 +988,69 @@ function Scene({
 
   // Click: spawn projectile, cut bonds, or push chunk depending on mode
   useEffect(() => {
-    const canvas = document.querySelector("canvas") as HTMLCanvasElement | null;
-    if (!canvas) return;
+    // Use document to capture all clicks, even when pointer is locked or retargeted
+    const target = document;
 
-    const handle = (ev: MouseEvent) => {
+    const handle = (ev: MouseEvent | PointerEvent) => {
+      // Ignore if clicking on UI controls
+      if (
+        ev.target instanceof Element &&
+        (ev.target.closest("#control-panel") || ev.target.closest("button") || ev.target.closest("input") || ev.target.closest("select"))
+      ) {
+        return;
+      }
+
       const core = coreRef.current;
       if (!core) return;
-      const rect = (ev.target as HTMLElement).getBoundingClientRect();
-      const ndc = new THREE.Vector2(
-        ((ev.clientX - rect.left) / rect.width) * 2 - 1,
-        -((ev.clientY - rect.top) / rect.height) * 2 + 1,
-      );
       const cam = camera;
       if (!cam) {
         console.error("[Page] Missing camera in click handler");
         if (isDev) throw new Error("Missing camera");
         return;
       }
+
+      // FPS mode projectile: fire straight from camera, no raycasting needed
+      if (viewMode === "fps" && mode === "projectile") {
+        const camPos = new THREE.Vector3();
+        cam.getWorldPosition(camPos);
+        const camDir = new THREE.Vector3();
+        cam.getWorldDirection(camDir);
+        // Start projectile slightly in front of camera to avoid self-collision
+        const start = camPos.clone().addScaledVector(camDir, projectileRadius + 0.5);
+        const linvel = camDir.clone().multiplyScalar(projectileSpeed);
+        
+        core.enqueueProjectile({
+          start: { x: start.x, y: start.y, z: start.z },
+          linvel: { x: linvel.x, y: linvel.y, z: linvel.z },
+          x: start.x + camDir.x * 10,
+          z: start.z + camDir.z * 10,
+          type: projType,
+          radius: projectileRadius,
+          mass: projectileMass,
+          friction: 0.6,
+          restitution: 0.2,
+        });
+        return;
+      }
+
       const raycaster = new THREE.Raycaster();
-      raycaster.setFromCamera(ndc, cam);
+      
+      if (viewMode === "fps") {
+        // FPS mode: raycast from center of screen (camera direction)
+        const camPos = new THREE.Vector3();
+        cam.getWorldPosition(camPos);
+        const camDir = new THREE.Vector3();
+        cam.getWorldDirection(camDir);
+        raycaster.set(camPos, camDir);
+      } else {
+        // Orbit mode: raycast from mouse position
+        const rect = (ev.target as HTMLElement).getBoundingClientRect();
+        const ndc = new THREE.Vector2(
+          ((ev.clientX - rect.left) / rect.width) * 2 - 1,
+          -((ev.clientY - rect.top) / rect.height) * 2 + 1,
+        );
+        raycaster.setFromCamera(ndc, cam);
+      }
       if (!groupRef.current) {
         console.error("[Page] groupRef is null");
         if (isDev) throw new Error("Missing scene group");
@@ -979,7 +1107,8 @@ function Scene({
       placeClickMarker(target);
 
       if (mode === "projectile") {
-        // Spawn above and behind camera toward target
+        // Orbit mode: Spawn above and behind camera toward target
+        // (FPS projectile mode is handled above with early return)
         const camPos = new THREE.Vector3();
         cam.getWorldPosition(camPos);
         const dir = new THREE.Vector3().subVectors(target, camPos).normalize();
@@ -991,6 +1120,7 @@ function Scene({
           .subVectors(target, start)
           .normalize()
           .multiplyScalar(projectileSpeed);
+        
         // if (isDev) console.debug('[Page] Click fire', { target, start, linvel, projType });
         core.enqueueProjectile({
           start: { x: start.x, y: start.y, z: start.z },
@@ -1119,10 +1249,11 @@ function Scene({
           console.debug("[Page] Damage: applied", { nodeIndex, amount });
       }
     };
-    canvas.addEventListener("pointerdown", handle);
-    return () => canvas.removeEventListener("pointerdown", handle);
+    target.addEventListener("pointerdown", handle);
+    return () => target.removeEventListener("pointerdown", handle);
   }, [
     mode,
+    viewMode,
     pushForce,
     projType,
     camera,
@@ -1138,6 +1269,7 @@ function Scene({
   const lastBodyCountRef = useRef<number | null>(null);
   const lastActiveBodyCountRef = useRef<number | null>(null);
   const lastColliderCountRef = useRef<number | null>(null);
+  const lastBondsCountRef = useRef<number | null>(null);
   const accumulatorRef = useRef(0);
   const FIXED_STEP_DT = 1 / 60;
   const MIN_STEP_DT = 1 / 240;
@@ -1220,11 +1352,13 @@ function Scene({
     if (
       bodyCountRef?.current ||
       activeBodyCountRef?.current ||
-      colliderCountRef?.current
+      colliderCountRef?.current ||
+      bondsCountRef?.current
     ) {
       let liveCount = 0;
       let activeCount = 0;
       let colliderCount = 0;
+      let bondsCount = 0;
       try {
         core.world.forEachRigidBody(() => {
           liveCount += 1;
@@ -1244,6 +1378,11 @@ function Scene({
       } catch {
         colliderCount = 0;
       }
+      try {
+        bondsCount = core.getActiveBondsCount();
+      } catch {
+        bondsCount = 0;
+      }
       if (bodyCountRef?.current && lastBodyCountRef.current !== liveCount) {
         bodyCountRef.current.textContent = liveCount.toString();
         lastBodyCountRef.current = liveCount;
@@ -1261,6 +1400,13 @@ function Scene({
       ) {
         colliderCountRef.current.textContent = colliderCount.toString();
         lastColliderCountRef.current = colliderCount;
+      }
+      if (
+        bondsCountRef?.current &&
+        lastBondsCountRef.current !== bondsCount
+      ) {
+        bondsCountRef.current.textContent = bondsCount.toString();
+        lastBondsCountRef.current = bondsCount;
       }
     }
 
@@ -1292,16 +1438,40 @@ function Scene({
   return (
     <>
       <group ref={groupRef} />
-      <ambientLight intensity={0.35} />
+      <ambientLight intensity={0.5} />
+      <hemisphereLight args={["#87ceeb", "#3d3d3d", 0.4]} />
       <directionalLight
         castShadow={shadowsEnabled}
-        position={[6, 8, 6]}
-        intensity={1.2}
-        shadow-mapSize-width={2048}
-        shadow-mapSize-height={2048}
+        position={[30, 50, 30]}
+        intensity={1.5}
+        shadow-mapSize-width={4096}
+        shadow-mapSize-height={4096}
+        shadow-camera-left={-100}
+        shadow-camera-right={100}
+        shadow-camera-top={100}
+        shadow-camera-bottom={-100}
+        shadow-camera-near={0.5}
+        shadow-camera-far={200}
+        shadow-bias={-0.0001}
       />
       <Ground />
-      <OrbitControls makeDefault enableDamping dampingFactor={0.15} />
+      {viewMode === "orbit" ? (
+        <OrbitControls makeDefault enableDamping dampingFactor={0.15} />
+      ) : (
+        <>
+          <PointerLockControls
+            makeDefault
+            onLock={onPointerLock}
+            onUnlock={onPointerUnlock}
+            selector="#fps-start-overlay"
+          />
+          <FPSPlayerMovement
+            world={coreRef.current?.world ?? null}
+            spawn={[7, 2, 9]}
+          />
+          <CameraLight />
+        </>
+      )}
     </>
   );
 }
@@ -1327,14 +1497,20 @@ export default function Page() {
     useState(2);
   const [smallBodyDampingMode, setSmallBodyDampingMode] =
     useState<OptimizationMode>("off");
-  const [singleCollisionMode, setSingleCollisionMode] =
-    useState<SingleCollisionMode>("all");
-  const [skipSingleBodies, setSkipSingleBodies] = useState(false);
-  const [damageEnabled, setDamageEnabled] = useState(true);
+  const [debrisCollisionMode, setDebrisCollisionMode] =
+    useState<DebrisCollisionMode>("all");
+  const [skipDebrisBodies, setSkipDebrisBodies] = useState(false);
+  const [maxCollidersForDebris, setMaxCollidersForDebris] = useState(2);
+  const [debrisTtlMs, setDebrisTtlMs] = useState(10000);
+  const [debrisCleanupMode, setDebrisCleanupMode] =
+    useState<OptimizationMode>("always");
+  const [damageEnabled, setDamageEnabled] = useState(false);
   const [iteration, setIteration] = useState(0);
   const [mode, setMode] = useState<"projectile" | "cutter" | "push" | "damage">(
     "projectile",
   );
+  const [viewMode, setViewMode] = useState<"orbit" | "fps">("orbit");
+  const [isPointerLocked, setIsPointerLocked] = useState(false);
   const [damageClickRatio, setDamageClickRatio] = useState(0.5);
   const [contactDamageScale, setContactDamageScale] = useState(100.0);
   const [minImpulseThreshold, setMinImpulseThreshold] = useState(0);
@@ -1414,6 +1590,20 @@ export default function Page() {
       }
     };
   }, []);
+
+  // Press "R" to reset scene
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Ignore if typing in an input field
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (e.key === "r" || e.key === "R") {
+        setIteration((prev) => prev + 1);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
   const captureProfilerConfig = useCallback(
     () => ({
       structureId,
@@ -1423,8 +1613,11 @@ export default function Page() {
       adaptiveDt,
       sleepLinearThreshold,
       sleepAngularThreshold,
-      singleCollisionMode,
-      skipSingleBodies,
+      debrisCollisionMode,
+      skipDebrisBodies,
+      maxCollidersForDebris,
+      debrisTtlMs,
+      debrisCleanupMode,
       damageEnabled,
       damageClickRatio,
       contactDamageScale,
@@ -1466,8 +1659,11 @@ export default function Page() {
       adaptiveDt,
       sleepLinearThreshold,
       sleepAngularThreshold,
-      singleCollisionMode,
-      skipSingleBodies,
+      debrisCollisionMode,
+      skipDebrisBodies,
+      maxCollidersForDebris,
+      debrisTtlMs,
+      debrisCleanupMode,
       damageEnabled,
       damageClickRatio,
       contactDamageScale,
@@ -1505,6 +1701,7 @@ export default function Page() {
   const rigidBodyCountRef = useRef<HTMLSpanElement | null>(null);
   const activeRigidBodyCountRef = useRef<HTMLSpanElement | null>(null);
   const colliderCountRef = useRef<HTMLSpanElement | null>(null);
+  const bondsCountRef = useRef<HTMLSpanElement | null>(null);
   const structures = STRESS_PRESET_METADATA;
   const currentStructure =
     structures.find((item) => item.id === structureId) ?? structures[0];
@@ -1575,14 +1772,22 @@ export default function Page() {
         setGravity={setGravity}
         solverGravityEnabled={solverGravityEnabled}
         setSolverGravityEnabled={setSolverGravityEnabled}
-        singleCollisionMode={singleCollisionMode}
-        setSingleCollisionMode={setSingleCollisionMode}
-        skipSingleBodies={skipSingleBodies}
-        setSkipSingleBodies={setSkipSingleBodies}
+        debrisCollisionMode={debrisCollisionMode}
+        setDebrisCollisionMode={setDebrisCollisionMode}
+        skipDebrisBodies={skipDebrisBodies}
+        setSkipDebrisBodies={setSkipDebrisBodies}
+        maxCollidersForDebris={maxCollidersForDebris}
+        setMaxCollidersForDebris={setMaxCollidersForDebris}
+        debrisTtlMs={debrisTtlMs}
+        setDebrisTtlMs={setDebrisTtlMs}
+        debrisCleanupMode={debrisCleanupMode}
+        setDebrisCleanupMode={setDebrisCleanupMode}
         damageClickRatio={damageClickRatio}
         setDamageClickRatio={setDamageClickRatio}
         mode={mode}
         setMode={setMode}
+        viewMode={viewMode}
+        setViewMode={setViewMode}
         damageEnabled={damageEnabled}
         setDamageEnabled={setDamageEnabled}
         pushForce={pushForce}
@@ -1653,6 +1858,7 @@ export default function Page() {
         bodyCountRef={rigidBodyCountRef}
         activeBodyCountRef={activeRigidBodyCountRef}
         colliderCountRef={colliderCountRef}
+        bondsCountRef={bondsCountRef}
         adaptiveDt={adaptiveDt}
         setAdaptiveDt={setAdaptiveDt}
         sleepLinearThreshold={sleepLinearThreshold}
@@ -1679,18 +1885,22 @@ export default function Page() {
         setCollapsed={setControlsCollapsed}
       />
 
-      <Canvas
-        shadows={shadowsEnabled}
-        camera={{ position: [7, 5, 9], fov: 45 }}
-      >
-        <color attach="background" args={["#0e0e12"]} />
-        <Scene
+      <KeyboardControls map={FPS_KEYBOARD_MAP}>
+        <Canvas
+          shadows={shadowsEnabled}
+          camera={{ position: [7, 5, 9], fov: 45 }}
+        >
+          <color attach="background" args={["#0e0e12"]} />
+          <Scene
           debug={debug}
           physicsWireframe={physicsWireframe}
           gravity={gravity}
           solverGravityEnabled={solverGravityEnabled}
-          singleCollisionMode={singleCollisionMode}
-          skipSingleBodies={skipSingleBodies}
+          debrisCollisionMode={debrisCollisionMode}
+          skipDebrisBodies={skipDebrisBodies}
+          maxCollidersForDebris={maxCollidersForDebris}
+          debrisTtlMs={debrisTtlMs}
+          debrisCleanupMode={debrisCleanupMode}
           iteration={iteration}
           structureId={structureId}
           mode={mode}
@@ -1730,6 +1940,7 @@ export default function Page() {
           bodyCountRef={rigidBodyCountRef}
           activeBodyCountRef={activeRigidBodyCountRef}
           colliderCountRef={colliderCountRef}
+          bondsCountRef={bondsCountRef}
           adaptiveDt={adaptiveDt}
           sleepLinearThreshold={sleepLinearThreshold}
           sleepAngularThreshold={sleepAngularThreshold}
@@ -1739,15 +1950,72 @@ export default function Page() {
           sleepMode={sleepMode}
           smallBodyDampingMode={smallBodyDampingMode}
           profiling={profilingControls}
+          viewMode={viewMode}
+          onPointerLock={() => setIsPointerLocked(true)}
+          onPointerUnlock={() => setIsPointerLocked(false)}
         />
-        {showPerfOverlay ? (
-          <R3FPerf
-            // matrixUpdate deepAnalyze overClock
-            position="top-left"
-          />
-        ) : null}
-        {/* <StatsGl className="absolute top-2 left-2" trackGPU={true} horizontal={true} /> */}
-      </Canvas>
+          {showPerfOverlay ? (
+            <R3FPerf
+              // matrixUpdate deepAnalyze overClock
+              position="top-left"
+            />
+          ) : null}
+          {/* <StatsGl className="absolute top-2 left-2" trackGPU={true} horizontal={true} /> */}
+        </Canvas>
+      </KeyboardControls>
+
+      {/* FPS mode pointer lock overlay */}
+      {viewMode === "fps" && !isPointerLocked && (
+        <div
+          id="fps-start-overlay"
+          style={{
+            position: "absolute",
+            inset: 0,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            cursor: "pointer",
+            pointerEvents: "auto",
+          }}
+        >
+          <div
+            style={{
+              background: "rgba(0, 0, 0, 0.7)",
+              color: "#fff",
+              padding: "16px 32px",
+              borderRadius: "8px",
+              fontSize: "14px",
+              textAlign: "center",
+            }}
+          >
+            <div style={{ fontWeight: 600, marginBottom: "4px" }}>
+              Click to start
+            </div>
+            <div style={{ fontSize: "12px", opacity: 0.7 }}>
+              WASD move · Space jump · Shift run · R reset · Mouse look · Esc unlock
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* FPS mode controls hint */}
+      {viewMode === "fps" && isPointerLocked && (
+        <div
+          style={{
+            position: "absolute",
+            bottom: 12,
+            left: 12,
+            background: "rgba(0, 0, 0, 0.5)",
+            color: "#fff",
+            padding: "6px 12px",
+            borderRadius: "4px",
+            fontSize: "11px",
+            pointerEvents: "none",
+          }}
+        >
+          WASD move · Space jump · Shift run · Click fire · R reset · Esc unlock
+        </div>
+      )}
     </div>
   );
 }

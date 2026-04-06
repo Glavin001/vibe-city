@@ -2,7 +2,7 @@ import type { MutableRefObject } from "react";
 import type {
   CoreProfilerSample,
   OptimizationMode,
-  SingleCollisionMode,
+  DebrisCollisionMode,
 } from "@/lib/stress/core/types";
 import type { StressPresetId } from "@/lib/stress/scenarios/structurePresets";
 
@@ -47,6 +47,9 @@ export type ProjectileType = "ball" | "box";
 // Snapshot mode type
 export type SnapshotMode = "perBody" | "world";
 
+// View mode type (orbit vs first-person)
+export type ViewMode = "orbit" | "fps";
+
 // Main control panel props - organized by section
 export type ControlPanelProps = {
   // Panel visibility
@@ -62,12 +65,15 @@ export type ControlPanelProps = {
   structureDescription?: string;
   mode: InteractionMode;
   setMode: (v: InteractionMode) => void;
+  viewMode: ViewMode;
+  setViewMode: (v: ViewMode) => void;
   reset: () => void;
 
   // Stats refs
   bodyCountRef: MutableRefObject<HTMLSpanElement | null>;
   activeBodyCountRef: MutableRefObject<HTMLSpanElement | null>;
   colliderCountRef: MutableRefObject<HTMLSpanElement | null>;
+  bondsCountRef: MutableRefObject<HTMLSpanElement | null>;
 
   // Wall dimensions (only for wall presets)
   wallSpan: number;
@@ -119,11 +125,17 @@ export type ControlPanelProps = {
   snapshotMode: SnapshotMode;
   setSnapshotMode: (v: SnapshotMode) => void;
 
-  // Physics - Collision settings
-  singleCollisionMode: SingleCollisionMode;
-  setSingleCollisionMode: (v: SingleCollisionMode) => void;
-  skipSingleBodies: boolean;
-  setSkipSingleBodies: (v: boolean) => void;
+  // Physics - Debris settings
+  debrisCollisionMode: DebrisCollisionMode;
+  setDebrisCollisionMode: (v: DebrisCollisionMode) => void;
+  skipDebrisBodies: boolean;
+  setSkipDebrisBodies: (v: boolean) => void;
+  maxCollidersForDebris: number;
+  setMaxCollidersForDebris: (v: number) => void;
+  debrisTtlMs: number;
+  setDebrisTtlMs: (v: number) => void;
+  debrisCleanupMode: OptimizationMode;
+  setDebrisCleanupMode: (v: OptimizationMode) => void;
 
   // Projectile settings
   projType: ProjectileType;
@@ -249,10 +261,16 @@ export type PhysicsTabProps = Pick<
   | "setMaxResimulationPasses"
   | "snapshotMode"
   | "setSnapshotMode"
-  | "singleCollisionMode"
-  | "setSingleCollisionMode"
-  | "skipSingleBodies"
-  | "setSkipSingleBodies"
+  | "debrisCollisionMode"
+  | "setDebrisCollisionMode"
+  | "skipDebrisBodies"
+  | "setSkipDebrisBodies"
+  | "maxCollidersForDebris"
+  | "setMaxCollidersForDebris"
+  | "debrisTtlMs"
+  | "setDebrisTtlMs"
+  | "debrisCleanupMode"
+  | "setDebrisCleanupMode"
   | "damageEnabled"
 >;
 
@@ -260,6 +278,8 @@ export type InteractionTabProps = Pick<
   ControlPanelProps,
   | "mode"
   | "setMode"
+  | "viewMode"
+  | "setViewMode"
   | "projType"
   | "setProjType"
   | "projectileRadius"

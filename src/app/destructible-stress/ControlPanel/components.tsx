@@ -376,6 +376,7 @@ type PanelContainerProps = {
   bodyCountRef?: MutableRefObject<HTMLSpanElement | null>;
   activeBodyCountRef?: MutableRefObject<HTMLSpanElement | null>;
   colliderCountRef?: MutableRefObject<HTMLSpanElement | null>;
+  bondsCountRef?: MutableRefObject<HTMLSpanElement | null>;
 };
 
 export const PanelContainer = memo(function PanelContainer({
@@ -387,6 +388,7 @@ export const PanelContainer = memo(function PanelContainer({
   bodyCountRef,
   activeBodyCountRef,
   colliderCountRef,
+  bondsCountRef,
 }: PanelContainerProps) {
   // Compact stats bar component
   const StatsBar = (
@@ -402,6 +404,10 @@ export const PanelContainer = memo(function PanelContainer({
       <span className="flex items-center gap-1">
         <span className="text-gray-500">Colliders:</span>
         <span ref={colliderCountRef} className="text-gray-300">-</span>
+      </span>
+      <span className="flex items-center gap-1">
+        <span className="text-gray-500">Bonds:</span>
+        <span ref={bondsCountRef} className="text-gray-300">-</span>
       </span>
     </div>
   );
@@ -430,6 +436,7 @@ export const PanelContainer = memo(function PanelContainer({
 
   return (
     <div
+      id="control-panel"
       className="absolute left-2 right-2 bottom-4 z-10 flex flex-col max-w-[360px] bg-neutral-950/95 p-3 rounded-lg border border-neutral-700"
       style={{ top: panelTop }}
     >
